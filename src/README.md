@@ -47,7 +47,8 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 
 1. [mcpserver/server.ts](mcpserver/server.ts) registra tools MCP.
 2. Cada tool reusa stores y modulos existentes.
-3. La salida MCP va por stdio; logs diagnosticos van por stderr o archivo.
+3. `record_prompt`, `list_prompts` y `search_prompts` usan la coleccion durable `prompts`.
+4. La salida MCP va por stdio; logs diagnosticos van por stderr o archivo.
 
 ### UI de memoria
 

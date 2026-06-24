@@ -118,6 +118,10 @@ async function runLogged<T>(tool: string, args: Record<string, unknown>, fn: () 
   }
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function buildServer(): McpServer {
   const server = new McpServer({ name: "aitl-harness", version: "0.1.0" });
 
@@ -185,6 +189,90 @@ export function buildServer(): McpServer {
   );
 
   // ── repo map ───────────────────────────────────────────────────────────────
+  server.tool(
+    "record_prompt",
+    "Persist a prompt in durable prompt history for a project.",
+    {
+      project: z.string(),
+      prompt: z.string(),
+      title: z.string().default(""),
+      source: z.string().default("mcp"),
+      model: z.string().optional(),
+      run_id: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      metadata: z.record(z.unknown()).optional(),
+    },
+    async ({ project, prompt, title, source, model, run_id, tags, metadata }) => {
+      return runLogged("record_prompt", { project, prompt, title, source, model, run_id, tags, metadata }, async () => {
+        const doc = {
+          project,
+          prompt,
+          title,
+          source,
+          model: model ?? null,
+          run_id: run_id ?? null,
+          tags: tags ?? [],
+          metadata: metadata ?? {},
+          created_at: new Date(),
+        };
+        const result = await getDb().collection("prompts").insertOne(doc);
+        return text({ id: String(result.insertedId), ...(jsonable(doc) as Record<string, unknown>) });
+      });
+    },
+  );
+
+  server.tool(
+    "list_prompts",
+    "List recent prompt history for a project, newest first.",
+    {
+      project: z.string(),
+      limit: z.number().int().min(1).max(200).default(50),
+      source: z.string().optional(),
+      tag: z.string().optional(),
+    },
+    async ({ project, limit, source, tag }) => {
+      return runLogged("list_prompts", { project, limit, source, tag }, async () => {
+        const query: Record<string, unknown> = { project };
+        if (source) query.source = source;
+        if (tag) query.tags = tag;
+        const rows = await getDb()
+          .collection("prompts")
+          .find(query)
+          .sort({ created_at: -1 })
+          .limit(limit)
+          .toArray();
+        return text(rows.map(jsonable));
+      });
+    },
+  );
+
+  server.tool(
+    "search_prompts",
+    "Search durable prompt history for a project. Uses Mongo text search with regex fallback.",
+    { project: z.string(), query: z.string(), limit: z.number().int().min(1).max(50).default(10) },
+    async ({ project, query, limit }) => {
+      return runLogged("search_prompts", { project, query, limit }, async () => {
+        const coll = getDb().collection("prompts");
+        let rows: unknown[];
+        try {
+          rows = await coll
+            .find({ project, $text: { $search: query } }, { projection: { score: { $meta: "textScore" } } })
+            .sort({ score: { $meta: "textScore" }, created_at: -1 })
+            .limit(limit)
+            .toArray();
+        } catch {
+          const rx = new RegExp(escapeRegex(query), "i");
+          rows = await coll
+            .find({ project, $or: [{ title: rx }, { prompt: rx }] })
+            .sort({ created_at: -1 })
+            .limit(limit)
+            .toArray();
+        }
+        return text(rows.map(jsonable));
+      });
+    },
+  );
+
   server.tool(
     "get_repomap",
     "Return the tree-sitter + PageRank repo map for a project. If `root` is given it is (re)built first; otherwise the cached map is rendered.",

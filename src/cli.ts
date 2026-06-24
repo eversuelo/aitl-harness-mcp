@@ -305,6 +305,88 @@ program
     });
   });
 
+// ── prompt history (durable record of prompts; separate `prompts` collection) ────
+const prompt = program.command("prompt").description("Durable prompt history for a project.");
+
+prompt
+  .command("add")
+  .argument("<text>", "Prompt text to record.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--title <title>", "Short title.")
+  .option("--source <source>", "Where it came from.", "cli")
+  .option("--tags <list>", "Comma-separated tags.")
+  .description("Append a prompt to the durable history (shared with the MCP).")
+  .action(async (text, opts) => {
+    const { PromptStore } = await import("./prompts/store.js");
+    const rec = await new PromptStore().add({
+      project: opts.project,
+      prompt: text,
+      title: opts.title ?? "",
+      source: opts.source,
+      tags: opts.tags ? String(opts.tags).split(",").map((t: string) => t.trim()).filter(Boolean) : [],
+    });
+    console.log(`Recorded prompt ${rec.id} in project '${rec.project}'.`);
+    await closeClient();
+  });
+
+prompt
+  .command("list")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--source <source>", "Only this source.")
+  .option("--tag <tag>", "Only this tag.")
+  .option("--limit <n>", "Max rows.", "50")
+  .description("Print the prompt history for a project (newest first).")
+  .action(async (opts) => {
+    const { PromptStore } = await import("./prompts/store.js");
+    const rows = await new PromptStore().list(opts.project, {
+      source: opts.source,
+      tag: opts.tag,
+      limit: Number(opts.limit),
+    });
+    for (const r of rows) {
+      const ts = r.created_at instanceof Date ? r.created_at.toISOString().slice(0, 16).replace("T", " ") : "";
+      const title = r.title ? `${r.title}: ` : "";
+      console.log(`[${ts}] (${r.source}) ${title}${String(r.prompt).replace(/\s+/g, " ").slice(0, 100)}`);
+    }
+    if (!rows.length) console.log("(no prompts recorded)");
+    await closeClient();
+  });
+
+prompt
+  .command("search")
+  .argument("<query>", "Search text.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--limit <n>", "Max rows.", "10")
+  .description("Search the prompt history ($text with regex fallback).")
+  .action(async (query, opts) => {
+    const { PromptStore } = await import("./prompts/store.js");
+    const rows = await new PromptStore().search(opts.project, query, Number(opts.limit));
+    for (const r of rows) console.log(`- ${String(r.prompt).replace(/\s+/g, " ").slice(0, 120)}`);
+    if (!rows.length) console.log("(no matches)");
+    await closeClient();
+  });
+
+// ── init agent (write an AGENTS.md that enforces consulting the AITL MCP) ─────────
+const init = program.command("init").description("Scaffold agent/project artifacts.");
+
+init
+  .command("agent")
+  .option("-i, --interactive", "Prompt for the values instead of using defaults.", false)
+  .option("--out <file>", "Output markdown file.", "AGENTS.md")
+  .option("--project <project>", "Project scope the agent should use.", "aitl-js")
+  .option("--mcp <name>", "MCP server name to consult.", "aitl-js")
+  .description("Create an agent guide (AGENTS.md) that reminds the agent to consult the MCP on every decision.")
+  .action(async (opts) => {
+    const { writeAgentGuide } = await import("./init/agent.js");
+    const path = await writeAgentGuide({
+      out: opts.out,
+      project: opts.project,
+      mcp: opts.mcp,
+      interactive: opts.interactive,
+    });
+    console.log(`Wrote agent guide to ${path}.`);
+  });
+
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
   process.exit(1);

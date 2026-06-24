@@ -48,6 +48,25 @@ es **aditivo** y **parity-neutral** (TS-only): no cambia `docs/parity-contract.j
 - [[ADR-0007]] UI web de memorias sobre proyección HTTP de `MemoryStore`.
 - [[ADR-0008]] Panel interactivo readish sin dependencias.
 
+## Ampliación (misma sesión)
+
+4. **Cierre del panel interactivo** — `SIGINT/SIGTERM/SIGHUP/SIGBREAK` + backstop `exit`
+   matan los servidores hijo **síncronamente** (`spawnSync taskkill /T` en Windows) antes
+   de salir, así cerrar la terminal no deja procesos huérfanos. (`src/interactive/menu.ts`).
+5. **Rediseño del web UI con shadcn/ui + TailwindCSS** — `web/` con Tailwind v3, alias `@/`,
+   tema dark, componentes `ui/{button,input,textarea,label,badge,card,select,separator}`,
+   `App.tsx` de dos paneles. `vite build` verde (1658 módulos). Deps en devDependencies.
+6. **Historial de prompts en aitl-js** — colección propia `prompts` (fuera de `COLLECTIONS`,
+   paridad intacta). MCP tools `record_prompt`/`list_prompts`/`search_prompts` (ya en
+   `server.ts`) + `PromptStore` (`src/prompts/`) + CLI `aitl prompt {add,list,search}`,
+   compartiendo el mismo esquema/colección.
+7. **`aitl init agent [--interactive]`** — genera `AGENTS.md` (contrato operativo) que obliga
+   a consultar el MCP `aitl-js` (`search_memory`, `list_decisions`) **antes** de cada
+   decisión y a persistir (`record_decision`, `write_memory`, prompt history) **después**.
+   (`src/init/agent.ts`).
+8. **Preferencia del usuario:** *guardar siempre las memorias/decisiones de cada sesión* en
+   el backend `aitl-js`.
+
 ## Plan / tareas pendientes
 - Fase A/B del plan TUI (`docs/TUI-IMPLEMENTATION-PLAN.md`): streaming en providers +
   observador del loop → dos briefs independientes para Codex (`docs/codex-task-A-*`, `-B-*`).

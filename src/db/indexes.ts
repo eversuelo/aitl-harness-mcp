@@ -28,6 +28,9 @@ export async function ensureScalarIndexes(db: Db): Promise<void> {
   await db.collection("memory").createIndex({ project: 1, slug: 1 }, { unique: true });
   await db.collection("memory").createIndex({ project: 1, category: 1 });
   await db.collection("decisions").createIndex({ project: 1, id: 1 }, { unique: true });
+  await db.collection("prompts").createIndex({ project: 1, created_at: -1 });
+  await db.collection("prompts").createIndex({ project: 1, source: 1, created_at: -1 });
+  await db.collection("prompts").createIndex({ project: 1, tags: 1 });
   await db.collection("symbols").createIndex({ project: 1, file: 1 });
   await db.collection("symbols").createIndex({ project: 1, name: 1 });
   await db.collection("conventions").createIndex({ project: 1, scope_glob: 1 });
@@ -40,6 +43,7 @@ export async function ensureTextIndexes(db: Db): Promise<void> {
   await db.collection("messages").createIndex({ content: "text" });
   await db.collection("memory").createIndex({ body: "text", description: "text" });
   await db.collection("decisions").createIndex({ title: "text", context: "text" });
+  await db.collection("prompts").createIndex({ title: "text", prompt: "text" });
 }
 
 /** Atlas Vector Search index definition for an `embedding` field. */

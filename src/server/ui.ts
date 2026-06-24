@@ -28,10 +28,16 @@ function webDir(): string {
 
 /** Resolve the locally-installed Vite CLI entry (undefined if not installed). */
 function resolveViteBin(): string | undefined {
+  const req = createRequire(import.meta.url);
   try {
-    return createRequire(import.meta.url).resolve("vite/bin/vite.js");
+    return join(dirname(req.resolve("vite/package.json")), "bin", "vite.js");
   } catch {
-    return undefined;
+    try {
+      const entry = req.resolve("vite");
+      return join(dirname(entry), "bin", "vite.js");
+    } catch {
+      return undefined;
+    }
   }
 }
 

@@ -83,6 +83,20 @@ aitl run "haz una tarea" --project demo --model secondary
 | `aitl mcp` | Arranca servidor MCP stdio. |
 | `aitl ui --project demo` | Arranca API + SPA de memoria. |
 
+## MCP aitl-js
+
+`aitl mcp` expone memoria durable, ADRs, repomap, graphify y un historial de prompts.
+Tools principales:
+
+| Tool | Proposito |
+|---|---|
+| `record_prompt` | Guarda un prompt con `project`, `title`, `source`, `tags` y metadata opcional. |
+| `list_prompts` | Lista historial reciente por proyecto. |
+| `search_prompts` | Busca prompts guardados por texto. |
+| `search_memory` / `write_memory` | Lee y escribe memoria durable. |
+| `list_decisions` / `record_decision` | Lee y registra ADRs. |
+| `get_repomap` / `graphify` | Expone mapa de repo y grafo del estado durable. |
+
 ## Mapa de contenido
 
 | Ruta | Contenido |

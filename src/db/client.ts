@@ -14,6 +14,7 @@ export const COLLECTIONS = [
   "messages",
   "memory",
   "decisions",
+  "prompts",
   "symbols",
   "conventions",
   "categories",

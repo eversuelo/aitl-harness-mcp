@@ -1,10 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { FileText, Loader2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { type MemoryDoc, type MemoryInput, api } from "./api.js";
 
 const TYPES = ["user", "feedback", "project", "reference"] as const;
 const DEFAULT_PROJECT = (import.meta.env.VITE_DEFAULT_PROJECT as string) || "";
-
 const EMPTY: MemoryInput = { project: "", slug: "", type: "project", description: "", body: "", tags: [] };
+
+const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
+  user: "default",
+  feedback: "secondary",
+  project: "outline",
+  reference: "outline",
+};
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -15,30 +30,36 @@ export function App() {
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.projects()
+    api
+      .projects()
       .then((ps) => {
         setProjects(ps);
         setProject((p) => p || ps[0] || "");
       })
-      .catch((e) => setError(String(e.message)));
+      .catch((e) => setError(e.message));
   }, []);
 
   const refresh = useCallback(async () => {
     if (!project) return;
     setError(null);
+    setLoading(true);
     try {
       const rows = query.trim() ? await api.search(project, query.trim()) : await api.list(project);
       setItems(rows);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, [project, query]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh on project change only
   useEffect(() => {
     void refresh();
-  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [project]);
 
   const startNew = () => {
     setDraft({ ...EMPTY, project });
@@ -89,113 +110,194 @@ export function App() {
     }
   };
 
-  const projectOptions = useMemo(
-    () => [...new Set([project, ...projects].filter(Boolean))],
-    [project, projects],
-  );
-
   return (
-    <div className="app">
-      <header>
-        <h1>AITL · Memory Admin</h1>
-        <div className="proj">
-          <label>project</label>
-          <input
-            list="projects"
-            value={project}
-            onChange={(e) => setProject(e.target.value)}
-            placeholder="project…"
-          />
-          <datalist id="projects">
-            {projectOptions.map((p) => (
-              <option key={p} value={p} />
-            ))}
-          </datalist>
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* Header */}
+      <header className="flex items-center justify-between gap-4 border-b px-5 py-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <FileText className="h-4 w-4" />
+          </div>
+          <div>
+            <h1 className="text-sm font-semibold leading-tight">AITL · Memory Admin</h1>
+            <p className="text-xs text-muted-foreground">durable memory · MongoDB Atlas Vector Search</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-xs text-muted-foreground">project</Label>
+          <Select value={project} onValueChange={setProject}>
+            <SelectTrigger className="h-8 w-56">
+              <SelectValue placeholder="select a project…" />
+            </SelectTrigger>
+            <SelectContent>
+              {[...new Set([project, ...projects].filter(Boolean))].map((p) => (
+                <SelectItem key={p} value={p}>
+                  {p}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </header>
 
-      {error && <div className="error">{error}</div>}
+      {error && (
+        <div className="flex items-center justify-between gap-2 border-b border-destructive/40 bg-destructive/15 px-5 py-2 text-sm text-destructive">
+          <span>{error}</span>
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setError(null)}>
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
 
-      <div className="cols">
-        <section className="list">
-          <div className="toolbar">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && refresh()}
-              placeholder="semantic search… (Enter)"
-            />
-            <button onClick={() => refresh()} disabled={!project}>Search</button>
-            <button onClick={startNew} disabled={!project}>+ New</button>
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(340px,40%)_1fr]">
+        {/* List */}
+        <section className="flex min-h-0 flex-col border-r">
+          <div className="flex items-center gap-2 border-b p-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && refresh()}
+                placeholder="semantic search… (Enter)"
+                className="pl-8"
+              />
+            </div>
+            <Button variant="outline" size="icon" onClick={() => refresh()} disabled={!project || loading}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            </Button>
+            <Button size="sm" onClick={startNew} disabled={!project}>
+              <Plus className="h-4 w-4" /> New
+            </Button>
           </div>
-          <ul>
-            {items.map((doc) => (
-              <li key={doc.slug} onClick={() => startEdit(doc)}>
-                <div className="row">
-                  <span className="slug">{doc.slug}</span>
-                  {typeof doc.score === "number" && <span className="score">{doc.score.toFixed(3)}</span>}
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="flex flex-col gap-2">
+              {items.map((doc) => {
+                const active = editing && draft.slug === doc.slug;
+                return (
+                  <Card
+                    key={doc.slug}
+                    onClick={() => startEdit(doc)}
+                    className={`cursor-pointer p-3 transition-colors hover:bg-accent ${
+                      active ? "border-primary ring-1 ring-primary" : ""
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium">{doc.slug}</span>
+                      {typeof doc.score === "number" && (
+                        <span className="shrink-0 font-mono text-xs text-primary">{doc.score.toFixed(3)}</span>
+                      )}
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <Badge variant={TYPE_VARIANT[doc.type] ?? "outline"} className="shrink-0">
+                        {doc.type}
+                      </Badge>
+                      {doc.category && <span className="text-xs text-muted-foreground">{doc.category}</span>}
+                    </div>
+                    {doc.description && (
+                      <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{doc.description}</p>
+                    )}
+                  </Card>
+                );
+              })}
+              {!items.length && !loading && (
+                <div className="px-2 py-10 text-center text-sm text-muted-foreground">
+                  No memories yet. Create one with <span className="font-medium">New</span>.
                 </div>
-                <div className="meta">
-                  <span className={`tag t-${doc.type}`}>{doc.type}</span>
-                  {doc.category && <span className="cat">{doc.category}</span>}
-                  <span className="desc">{doc.description}</span>
-                </div>
-              </li>
-            ))}
-            {!items.length && <li className="empty">No memories. Create one with “+ New”.</li>}
-          </ul>
+              )}
+            </div>
+          </div>
         </section>
 
-        <section className="editor">
+        {/* Editor */}
+        <section className="min-h-0 overflow-y-auto">
           {editing ? (
-            <>
-              <div className="field">
-                <label>slug</label>
-                <input value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
+            <div className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="slug">slug</Label>
+                  <Input
+                    id="slug"
+                    value={draft.slug}
+                    onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
+                    placeholder="kebab-case-id"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="type">type</Label>
+                  <Select value={draft.type} onValueChange={(v) => setDraft({ ...draft, type: v })}>
+                    <SelectTrigger id="type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TYPES.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="field">
-                <label>type</label>
-                <select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })}>
-                  {TYPES.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>description</label>
-                <input
+
+              <div className="space-y-1.5">
+                <Label htmlFor="description">description</Label>
+                <Input
+                  id="description"
                   value={draft.description}
                   onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  placeholder="one-line summary used for recall"
                 />
               </div>
-              <div className="field">
-                <label>tags (comma-separated)</label>
-                <input
+
+              <div className="space-y-1.5">
+                <Label htmlFor="tags">tags</Label>
+                <Input
+                  id="tags"
                   value={draft.tags.join(", ")}
                   onChange={(e) =>
                     setDraft({ ...draft, tags: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })
                   }
+                  placeholder="comma, separated"
                 />
               </div>
-              <div className="field grow">
-                <label>body (markdown)</label>
-                <textarea value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+
+              <div className="space-y-1.5">
+                <Label htmlFor="body">body (markdown)</Label>
+                <Textarea
+                  id="body"
+                  value={draft.body}
+                  onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                  className="min-h-[16rem] font-mono text-xs"
+                  placeholder="The memory content. [[wiki-links]] connect related memories."
+                />
               </div>
-              <div className="actions">
-                <button className="primary" onClick={save} disabled={busy}>
-                  {busy ? "Saving…" : "Save"}
-                </button>
-                <button onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+
+              <Separator />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button onClick={save} disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save
+                </Button>
+                <Button variant="outline" onClick={() => setEditing(false)} disabled={busy}>
+                  Cancel
+                </Button>
                 {draft.slug && (
-                  <button className="danger" onClick={() => remove(draft.slug)} disabled={busy}>
-                    Delete
-                  </button>
+                  <Button variant="destructive" onClick={() => remove(draft.slug)} disabled={busy}>
+                    <Trash2 className="h-4 w-4" /> Delete
+                  </Button>
                 )}
-                <span className="hint">classified + re-embedded on save (same path as MCP write_memory)</span>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  classified + re-embedded on save (same path as MCP write_memory)
+                </span>
               </div>
-            </>
+            </div>
           ) : (
-            <div className="placeholder">Select a memory to edit, or “+ New”.</div>
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+              <FileText className="h-10 w-10 opacity-30" />
+              <p className="text-sm">Select a memory to edit, or create a new one.</p>
+            </div>
           )}
         </section>
       </div>
