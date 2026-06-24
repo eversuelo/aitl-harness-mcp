@@ -32,8 +32,10 @@ const SettingsSchema = z.object({
   // ── Model backend ──
   // Raw models go through OpenRouter (one OpenAI-compatible gateway). Agent HOSTS
   // (codex / claude-code / antigravity) are driven by HostAdapters (modelHost), planned.
-  modelPrimary: z.enum(["openrouter"]).default("openrouter"),
-  modelSecondary: z.enum(["openrouter"]).default("openrouter"),
+  // Plain strings (not a strict enum) so a stale value never crashes settings load;
+  // an unknown name fails clearly only when `getProvider` actually tries to use it.
+  modelPrimary: z.string().default("openrouter"),
+  modelSecondary: z.string().default("openrouter"),
   modelHost: z.string().default(""), // agent host the harness runs over (codex|claude-code|antigravity)
   // OpenRouter: OpenAI-compatible gateway to many models (model ids are namespaced).
   openrouterApiKey: z.string().default(""),
