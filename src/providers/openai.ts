@@ -1,19 +1,38 @@
-/** OpenAI provider (second backend → proves model-agnosticism). */
+/**
+ * Generic OpenAI-compatible provider.
+ *
+ * Parameterized by `baseURL`/`apiKey`/`model`, so it backs any OpenAI-compatible
+ * endpoint. The harness uses it for **OpenRouter** (the single model gateway) — see
+ * `getProvider`. It carries no provider-specific config of its own.
+ */
 
 import OpenAI from "openai";
-import { settings } from "../config.js";
 import type { ProviderCapabilities } from "../contracts.js";
 import { type ChatOpts, type ChatTurn, type CompleteOpts, type Provider, estimateTokens } from "./base.js";
 
+export interface OpenAIProviderOpts {
+  name?: string;
+  apiKey?: string;
+  model?: string;
+  baseURL?: string;
+  defaultHeaders?: Record<string, string>;
+}
+
 export class OpenAIProvider implements Provider {
-  readonly name = "openai";
+  readonly name: string;
   private client: OpenAI;
   private model: string;
 
-  constructor() {
-    if (!settings.openaiApiKey) throw new Error("OPENAI_API_KEY is empty.");
-    this.client = new OpenAI({ apiKey: settings.openaiApiKey });
-    this.model = settings.openaiModel;
+  constructor(opts: OpenAIProviderOpts = {}) {
+    this.name = opts.name ?? "openai-compatible";
+    const apiKey = opts.apiKey ?? "";
+    if (!apiKey) throw new Error(`${this.name}: API key is empty.`);
+    this.client = new OpenAI({
+      apiKey,
+      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+      ...(opts.defaultHeaders ? { defaultHeaders: opts.defaultHeaders } : {}),
+    });
+    this.model = opts.model ?? "openrouter/auto";
   }
 
   async complete(prompt: string, opts: CompleteOpts = {}): Promise<string> {

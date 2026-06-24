@@ -57,22 +57,21 @@ export async function getProvider(which?: string): Promise<Provider> {
         ? settings.modelSecondary
         : role;
 
-  if (name === "gemini") {
-    const { GeminiProvider } = await import("./gemini.js");
-    return new GeminiProvider();
-  }
-  if (name === "google-free" || name === "gemini-free") {
-    const { GeminiProvider } = await import("./gemini.js");
-    return new GeminiProvider({ name, model: settings.geminiFreeModel });
-  }
-  if (name === "openai") {
+  if (name === "openrouter") {
+    // OpenRouter is the single model gateway (OpenAI-compatible) → reuse OpenAIProvider.
     const { OpenAIProvider } = await import("./openai.js");
-    return new OpenAIProvider();
+    return new OpenAIProvider({
+      name: "openrouter",
+      apiKey: settings.openrouterApiKey,
+      model: settings.openrouterModel,
+      baseURL: "https://openrouter.ai/api/v1",
+      defaultHeaders: {
+        "HTTP-Referer": "https://github.com/eversuelo/AITL-Harness-JS",
+        "X-Title": "AITL-Harness",
+      },
+    });
   }
-  if (name === "anthropic") {
-    // legacy, kept behind the port
-    const { AnthropicProvider } = await import("./anthropic.js");
-    return new AnthropicProvider();
-  }
-  throw new Error(`Unknown provider '${name}'. Expected 'gemini', 'google-free', 'gemini-free', 'openai' or 'anthropic'.`);
+  // Host-based backends (codex / claude-code / antigravity) are served by HostAdapters,
+  // not by this raw-model resolver — see src/hosts/ (planned).
+  throw new Error(`Unknown provider '${name}'. The only raw-model provider is 'openrouter'.`);
 }

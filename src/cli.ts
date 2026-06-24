@@ -143,7 +143,7 @@ program
   .command("run")
   .argument("<task>", "Task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | gemini | google-free | gemini-free | openai | anthropic", "primary")
+  .option("--model <m>", "primary | secondary | openrouter", "primary")
   .description("Run the model-agnostic agent loop, persisting the run/transcript to Mongo.")
   .action(async (task, opts) => {
     const { runAgent } = await import("./orchestration/graph.js");
@@ -162,7 +162,7 @@ program
   .command("orchestrate")
   .argument("<task>", "Master task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | gemini | google-free | gemini-free | openai | anthropic", "primary")
+  .option("--model <m>", "primary | secondary | openrouter", "primary")
   .option("--max <n>", "Max parallel sub-agents.", "4")
   .description("Decompose a task, run sub-agents in parallel, and synthesize the result.")
   .action(async (task, opts) => {

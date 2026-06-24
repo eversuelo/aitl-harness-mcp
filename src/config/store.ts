@@ -23,13 +23,8 @@ export const ENV_KEYS = [
   "MODEL_PRIMARY",
   "MODEL_SECONDARY",
   "MODEL_HOST",
-  "GEMINI_API_KEY",
-  "GEMINI_MODEL",
-  "GEMINI_FREE_MODEL",
-  "OPENAI_API_KEY",
-  "OPENAI_MODEL",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_MODEL",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_MODEL",
   "EMBEDDING_PROVIDER",
   "EMBEDDING_MODEL",
   "EMBEDDING_DIMS",
@@ -44,9 +39,7 @@ export type ConfigProfile = Partial<Record<EnvKey, string>>;
 
 /** Keys whose values are secrets and must be masked unless explicitly exported. */
 export const SECRET_KEYS: ReadonlySet<EnvKey> = new Set<EnvKey>([
-  "GEMINI_API_KEY",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
+  "OPENROUTER_API_KEY",
   "VOYAGE_API_KEY",
 ]);
 

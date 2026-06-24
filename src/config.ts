@@ -29,18 +29,15 @@ const SettingsSchema = z.object({
   mongodbUriFallback: z.string().default(""),
   mongodbDb: z.string().default("aitl"),
 
-  // ── Model providers (incremental: gemini -> openai -> antigravity -> gemini-antigravity) ──
-  modelPrimary: z.enum(["gemini", "google-free", "gemini-free", "openai", "anthropic", "antigravity"]).default("gemini"),
-  modelSecondary: z.enum(["gemini", "google-free", "gemini-free", "openai", "anthropic", "antigravity"]).default("openai"),
-  modelHost: z.string().default(""), // optional host wrapping a provider (e.g. antigravity)
-  geminiApiKey: z.string().default(""),
-  geminiModel: z.string().default("gemini-2.5-pro"),
-  geminiFreeModel: z.string().default("gemini-3.5-flash"),
-  openaiApiKey: z.string().default(""),
-  openaiModel: z.string().default("gpt-5.5"),
-  // Legacy, kept behind the ProviderPort (not foco).
-  anthropicApiKey: z.string().default(""),
-  anthropicModel: z.string().default("claude-opus-4-8"),
+  // ── Model backend ──
+  // Raw models go through OpenRouter (one OpenAI-compatible gateway). Agent HOSTS
+  // (codex / claude-code / antigravity) are driven by HostAdapters (modelHost), planned.
+  modelPrimary: z.enum(["openrouter"]).default("openrouter"),
+  modelSecondary: z.enum(["openrouter"]).default("openrouter"),
+  modelHost: z.string().default(""), // agent host the harness runs over (codex|claude-code|antigravity)
+  // OpenRouter: OpenAI-compatible gateway to many models (model ids are namespaced).
+  openrouterApiKey: z.string().default(""),
+  openrouterModel: z.string().default("openrouter/auto"),
 
   // ── Embeddings ───────────────────────────────────────────────────────
   // NOTE: embeddingDims MUST match the vector index (src/db/indexes.ts).
@@ -76,13 +73,8 @@ function loadSettings(): Settings {
     modelPrimary: env("MODEL_PRIMARY"),
     modelSecondary: env("MODEL_SECONDARY"),
     modelHost: env("MODEL_HOST"),
-    geminiApiKey: env("GEMINI_API_KEY"),
-    geminiModel: env("GEMINI_MODEL"),
-    geminiFreeModel: env("GEMINI_FREE_MODEL"),
-    openaiApiKey: env("OPENAI_API_KEY"),
-    openaiModel: env("OPENAI_MODEL"),
-    anthropicApiKey: env("ANTHROPIC_API_KEY"),
-    anthropicModel: env("ANTHROPIC_MODEL"),
+    openrouterApiKey: env("OPENROUTER_API_KEY"),
+    openrouterModel: env("OPENROUTER_MODEL"),
     embeddingProvider: env("EMBEDDING_PROVIDER"),
     embeddingModel: env("EMBEDDING_MODEL"),
     embeddingDims: env("EMBEDDING_DIMS"),
