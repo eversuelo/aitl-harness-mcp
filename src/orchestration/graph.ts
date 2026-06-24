@@ -10,6 +10,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { Document } from "mongodb";
 import { ContextManager } from "../context/manager.js";
 import { hydrate, summarizeSession } from "../memory/lifecycle.js";
 import { makeEvent, makeMessage, makeRun } from "../memory/schemas.js";
@@ -19,6 +20,7 @@ import { DefinitionStore } from "../projectctx/store.js";
 import { type Provider, getProvider } from "../providers/base.js";
 import { denyPathsGate, installDefaultGates } from "../hooks/gates.js";
 import { type ToolRegistry, defaultRegistry } from "../tools/base.js";
+import { withRetry } from "../util/retry.js";
 
 export interface RunAgentOpts {
   provider?: Provider;
@@ -38,6 +40,20 @@ export interface RunAgentOpts {
   denyPaths?: string[];
   /** Register the built-in Read/Write/Shell tools before running (default false). */
   installDefaultTools?: boolean;
+  /** Max provider-call retries on transient errors, per turn (default 3). */
+  retries?: number;
+  /** Resume an existing run by id: reload its transcript and continue the loop. */
+  resume?: string;
+  /**
+   * Termination gate. When the model stops, the run only ends if this returns `true`;
+   * `false` (or a feedback string) is fed back as a new user turn and the loop continues
+   * (bounded by `maxIters`). This turns `maxIters` from the only stop into a goal check.
+   */
+  verify?: (ctx: {
+    finalText: string;
+    convo: Record<string, unknown>[];
+    project: string;
+  }) => boolean | string | Promise<boolean | string>;
 }
 
 export interface RunAgentResult {
@@ -50,6 +66,23 @@ export interface RunAgentResult {
   selected_skills?: string[];
   /** Number of tool calls blocked by a permission gate during the run. */
   gate_denials?: number;
+  /** Final run status. */
+  status?: "done" | "error";
+}
+
+/** Rebuild a live convo from a run's persisted transcript (for resume). */
+function rebuildConvo(msgs: Document[]): Record<string, unknown>[] {
+  return msgs.map((m) => {
+    if (m.role === "assistant") {
+      const out: Record<string, unknown> = { role: "assistant", content: m.content ?? "" };
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) out.tool_calls = m.tool_calls;
+      return out;
+    }
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.tool_call_id ?? undefined, content: m.content ?? "" };
+    }
+    return { role: m.role, content: m.content ?? "" };
+  });
 }
 
 /** Run one agent task to completion. */
@@ -77,9 +110,35 @@ export async function runAgent(
     if (opts.denyPaths?.length) registry.addGate(denyPathsGate(opts.denyPaths));
   }
 
-  const runId = randomUUID();
-  const run = makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
-  await store.db.collection("runs").insertOne({ ...run, _id: runId as never });
+  // ── resolve the run: fresh, or resumed from its durable transcript ──
+  let runId: string;
+  let convo: Record<string, unknown>[];
+  let idx: number;
+  let promptText: string; // the task text used to hydrate context
+  if (typeof opts.resume === "string" && opts.resume) {
+    runId = opts.resume;
+    const doc = await store.db.collection("runs").findOne({ _id: runId as never });
+    if (!doc) throw new Error(`runAgent: cannot resume unknown run '${runId}'`);
+    project = (doc.project as string) ?? project;
+    const msgs = await store.getMessages(runId);
+    convo = rebuildConvo(msgs);
+    idx = msgs.length ? Number(msgs[msgs.length - 1].idx ?? msgs.length) : 0;
+    promptText = String(msgs.find((m) => m.role === "user")?.content ?? prompt);
+    await store.db
+      .collection("runs")
+      .updateOne({ _id: runId as never }, { $set: { status: "running", ended_at: null } });
+    await store.logEvent(makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
+  } else {
+    runId = randomUUID();
+    const run = makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
+    await store.db.collection("runs").insertOne({ ...run, _id: runId as never });
+    convo = [{ role: "user", content: prompt }];
+    idx = 0;
+    promptText = prompt;
+    await store.appendMessage(
+      makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+    );
+  }
 
   // ── session start: build the system prompt from durable context ──
   // Order: recovered memory (mem_context) → relevant skills (skills_route) → base system.
@@ -87,7 +146,7 @@ export async function runAgent(
   let selectedSkills: string[] = [];
   if (opts.hydrate !== false) {
     try {
-      const { preamble, count } = await hydrate(project, prompt, { store });
+      const { preamble, count } = await hydrate(project, promptText, { store });
       if (preamble) preambles.push(preamble);
       await store.logEvent(makeEvent({ project, run_id: runId, type: "hydrate", payload: { recovered: count } }));
     } catch {
@@ -96,7 +155,7 @@ export async function runAgent(
   }
   if (opts.skills !== false) {
     try {
-      const { preamble, selected } = await routeSkills(project, prompt, {
+      const { preamble, selected } = await routeSkills(project, promptText, {
         store: new DefinitionStore("skill", store.db),
       });
       selectedSkills = selected;
@@ -108,67 +167,121 @@ export async function runAgent(
   }
   const system = [...preambles, opts.system].filter(Boolean).join("\n\n") || undefined;
 
-  let convo: Record<string, unknown>[] = [{ role: "user", content: prompt }];
-  let idx = 0;
-  await store.appendMessage(
-    makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
-  );
-
   let finalText = "";
   let gateDenials = 0;
   let it = 0;
-  for (; it < maxIters; it++) {
-    if (ctx.overBudget(convo)) {
-      convo = await ctx.compact(convo);
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
-    }
+  try {
+    for (; it < maxIters; it++) {
+      if (ctx.overBudget(convo)) {
+        convo = await ctx.compact(convo);
+        await store.logEvent(makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
+      }
 
-    const turn = await provider.chat(convo, { tools: registry.schemas(), system });
-    idx += 1;
-    await store.appendMessage(
-      makeMessage({
-        project,
-        run_id: runId,
-        idx,
-        role: "assistant",
-        content: turn.text,
-        tool_calls: turn.tool_calls,
-        tokens: turn.usage.output,
-      }),
-    );
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
-    finalText = turn.text || finalText;
-
-    if (turn.tool_calls.length === 0) break; // model is done
-
-    convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
-    for (const call of turn.tool_calls) {
-      let denyReason: string | null = null;
-      const result = await registry.call(call.name, call.input ?? {}, (reason) => {
-        denyReason = reason;
-      });
+      // Provider call is retried on transient failures (429/5xx/network) with backoff.
+      const turn = await withRetry(
+        () => provider.chat(convo, { tools: registry.schemas(), system }),
+        {
+          retries: opts.retries ?? 3,
+          onRetry: ({ attempt, delayMs, error }) =>
+            store.logEvent(
+              makeEvent({
+                project,
+                run_id: runId,
+                type: "retry",
+                payload: { iter: it, attempt, delay_ms: delayMs, error: String(error).slice(0, 200) },
+              }),
+            ),
+        },
+      );
       idx += 1;
       await store.appendMessage(
-        makeMessage({ project, run_id: runId, idx, role: "tool", content: result }),
+        makeMessage({
+          project,
+          run_id: runId,
+          idx,
+          role: "assistant",
+          content: turn.text,
+          tool_calls: turn.tool_calls,
+          tokens: turn.usage.output,
+        }),
       );
-      // Audit: a denied call emits a `gate` event (it never ran); an allowed call a `tool_call`.
-      if (denyReason !== null) {
-        gateDenials += 1;
-        await store.logEvent(
-          makeEvent({
+      await store.logEvent(makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
+      finalText = turn.text || finalText;
+
+      if (turn.tool_calls.length === 0) {
+        // Termination by verification: if a verifier is supplied, the run ends only when it
+        // passes; a falsey/string result is fed back and the loop continues (bounded by maxIters).
+        if (opts.verify) {
+          const v = await opts.verify({ finalText, convo, project });
+          const ok = v === true;
+          await store.logEvent(
+            makeEvent({
+              project,
+              run_id: runId,
+              type: "verify",
+              payload: { iter: it, ok, feedback: typeof v === "string" ? v.slice(0, 200) : null },
+            }),
+          );
+          if (!ok) {
+            const feedback =
+              typeof v === "string" && v.trim()
+                ? v
+                : "Verification did not pass. Address the remaining issue, then finish.";
+            convo.push({ role: "user", content: feedback });
+            idx += 1;
+            await store.appendMessage(
+              makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
+            );
+            continue;
+          }
+        }
+        break; // model is done (and verification passed, if any)
+      }
+
+      convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
+      for (const call of turn.tool_calls) {
+        let denyReason: string | null = null;
+        const result = await registry.call(call.name, call.input ?? {}, (reason) => {
+          denyReason = reason;
+        });
+        idx += 1;
+        await store.appendMessage(
+          makeMessage({
             project,
             run_id: runId,
-            type: "gate",
-            payload: { name: call.name, decision: "deny", reason: denyReason },
+            idx,
+            role: "tool",
+            content: result,
+            tool_call_id: call.id ?? null,
           }),
         );
-      } else {
-        await store.logEvent(
-          makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
-        );
+        // Audit: a denied call emits a `gate` event (it never ran); an allowed call a `tool_call`.
+        if (denyReason !== null) {
+          gateDenials += 1;
+          await store.logEvent(
+            makeEvent({
+              project,
+              run_id: runId,
+              type: "gate",
+              payload: { name: call.name, decision: "deny", reason: denyReason },
+            }),
+          );
+        } else {
+          await store.logEvent(
+            makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
+          );
+        }
+        convo.push({ role: "tool", tool_call_id: call.id, content: result });
       }
-      convo.push({ role: "tool", tool_call_id: call.id, content: result });
     }
+  } catch (err) {
+    // Unrecoverable failure: mark the run errored (so it never hangs in "running") and rethrow.
+    const message = String(err instanceof Error ? err.message : err).slice(0, 500);
+    await store.db
+      .collection("runs")
+      .updateOne({ _id: runId as never }, { $set: { status: "error", ended_at: new Date(), error: message } });
+    await store.logEvent(makeEvent({ project, run_id: runId, type: "error", payload: { iter: it, message } }));
+    throw err;
   }
 
   // ── session summary: compress the run into durable memory (mem_session_summary) ──
@@ -197,6 +310,7 @@ export async function runAgent(
     summary_slug: summarySlug,
     selected_skills: selectedSkills,
     gate_denials: gateDenials,
+    status: "done",
   };
 }
 

@@ -34,4 +34,4 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Memory/skills lookups use a robust cascade (vector → text → recency) so they work even
   before the Atlas vector index exists.
 - Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0015). Keep ADR ids contiguous and never reuse one.
+  currently 0016). Keep ADR ids contiguous and never reuse one.
