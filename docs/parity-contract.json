@@ -1,0 +1,288 @@
+{
+  "$schema_note": "Source of truth for Python<->TypeScript parity. Mirror this file identically in AITL-Harness/docs/ and AITL-Harness-JS/docs/. Status legend: equivalent (both implemented & aligned) | partial (implemented both but TS still draft / contract rename pending) | missing (absent in one or both) | python-only.",
+  "version": "0.1.0",
+  "generated_phase": "0 - audit",
+  "legend": {
+    "equivalent": "Both implemented, contracts + Mongo docs aligned, contract tests pass.",
+    "partial": "Implemented in both, but TS is an untypechecked draft and/or a Fase 1 contract rename is pending.",
+    "missing": "Not implemented in one or both projects yet.",
+    "python-only": "Intentionally Python-only extension; never ported to TS."
+  },
+  "capabilities": [
+    {
+      "capability": "config",
+      "python_path": "aitl/config.py",
+      "typescript_path": "src/config.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "db.client",
+      "python_path": "aitl/db/client.py",
+      "typescript_path": "src/db/client.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "(connection factory; COLLECTIONS source of truth)",
+      "test_coverage": "smoke",
+      "status": "partial"
+    },
+    {
+      "capability": "db.indexes",
+      "python_path": "aitl/db/indexes.py",
+      "typescript_path": "src/db/indexes.ts",
+      "cli_command": "init-db",
+      "mcp_tool": null,
+      "mongo": "all collections + vector_index (Atlas Vector Search) + text indexes",
+      "test_coverage": "smoke",
+      "status": "partial"
+    },
+    {
+      "capability": "contracts/schemas",
+      "python_path": "aitl/memory/schemas.py",
+      "typescript_path": "src/memory/schemas.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "Run, Message, MemoryDoc, ADR(DecisionDoc), Symbol(SymbolDoc), Convention, Category, Event(LoopEvent)",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Fase 1: rename/alias to shared contract names (DecisionDoc=ADR, SymbolDoc=Symbol, LoopEvent=Event); add GateResult, MetricRecord, ToolCall, LoopStrategy, ProviderPort/ToolPort/MemoryPort."
+    },
+    {
+      "capability": "memory.store",
+      "python_path": "aitl/memory/store.py",
+      "typescript_path": "src/memory/store.ts",
+      "cli_command": "search",
+      "mcp_tool": "search_memory, write_memory",
+      "mongo": "memory, messages, events",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "memory.classifier",
+      "python_path": "aitl/memory/classifier.py",
+      "typescript_path": "src/memory/classifier.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "categories",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "memory.synthesizer",
+      "python_path": "aitl/memory/synthesizer.py",
+      "typescript_path": "src/memory/synthesizer.ts",
+      "cli_command": "synthesize",
+      "mcp_tool": null,
+      "mongo": "memory (type=synthesis), events",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "providers.base (ProviderPort)",
+      "python_path": "aitl/providers/base.py",
+      "typescript_path": "src/providers/base.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Fase 2 DONE: ProviderPort now has countTokens() + capabilities(); canonical contracts live in aitl/contracts.py and src/contracts.ts (ProviderPort/ToolPort/MemoryPort/LoopStrategy + ToolCall/GateResult/MetricRecord/ProviderCapabilities + DecisionDoc/SymbolDoc/LoopEvent aliases)."
+    },
+    {
+      "capability": "providers.gemini",
+      "python_path": "aitl/providers/gemini.py",
+      "typescript_path": "src/providers/gemini.ts",
+      "cli_command": "run --model gemini",
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Fase 3 DONE (plumbing): implemented in both, MODEL_PRIMARY=gemini, getProvider('gemini') resolves behind ProviderPort. Pending: contract tests with fakes + real-API verification."
+    },
+    {
+      "capability": "providers.openai",
+      "python_path": "aitl/providers/openai.py",
+      "typescript_path": "src/providers/openai.ts",
+      "cli_command": "run --model openai",
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Fase 4: provider #2."
+    },
+    {
+      "capability": "providers.anthropic (legacy)",
+      "python_path": "aitl/providers/anthropic.py",
+      "typescript_path": "src/providers/anthropic.ts",
+      "cli_command": "run --model anthropic",
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Kept behind ProviderPort; not foco."
+    },
+    {
+      "capability": "providers.antigravity (host/provider)",
+      "python_path": "aitl/providers/antigravity.py",
+      "typescript_path": "src/providers/antigravity.ts",
+      "cli_command": "run --model antigravity | gemini-antigravity",
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "missing",
+      "notes": "Fase 5/6: HostProvider/HostAdapter per real capability. NOTE: an adapters/antigravity (export) already exists in both and is a DIFFERENT thing."
+    },
+    {
+      "capability": "orchestration.graph (loop)",
+      "python_path": "aitl/orchestration/graph.py",
+      "typescript_path": "src/orchestration/graph.ts",
+      "cli_command": "run",
+      "mcp_tool": null,
+      "mongo": "runs, messages, events",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "orchestration.checkpointer",
+      "python_path": "aitl/orchestration/checkpointer.py",
+      "typescript_path": "src/orchestration/checkpointer.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "(LangGraph checkpoints)",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "context.manager",
+      "python_path": "aitl/context/manager.py",
+      "typescript_path": "src/context/manager.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "events (compaction)",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "tools (base/filesystem/shell)",
+      "python_path": "aitl/tools/{base,filesystem,shell}.py",
+      "typescript_path": "src/tools/{base,filesystem,shell}.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "hooks.gates",
+      "python_path": "aitl/hooks/gates.py",
+      "typescript_path": "src/hooks/gates.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "events (gate)",
+      "test_coverage": "none",
+      "status": "partial"
+    },
+    {
+      "capability": "ingest (embedder/markdown/transcripts)",
+      "python_path": "aitl/ingest/{embedder,markdown,transcripts}.py",
+      "typescript_path": "src/ingest/{embedder,markdown,transcripts}.ts",
+      "cli_command": "ingest",
+      "mcp_tool": "ingest_path",
+      "mongo": "memory, messages",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Embeddings configurable: local (sentence-transformers / Transformers.js) | voyage. Dims must match vector index."
+    },
+    {
+      "capability": "repomap (parser/ranker/store)",
+      "python_path": "aitl/repomap/{parser,ranker,store}.py",
+      "typescript_path": "src/repomap/{parser,ranker,store}.ts",
+      "cli_command": "repomap",
+      "mcp_tool": "get_repomap",
+      "mongo": "symbols",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS store.ts pending; tree-sitter via web-tree-sitter wasm (lazy, degrades). Fix ranker.ts node-key separator."
+    },
+    {
+      "capability": "decisions.adr",
+      "python_path": "aitl/decisions/adr.py",
+      "typescript_path": "src/decisions/adr.ts",
+      "cli_command": "adr-sync",
+      "mcp_tool": "list_decisions, record_decision",
+      "mongo": "decisions",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS pending."
+    },
+    {
+      "capability": "conventions.loader",
+      "python_path": "aitl/conventions/loader.py",
+      "typescript_path": "src/conventions/loader.ts",
+      "cli_command": null,
+      "mcp_tool": null,
+      "mongo": "conventions",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS pending."
+    },
+    {
+      "capability": "adapters (agents_md/cursor/copilot/antigravity/kiro/trae)",
+      "python_path": "aitl/adapters/*.py",
+      "typescript_path": "src/adapters/*.ts",
+      "cli_command": "export",
+      "mcp_tool": null,
+      "mongo": "conventions, decisions (read for canon)",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS pending. AGENTS.md is the canon."
+    },
+    {
+      "capability": "eval.runner",
+      "python_path": "aitl/eval/runner.py",
+      "typescript_path": "src/eval/runner.ts",
+      "cli_command": "eval",
+      "mcp_tool": null,
+      "mongo": "(MetricRecord)",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "Fase 8 adds `eval` CLI command (not present in current Python cli.py). TS runner pending. Concrete benchmarks remain TODO in both."
+    },
+    {
+      "capability": "mcpserver",
+      "python_path": "aitl/mcpserver/server.py",
+      "typescript_path": "src/mcpserver/server.ts",
+      "cli_command": "mcp",
+      "mcp_tool": "search_memory, write_memory, ingest_path, get_repomap, list_decisions, record_decision, graphify",
+      "mongo": "(reads all durable collections)",
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS pending (@modelcontextprotocol/sdk McpServer)."
+    },
+    {
+      "capability": "cli",
+      "python_path": "aitl/cli.py",
+      "typescript_path": "src/cli.ts",
+      "cli_command": "init-db, ingest, search, run, synthesize, repomap, adr-sync, export, mcp, eval",
+      "mcp_tool": null,
+      "mongo": null,
+      "test_coverage": "none",
+      "status": "partial",
+      "notes": "TS pending (commander). Python cli.py currently lacks `eval`; add in Fase 8."
+    },
+    {
+      "capability": "prompt_insights",
+      "python_path": "aitl/prompt_insights/{__init__,runner,parser,schemas,store,cli}.py",
+      "typescript_path": null,
+      "cli_command": "prompt-insights analyze|history|apply",
+      "mcp_tool": null,
+      "mongo": "prompt_insight_runs, prompt_frictions, prompt_rule_recommendations, prompt_hook_recommendations, prompt_skill_recommendations",
+      "test_coverage": "none",
+      "status": "python-only",
+      "notes": "Fase 9 DONE. schemas/parser/store/runner/cli implemented; CLI sub-app `prompt-insights {analyze,history,apply}` wired. Own 5 collections (does not touch shared COLLECTIONS). Non-destructive: apply writes docs/prompt-insights-applied.md + flips applied flags; live CLAUDE.md/settings.json mutation is a guarded TODO. Real `claude-insights` invocation flags = TODO to verify."
+    }
+  ]
+}
