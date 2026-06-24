@@ -26,26 +26,28 @@
     --radius: 0.5rem;
   }
 
+  /* GitHub dark ("dark default") palette. */
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 5.5%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 240 10% 3.9%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 50%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 217 91% 60%;
+    --background: 216 28% 7%; /* #0d1117 canvas */
+    --foreground: 210 33% 93%; /* #e6edf3 text */
+    --card: 215 21% 11%; /* #161b22 canvas subtle */
+    --card-foreground: 210 33% 93%;
+    --popover: 215 21% 11%;
+    --popover-foreground: 210 33% 93%;
+    --primary: 212 92% 58%; /* #2f81f7 accent blue */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 213 15% 15%; /* #21262d */
+    --secondary-foreground: 210 33% 93%;
+    --muted: 213 15% 15%;
+    --muted-foreground: 212 9% 58%; /* #8b949e */
+    --accent: 213 15% 18%;
+    --accent-foreground: 210 33% 93%;
+    --destructive: 2 92% 63%; /* #f85149 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 212 12% 21%; /* #30363d */
+    --input: 212 12% 21%;
+    --ring: 212 92% 58%;
+    --success: 137 55% 47%; /* #3fb950 */
   }
 }
 

@@ -1,4 +1,11 @@
 allowBuilds:
-  esbuild: false
+  esbuild: true
   protobufjs: false
-  sharp: false
+  sharp: true
+
+# pnpm 10+ blocks dependency build scripts by default. The local embedder
+# (@xenova/transformers → sharp) needs sharp's prebuilt native binary, and Vite needs
+# esbuild's. Allow exactly those two to run their install scripts.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp

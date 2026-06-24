@@ -59,11 +59,12 @@ export class ADRStore {
     return adr.id;
   }
 
-  /** Mirror all docs/adr/*.md into Mongo. Returns ADR ids written. */
+  /** Mirror all docs/adr/NNNN-*.md into Mongo. Returns ADR ids written. */
   async syncDir(directory: string, project: string): Promise<string[]> {
     const entries = await fs.readdir(directory, { withFileTypes: true });
     const mdFiles = entries
-      .filter((e) => e.isFile() && extname(e.name) === ".md")
+      // Only numbered ADR files (e.g. 0001-*.md); skip README/index and other notes.
+      .filter((e) => e.isFile() && extname(e.name) === ".md" && /^\d{3,4}[-.]/.test(e.name))
       .map((e) => join(directory, e.name))
       .sort();
     const ids: string[] = [];

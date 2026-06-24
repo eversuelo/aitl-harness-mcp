@@ -15,6 +15,8 @@ export const COLLECTIONS = [
   "memory",
   "decisions",
   "prompts",
+  "mcp_context",
+  "mcp_tool_calls",
   "symbols",
   "conventions",
   "categories",

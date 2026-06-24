@@ -23,6 +23,26 @@ export interface MemoryInput {
   tags: string[];
 }
 
+export interface DecisionDoc {
+  project: string;
+  id: string;
+  title: string;
+  status: string;
+  context: string;
+  decision: string;
+  consequences: string;
+  created_at?: string;
+}
+
+export interface PromptDoc {
+  project: string;
+  prompt: string;
+  title?: string;
+  source?: string;
+  tags?: string[];
+  created_at?: string;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -59,4 +79,10 @@ export const api = {
     fetch(`/api/memory/${encodeURIComponent(slug)}?project=${encodeURIComponent(project)}`, {
       method: "DELETE",
     }).then(json<{ deleted: boolean }>),
+
+  decisions: (project: string) =>
+    fetch(`/api/decisions?project=${encodeURIComponent(project)}`).then(json<DecisionDoc[]>),
+
+  prompts: (project: string) =>
+    fetch(`/api/prompts?project=${encodeURIComponent(project)}`).then(json<PromptDoc[]>),
 };

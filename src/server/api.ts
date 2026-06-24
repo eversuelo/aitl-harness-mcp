@@ -151,6 +151,41 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
+  // ── decisions / ADRs ──────────────────────────────────────────────────────
+  if (pathname === "/api/decisions" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const rows = await store.db
+      .collection("decisions")
+      .find({ project }, { projection: { embedding: 0 } })
+      .sort({ id: 1 })
+      .toArray();
+    return send(res, 200, rows);
+  }
+
+  const d = /^\/api\/decisions\/([^/]+)$/.exec(pathname);
+  if (d && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const id = decodeURIComponent(d[1]);
+    const doc = await store.db
+      .collection("decisions")
+      .findOne({ project, id }, { projection: { embedding: 0 } });
+    if (!doc) throw new HttpError(404, `No decision '${id}' in project '${project}'.`);
+    return send(res, 200, doc);
+  }
+
+  // ── prompt history ────────────────────────────────────────────────────────
+  if (pathname === "/api/prompts" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const { PromptStore } = await import("../prompts/store.js");
+    const rows = await new PromptStore().list(project, {
+      limit: searchParams.has("limit") ? Number(searchParams.get("limit")) : 200,
+    });
+    return send(res, 200, rows);
+  }
+
   throw new HttpError(404, `No route for ${method} ${pathname}.`);
 }
 
