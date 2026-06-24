@@ -68,7 +68,12 @@ export class ToolRegistry {
     }
     const tool = this.tools.get(name);
     if (tool === undefined) return `[error] unknown tool '${name}'`;
-    return tool.run(args);
+    try {
+      return await tool.run(args);
+    } catch (err) {
+      // A throwing tool becomes a result the model can react to, never a crashed run.
+      return `[tool error] ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 }
 

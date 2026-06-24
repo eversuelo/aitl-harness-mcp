@@ -41,6 +41,11 @@ export class MemoryStore {
     await this.db.collection("events").insertOne(event);
   }
 
+  /** Read a run's transcript in order (used to resume a run from its durable state). */
+  async getMessages(runId: string): Promise<Document[]> {
+    return this.db.collection("messages").find({ run_id: runId }).sort({ idx: 1 }).toArray();
+  }
+
   // ── semantic search (Atlas Vector Search) ────────────────────────────
   /**
    * Run a `$vectorSearch` over `collection.embedding`.

@@ -51,6 +51,7 @@ export const MessageSchema = z.object({
   role: z.enum(ROLES),
   content: z.string(),
   tool_calls: z.array(ToolCallSchema).default([]),
+  tool_call_id: z.string().nullable().default(null), // links a tool result to its call (resume)
   tokens: z.number().int().default(0),
   category: z.string().nullable().default(null),
   tags: z.array(z.string()).default([]),
@@ -125,7 +126,7 @@ export type Category = z.infer<typeof CategorySchema>;
 export const EventSchema = z.object({
   ...BaseShape,
   run_id: z.string().nullable().default(null),
-  type: z.enum(["loop_iter", "compaction", "tool_call", "gate", "synthesis", "hydrate", "session_summary", "skills_route"]),
+  type: z.enum(["loop_iter", "compaction", "tool_call", "gate", "synthesis", "hydrate", "session_summary", "skills_route", "retry", "verify", "error", "resume"]),
   payload: z.record(z.unknown()).default({}),
   ts: z.date().default(now),
 });
