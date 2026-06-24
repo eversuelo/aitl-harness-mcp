@@ -10,6 +10,18 @@ import "dotenv/config";
 import { z } from "zod";
 import { type EnvKey, readConfigFile } from "./config/store.js";
 
+function normalizeMongoUri(uri: string | undefined): string | undefined {
+  if (uri === undefined) return undefined;
+  const queryIndex = uri.indexOf("?");
+  if (queryIndex === -1) return uri;
+
+  // JSON-escaped Atlas URIs sometimes get copied into dotenv files, where
+  // `\u0026` stays literal and breaks MongoDB option parsing.
+  const prefix = uri.slice(0, queryIndex + 1);
+  const query = uri.slice(queryIndex + 1).replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=");
+  return `${prefix}${query}`;
+}
+
 const SettingsSchema = z.object({
   // ── MongoDB ──────────────────────────────────────────────────────────
   mongodbUri: z.string().default("mongodb://localhost:27017/?directConnection=true"),
@@ -58,8 +70,8 @@ function loadSettings(): Settings {
   };
 
   const parsed = SettingsSchema.parse({
-    mongodbUri: env("MONGODB_URI"),
-    mongodbUriFallback: env("MONGODB_URI_FALLBACK"),
+    mongodbUri: normalizeMongoUri(env("MONGODB_URI")),
+    mongodbUriFallback: normalizeMongoUri(env("MONGODB_URI_FALLBACK")),
     mongodbDb: env("MONGODB_DB"),
     modelPrimary: env("MODEL_PRIMARY"),
     modelSecondary: env("MODEL_SECONDARY"),

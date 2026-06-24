@@ -17,6 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { settings } from "../config.js";
 import { connectWithFallback, getDb } from "../db/client.js";
 import { embedOne } from "../ingest/embedder.js";
 import { extractLinks, parseMarkdownDir } from "../ingest/markdown.js";
@@ -829,7 +830,7 @@ export async function mainHttp(opts: HttpOptions = {}): Promise<void> {
     auth: token ? "bearer" : "none",
     dnsRebindingProtection: dnsProtection,
     allowedHosts,
-    db: maskUri(process.env.MONGODB_URI),
+    db: maskUri(settings.mongodbUri),
     logFile: logFile ?? null,
   });
 }
@@ -861,7 +862,7 @@ export async function main(): Promise<void> {
     transport: "stdio",
     cwd: process.cwd(),
     node: process.version,
-    db: maskUri(process.env.MONGODB_URI),
+    db: maskUri(settings.mongodbUri),
     logFile: logFile ?? null,
   });
   await connectDb();

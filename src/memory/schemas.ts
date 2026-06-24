@@ -125,7 +125,7 @@ export type Category = z.infer<typeof CategorySchema>;
 export const EventSchema = z.object({
   ...BaseShape,
   run_id: z.string().nullable().default(null),
-  type: z.enum(["loop_iter", "compaction", "tool_call", "gate", "synthesis", "hydrate", "session_summary"]),
+  type: z.enum(["loop_iter", "compaction", "tool_call", "gate", "synthesis", "hydrate", "session_summary", "skills_route"]),
   payload: z.record(z.unknown()).default({}),
   ts: z.date().default(now),
 });

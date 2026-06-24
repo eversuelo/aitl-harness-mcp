@@ -33,6 +33,8 @@ export { getAdapter, loadCanon } from "./adapters/base.js";
 export { EvalRunner } from "./eval/runner.js";
 export { buildServer } from "./mcpserver/server.js";
 export { DefinitionStore } from "./projectctx/store.js";
+export { routeSkills } from "./projectctx/router.js";
+export type { RouteSkillsResult } from "./projectctx/router.js";
 export {
   AGENTS_COLLECTION,
   SKILLS_COLLECTION,

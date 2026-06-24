@@ -14,6 +14,8 @@ import { ContextManager } from "../context/manager.js";
 import { hydrate, summarizeSession } from "../memory/lifecycle.js";
 import { makeEvent, makeMessage, makeRun } from "../memory/schemas.js";
 import { MemoryStore } from "../memory/store.js";
+import { routeSkills } from "../projectctx/router.js";
+import { DefinitionStore } from "../projectctx/store.js";
 import { type Provider, getProvider } from "../providers/base.js";
 import { type ToolRegistry, defaultRegistry } from "../tools/base.js";
 
@@ -25,6 +27,8 @@ export interface RunAgentOpts {
   maxIters?: number;
   /** Load relevant durable memory into the system prompt at session start (default true). */
   hydrate?: boolean;
+  /** Inject relevant project skills into the system prompt at session start (default true). */
+  skills?: boolean;
   /** Write a classified session summary to memory at session end (default true). */
   summarize?: boolean;
 }
@@ -35,6 +39,8 @@ export interface RunAgentResult {
   iters: number;
   /** Slug of the session-summary memory doc written at the end, if any. */
   summary_slug?: string;
+  /** Names of the project skills injected into the system prompt at start. */
+  selected_skills?: string[];
 }
 
 /** Run one agent task to completion. */
@@ -53,17 +59,32 @@ export async function runAgent(
   const run = makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
   await store.db.collection("runs").insertOne({ ...run, _id: runId as never });
 
-  // ── hydrate: load relevant durable memory into the system prompt (mem_context) ──
-  let system = opts.system;
+  // ── session start: build the system prompt from durable context ──
+  // Order: recovered memory (mem_context) → relevant skills (skills_route) → base system.
+  const preambles: string[] = [];
+  let selectedSkills: string[] = [];
   if (opts.hydrate !== false) {
     try {
       const { preamble, count } = await hydrate(project, prompt, { store });
-      if (preamble) system = [preamble, opts.system].filter(Boolean).join("\n\n");
+      if (preamble) preambles.push(preamble);
       await store.logEvent(makeEvent({ project, run_id: runId, type: "hydrate", payload: { recovered: count } }));
     } catch {
       // Hydration is best-effort; never block the run.
     }
   }
+  if (opts.skills !== false) {
+    try {
+      const { preamble, selected } = await routeSkills(project, prompt, {
+        store: new DefinitionStore("skill", store.db),
+      });
+      selectedSkills = selected;
+      if (preamble) preambles.push(preamble);
+      await store.logEvent(makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected } }));
+    } catch {
+      // Skill routing is best-effort; never block the run.
+    }
+  }
+  const system = [...preambles, opts.system].filter(Boolean).join("\n\n") || undefined;
 
   let convo: Record<string, unknown>[] = [{ role: "user", content: prompt }];
   let idx = 0;
@@ -130,7 +151,13 @@ export async function runAgent(
   await store.db
     .collection("runs")
     .updateOne({ _id: runId as never }, { $set: { status: "done", ended_at: new Date() } });
-  return { run_id: runId, final_text: finalText, iters: it + 1, summary_slug: summarySlug };
+  return {
+    run_id: runId,
+    final_text: finalText,
+    iters: it + 1,
+    summary_slug: summarySlug,
+    selected_skills: selectedSkills,
+  };
 }
 
 /**
