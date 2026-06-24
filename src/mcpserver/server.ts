@@ -283,10 +283,10 @@ export function buildServer(): McpServer {
     },
     async ({ project, messages, title, summary, source, model, run_id, tags, context, metadata }) => {
       return runLogged("save_mcp_context", { project, title, summary, source, model, run_id, tags, messages, context, metadata }, async () => {
-        const id = randomUUID();
+        const contextId = randomUUID();
         const contextBody = context ?? {};
         const doc = {
-          _id: id,
+          context_id: contextId,
           project,
           title,
           summary,
@@ -301,8 +301,18 @@ export function buildServer(): McpServer {
           created_at: new Date(),
           updated_at: new Date(),
         };
-        await getDb().collection("mcp_context").insertOne(doc);
-        return text({ id, project, title, source, run_id: doc.run_id, messages: messages.length, tags: doc.tags, created_at: doc.created_at });
+        const result = await getDb().collection("mcp_context").insertOne(doc);
+        return text({
+          id: String(result.insertedId),
+          context_id: contextId,
+          project,
+          title,
+          source,
+          run_id: doc.run_id,
+          messages: messages.length,
+          tags: doc.tags,
+          created_at: doc.created_at,
+        });
       });
     },
   );
