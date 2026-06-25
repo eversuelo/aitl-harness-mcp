@@ -36,12 +36,18 @@ async function relevant(
   project: string,
   prompt: string,
   limit: number,
+  useVector = true,
 ): Promise<Record<string, unknown>[]> {
-  try {
-    const hits = await store.vectorSearch(collection, await embedOne(prompt), { project, limit });
-    if (hits.length > 0) return hits;
-  } catch {
-    // fall through to lexical
+  // The vector branch loads the embedding model (seconds on first use). A fast caller
+  // (e.g. a per-prompt hook) can skip it with useVector=false and go straight to the
+  // lexical/recency path, which is what runs anyway until the Atlas vector index exists.
+  if (useVector && prompt.trim()) {
+    try {
+      const hits = await store.vectorSearch(collection, await embedOne(prompt), { project, limit });
+      if (hits.length > 0) return hits;
+    } catch {
+      // fall through to lexical
+    }
   }
   try {
     const hits = await store.textSearch(collection, prompt, { project, limit });
@@ -162,6 +168,8 @@ export interface HydrateOpts {
   conventions?: boolean;
   repomap?: boolean;
   repomapTokens?: number;
+  /** Use embeddings for relevance (vector→text→recency). Set false for a fast hook path. */
+  vector?: boolean;
 }
 
 /**
@@ -175,16 +183,17 @@ export async function hydrate(
   opts: HydrateOpts = {},
 ): Promise<HydrateResult> {
   const store = opts.store ?? new MemoryStore();
+  const useVector = opts.vector !== false;
   const parts: string[] = [];
   const sections = { memory: 0, decisions: 0, conventions: 0, repomap: 0 };
 
   if (opts.memory !== false) {
-    const sec = renderMemory(await relevant(store, "memory", project, prompt, opts.limit ?? 6), opts.maxChars ?? 4000);
+    const sec = renderMemory(await relevant(store, "memory", project, prompt, opts.limit ?? 6, useVector), opts.maxChars ?? 4000);
     if (sec.text) parts.push(sec.text);
     sections.memory = sec.count;
   }
   if (opts.decisions !== false) {
-    const sec = renderDecisions(await relevant(store, "decisions", project, prompt, 4), 1800);
+    const sec = renderDecisions(await relevant(store, "decisions", project, prompt, 4, useVector), 1800);
     if (sec.text) parts.push(sec.text);
     sections.decisions = sec.count;
   }
@@ -243,7 +252,7 @@ export async function summarizeSession(
   project: string,
   runId: string,
   convo: Msg[],
-  opts: { store?: MemoryStore; provider?: Provider } = {},
+  opts: { store?: MemoryStore; provider?: Provider; extraTags?: string[] } = {},
 ): Promise<SessionSummary | null> {
   const store = opts.store ?? new MemoryStore();
   const llm = opts.provider ?? null;
@@ -254,7 +263,14 @@ export async function summarizeSession(
   // Auto-classify (rules-first; LLM only if a provider was supplied) → the auto-save trigger.
   const category = await new Classifier(undefined, llm).classifyText(summary);
   const type: MemoryDoc["type"] = "project";
-  const tags = ["session", ...(TRIGGER_CATEGORIES.has(category) ? [category] : [])];
+  // De-dup tags: base session tag + the trigger category + caller extras (e.g. component:src/foo).
+  const tags = [
+    ...new Set([
+      "session",
+      ...(TRIGGER_CATEGORIES.has(category) ? [category] : []),
+      ...(opts.extraTags ?? []),
+    ]),
+  ];
   const slug = `session-${runId.slice(0, 8)}`;
 
   const doc: MemoryDoc = makeMemoryDoc({

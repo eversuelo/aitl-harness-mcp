@@ -497,6 +497,86 @@ program
     await closeClient();
   });
 
+// ── hydrate (print a durable-context preamble for injection into a host session) ──
+// Designed for a Claude Code UserPromptSubmit/SessionStart hook: stdout is added to the
+// model's context. Best-effort and silent on failure so it never breaks the session.
+program
+  .command("hydrate")
+  .argument("[prompt]", "Prompt to bias relevance (else read from the hook JSON on stdin).")
+  .option("--project <project>", "Project scope.", "aitl-js")
+  .option("--component <name>", "Bias retrieval toward a named component.")
+  .option("--no-vector", "Skip embeddings (text→recency fast path). Recommended for per-prompt hooks.")
+  .option("--max-chars <n>", "Memory budget in characters.", "4000")
+  .description("Print a durable-context preamble (memory + ADRs + conventions + repo map) to inject into an external agent host.")
+  .action(async (promptArg, opts) => {
+    try {
+      let prompt = String(promptArg ?? "");
+      if (!prompt) {
+        const { readHookStdin } = await import("./context/capture.js");
+        const hook = await readHookStdin();
+        prompt = String(hook.prompt ?? "");
+      }
+      if (opts.component) prompt = `${opts.component} ${prompt}`.trim();
+      const { hydrate } = await import("./memory/lifecycle.js");
+      const res = await hydrate(opts.project, prompt, {
+        vector: opts.vector,
+        maxChars: Number(opts.maxChars),
+      });
+      if (res.preamble.trim()) process.stdout.write(`${res.preamble}\n`);
+    } catch (err) {
+      // Never fail a host hook: report on stderr, emit nothing to stdout.
+      console.error(`[aitl hydrate] ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await closeClient();
+    }
+  });
+
+// ── capture-session (persist a finished host session into durable memory) ─────────
+// Designed for a Claude Code Stop hook: reads the hook JSON on stdin (transcript_path,
+// session_id, cwd), summarizes the transcript into ONE durable memory doc + a context
+// snapshot, auto-tagged by the components (dirs) the session edited.
+program
+  .command("capture-session")
+  .option("--project <project>", "Project scope.", "aitl-js")
+  .option("--transcript <path>", "Transcript JSONL path (else read from the Stop-hook JSON on stdin).")
+  .option("--session <id>", "Session id used as the run id (else from stdin or random).")
+  .option("--cwd <dir>", "Working dir used to derive component tags (else from stdin or process cwd).")
+  .option("--component <name>", "Explicit component name to tag (added to the auto dir tags).")
+  .option("--source <source>", "Host label for tags/snapshot.", "claude-code")
+  .description("Capture a finished external-host session into durable memory + a context snapshot, auto-tagged by component.")
+  .action(async (opts) => {
+    try {
+      let transcript = opts.transcript as string | undefined;
+      let session = opts.session as string | undefined;
+      let cwd = opts.cwd as string | undefined;
+      if (!transcript || !session) {
+        const { readHookStdin } = await import("./context/capture.js");
+        const hook = await readHookStdin();
+        transcript = transcript ?? (hook.transcript_path as string | undefined);
+        session = session ?? (hook.session_id as string | undefined);
+        cwd = cwd ?? (hook.cwd as string | undefined);
+      }
+      const { captureSession } = await import("./context/capture.js");
+      const res = await captureSession({
+        project: opts.project,
+        transcriptPath: transcript,
+        sessionId: session,
+        cwd,
+        component: opts.component,
+        source: opts.source,
+      });
+      console.error(
+        `[aitl capture-session] run=${res.run_id.slice(0, 8)} ` +
+          `memory=${res.summary?.slug ?? "(none)"} ` +
+          `components=[${res.components.join(", ")}] snapshot=${res.context_id ? "ok" : "skipped"}`,
+      );
+    } catch (err) {
+      console.error(`[aitl capture-session] ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await closeClient();
+    }
+  });
+
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);
   process.exit(1);
