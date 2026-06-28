@@ -60,6 +60,11 @@ const SettingsSchema = z.object({
   bootstrapEmail: z.string().default(""),
   bootstrapPassword: z.string().default(""),
   bootstrapRole: z.string().default("root"),
+  // When no valid seed exists and `users` is empty, auto-generate a local root.
+  // Set AITL_BOOTSTRAP_AUTOGEN=false (multi-tenant) to disable the fallback.
+  bootstrapAutogen: z
+    .preprocess((v) => (v === undefined ? undefined : !/^(false|0|no|off)$/i.test(String(v))), z.boolean())
+    .default(true),
 });
 
 export type Settings = z.infer<typeof SettingsSchema> & { adapters: string[] };
@@ -94,6 +99,7 @@ function loadSettings(): Settings {
     bootstrapEmail: env("AITL_BOOTSTRAP_EMAIL"),
     bootstrapPassword: env("AITL_BOOTSTRAP_PASSWORD"),
     bootstrapRole: env("AITL_BOOTSTRAP_ROLE"),
+    bootstrapAutogen: env("AITL_BOOTSTRAP_AUTOGEN"),
   });
   return {
     ...parsed,

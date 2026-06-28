@@ -99,19 +99,23 @@ program
   .command("ingest")
   .requiredOption("--path <dir>", "Directory of markdown memory and/or transcripts.")
   .requiredOption("--project <project>", "Project scope.")
+  .option("--repo <repo>", "Repo sub-scope to tag the ingested docs with.")
   .description("Parse -> classify -> embed -> upsert markdown memory.")
   .action(async (opts) => {
     const { embedOne } = await import("./ingest/embedder.js");
     const { parseMarkdownDir } = await import("./ingest/markdown.js");
     const { Classifier } = await import("./memory/classifier.js");
     const { MemoryStore } = await import("./memory/store.js");
+    const { currentBranch } = await import("./util/git.js");
     const store = new MemoryStore();
     const clf = new Classifier();
+    const branch = currentBranch();
     const docs = await parseMarkdownDir(opts.path, opts.project);
     for (const doc of docs) {
+      if (opts.repo) doc.repo = opts.repo;
       await clf.classifyMemory(doc);
       doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-      await store.upsertMemory(doc);
+      await store.upsertMemory(doc, { actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role }, branch });
     }
     console.log(`Ingested ${docs.length} memory docs into project '${opts.project}'.`);
     await closeClient();
@@ -219,13 +223,37 @@ program
   .command("repomap")
   .requiredOption("--root <dir>", "Codebase root to map.")
   .requiredOption("--project <project>", "Project scope.")
+  .option("--repo <repo>", "Repo sub-scope (rebuilds only this repo's symbols).")
   .description("Build the tree-sitter + PageRank repo map and print the top symbols.")
   .action(async (opts) => {
     const { RepoMap } = await import("./repomap/store.js");
     const rm = new RepoMap();
-    const n = await rm.build(opts.root, opts.project);
-    console.log(`Indexed ${n} symbols.\n`);
-    console.log(await rm.render(opts.project));
+    const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
+    console.log(`Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`);
+    console.log(await rm.render(opts.project, opts.repo ? { repo: opts.repo } : {}));
+    await closeClient();
+  });
+
+program
+  .command("index-repo")
+  .requiredOption("--root <dir>", "Repo root to index.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--repo <repo>", "Repo sub-scope (tags symbols/memory).")
+  .option("--memory <dir>", "Directory of markdown memory to ingest.")
+  .option("--adr <dir>", "ADR directory to sync (default: <root>/docs/adr).")
+  .description("Master indexer: build repo map + ingest memory + sync ADRs in one pass.")
+  .action(async (opts) => {
+    const { indexRepo } = await import("./indexing/indexRepo.js");
+    const r = await indexRepo({
+      project: opts.project,
+      root: opts.root,
+      repo: opts.repo ?? null,
+      memoryDir: opts.memory,
+      adrDir: opts.adr,
+      actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role },
+    });
+    console.log(`Indexed project '${r.project}'${r.repo ? ` repo '${r.repo}'` : ""}${r.branch ? ` @${r.branch}` : ""}:`);
+    for (const s of r.steps) console.log(`  - ${s}`);
     await closeClient();
   });
 
@@ -236,7 +264,8 @@ program
   .description("Mirror Nygard-format ADRs from a directory into the `decisions` collection.")
   .action(async (opts) => {
     const { ADRStore } = await import("./decisions/adr.js");
-    const ids = await new ADRStore().syncDir(opts.dir, opts.project);
+    const { currentBranch } = await import("./util/git.js");
+    const ids = await new ADRStore().syncDir(opts.dir, opts.project, { actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role }, branch: currentBranch() });
     console.log(`Synced ADRs: ${ids.join(", ")}`);
     await closeClient();
   });
@@ -579,6 +608,233 @@ prompt
     const rows = await new PromptStore().search(opts.project, query, Number(opts.limit));
     for (const r of rows) console.log(`- ${String(r.prompt).replace(/\s+/g, " ").slice(0, 120)}`);
     if (!rows.length) console.log("(no matches)");
+    await closeClient();
+  });
+
+// ── revision history (ADR-0027) ──────────────────────────────────────────────
+async function showHistory(
+  kind: "decision" | "memory",
+  ref: string,
+  opts: { project: string; diff?: boolean; from?: string; to?: string; fields: readonly string[] },
+): Promise<void> {
+  const { loadVersionChain } = await import("./memory/history.js");
+  const { diffFields } = await import("./util/diff.js");
+  const chain = await loadVersionChain(kind, opts.project, ref);
+  if (!chain.length) {
+    console.log(`(no ${kind} '${ref}' in project '${opts.project}')`);
+    return;
+  }
+  if (!opts.diff) {
+    console.log(`History of ${kind} '${ref}' (${chain.length} version(s)):`);
+    for (const e of chain) {
+      const when = e.archived_at instanceof Date ? e.archived_at.toISOString().slice(0, 16).replace("T", " ") : e.live ? "current" : "";
+      const who = e.actor_id ? ` by ${e.actor_id}` : "";
+      const br = e.branch ? ` @${e.branch}` : "";
+      const label = kind === "decision" ? String(e.doc.title ?? "") : String(e.doc.description ?? "");
+      console.log(`  v${e.version}${e.live ? " (live)" : ""}  ${when}${who}${br}  ${label}`.trimEnd());
+    }
+    return;
+  }
+  // Diff mode: consecutive pairs, or a single from→to pair.
+  const byVersion = new Map(chain.map((e) => [e.version, e]));
+  const pairs: [number, number][] = [];
+  if (opts.from && opts.to) {
+    pairs.push([Number(opts.from), Number(opts.to)]);
+  } else {
+    for (let i = 1; i < chain.length; i++) pairs.push([chain[i - 1].version, chain[i].version]);
+  }
+  if (!pairs.length) {
+    console.log("(only one version — nothing to diff)");
+    return;
+  }
+  for (const [a, b] of pairs) {
+    const ea = byVersion.get(a);
+    const eb = byVersion.get(b);
+    if (!ea || !eb) {
+      console.log(`v${a} → v${b}: (version not found)`);
+      continue;
+    }
+    const lines = diffFields(ea.doc, eb.doc, opts.fields);
+    console.log(`\n── v${a} → v${b} ──`);
+    if (!lines.length) console.log("  (no field changes)");
+    else for (const ln of lines) console.log(ln);
+  }
+}
+
+program
+  .command("adr")
+  .description("Inspect ADR revision history.")
+  .command("history")
+  .argument("<id>", "ADR id, e.g. 0026.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--diff", "Show field-level diffs between versions.")
+  .option("--from <v>", "Diff from this version (with --to).")
+  .option("--to <v>", "Diff to this version (with --from).")
+  .action(async (id, opts) => {
+    const { ADR_CONTENT_FIELDS } = await import("./memory/versioning.js");
+    await showHistory("decision", id, { project: opts.project, diff: opts.diff, from: opts.from, to: opts.to, fields: ["title", ...ADR_CONTENT_FIELDS] });
+    await closeClient();
+  });
+
+program
+  .command("memory")
+  .description("Inspect memory revision history.")
+  .command("history")
+  .argument("<slug>", "Memory slug.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--diff", "Show field-level diffs between versions.")
+  .option("--from <v>", "Diff from this version (with --to).")
+  .option("--to <v>", "Diff to this version (with --from).")
+  .action(async (slug, opts) => {
+    const { MEMORY_CONTENT_FIELDS } = await import("./memory/versioning.js");
+    await showHistory("memory", slug, { project: opts.project, diff: opts.diff, from: opts.from, to: opts.to, fields: MEMORY_CONTENT_FIELDS });
+    await closeClient();
+  });
+
+// ── software / repo catalog (ADR-0028) ───────────────────────────────────────
+const software = program.command("software").description("Manage software (software -> projects -> repos).");
+
+software
+  .command("add")
+  .argument("<name>", "Software name (unique).")
+  .option("--display <name>", "Display name.")
+  .option("--desc <text>", "Description.")
+  .option("--projects <list>", "Comma-separated member project scopes.")
+  .option("--tags <list>", "Comma-separated tags.")
+  .description("Create/update a software and its member projects.")
+  .action(async (name, opts) => {
+    const { SoftwareStore } = await import("./softwares/store.js");
+    const split = (s?: string) => (s ? String(s).split(",").map((x: string) => x.trim()).filter(Boolean) : []);
+    const doc = await new SoftwareStore().upsert({ name, display_name: opts.display ?? "", description: opts.desc ?? "", projects: split(opts.projects), tags: split(opts.tags) });
+    console.log(`Saved software '${doc.name}' (projects: ${doc.projects.join(", ") || "none"}).`);
+    await closeClient();
+  });
+
+software
+  .command("list")
+  .option("--tag <tag>", "Filter by tag.")
+  .description("List softwares (newest first).")
+  .action(async (opts) => {
+    const { SoftwareStore } = await import("./softwares/store.js");
+    const rows = await new SoftwareStore().list({ tag: opts.tag });
+    for (const r of rows) console.log(`- ${r.name}  [${(r.projects ?? []).join(", ")}]  ${r.description ?? ""}`.trimEnd());
+    if (!rows.length) console.log("(no softwares)");
+    await closeClient();
+  });
+
+software
+  .command("get")
+  .argument("<name>", "Software name.")
+  .action(async (name) => {
+    const { SoftwareStore } = await import("./softwares/store.js");
+    const doc = await new SoftwareStore().get(name);
+    console.log(doc ? JSON.stringify(doc, null, 2) : `(no software '${name}')`);
+    await closeClient();
+  });
+
+software
+  .command("rm")
+  .argument("<name>", "Software name.")
+  .action(async (name) => {
+    const { SoftwareStore } = await import("./softwares/store.js");
+    console.log((await new SoftwareStore().delete(name)) ? `Deleted '${name}'.` : `(no software '${name}')`);
+    await closeClient();
+  });
+
+const repo = program.command("repo").description("Manage repos (the leaf of software -> projects -> repos).");
+
+repo
+  .command("add")
+  .argument("<name>", "Repo name (the data sub-scope `repo`).")
+  .requiredOption("--project <project>", "Owning project scope.")
+  .option("--software <software>", "Owning software name.")
+  .option("--remote <url>", "Git remote URL.")
+  .option("--branch <branch>", "Branch.")
+  .option("--path <dir>", "Local filesystem root.")
+  .option("--desc <text>", "Description.")
+  .option("--tags <list>", "Comma-separated tags.")
+  .description("Create/update a repo under a project.")
+  .action(async (name, opts) => {
+    const { RepoStore } = await import("./repos/store.js");
+    const split = (s?: string) => (s ? String(s).split(",").map((x: string) => x.trim()).filter(Boolean) : []);
+    const doc = await new RepoStore().upsert({ project: opts.project, name, software: opts.software ?? null, remote: opts.remote ?? "", branch: opts.branch ?? "", path: opts.path ?? "", description: opts.desc ?? "", tags: split(opts.tags) });
+    console.log(`Saved repo '${doc.name}' in project '${doc.project}'${doc.software ? ` (software ${doc.software})` : ""}.`);
+    await closeClient();
+  });
+
+repo
+  .command("list")
+  .option("--project <project>", "Filter by project.")
+  .option("--software <software>", "Filter by software.")
+  .description("List repos by project and/or software.")
+  .action(async (opts) => {
+    const { RepoStore } = await import("./repos/store.js");
+    const rows = await new RepoStore().list({ project: opts.project, software: opts.software });
+    for (const r of rows) console.log(`- ${r.project}/${r.name}  ${r.remote ?? ""}${r.branch ? `#${r.branch}` : ""}`.trimEnd());
+    if (!rows.length) console.log("(no repos)");
+    await closeClient();
+  });
+
+repo
+  .command("get")
+  .argument("<name>", "Repo name.")
+  .requiredOption("--project <project>", "Owning project scope.")
+  .action(async (name, opts) => {
+    const { RepoStore } = await import("./repos/store.js");
+    const doc = await new RepoStore().get(opts.project, name);
+    console.log(doc ? JSON.stringify(doc, null, 2) : `(no repo '${name}' in '${opts.project}')`);
+    await closeClient();
+  });
+
+repo
+  .command("rm")
+  .argument("<name>", "Repo name.")
+  .requiredOption("--project <project>", "Owning project scope.")
+  .action(async (name, opts) => {
+    const { RepoStore } = await import("./repos/store.js");
+    console.log((await new RepoStore().delete(opts.project, name)) ? `Deleted '${name}'.` : `(no repo '${name}')`);
+    await closeClient();
+  });
+
+// ── definition builder (ADR-0030: skill constructora) ────────────────────────
+const build = program.command("build").description("Construct skills/agents (and seed the master skills).");
+
+const buildOne = (kind: "skill" | "agent") =>
+  build
+    .command(kind)
+    .argument("<name>", `${kind} name.`)
+    .requiredOption("--project <project>", "Project scope.")
+    .option("--desc <text>", "Description.")
+    .option("--content <md>", "Inline markdown content.")
+    .option("--from <file>", "Read content from a file.")
+    .option("--tags <list>", "Comma-separated tags.")
+    .option("--host <host>", "(agent) Execution host: model|claude-code|codex.")
+    .option("--model <id>", "(agent) Model ref.")
+    .description(`Build and persist ONE ${kind} definition (scaffolds content if omitted).`)
+    .action(async (name, opts) => {
+      const { buildDefinition } = await import("./builder/buildDefinition.js");
+      let content = opts.content as string | undefined;
+      if (!content && opts.from) {
+        const { readFile } = await import("node:fs/promises");
+        content = await readFile(opts.from, "utf8");
+      }
+      const tags = opts.tags ? String(opts.tags).split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+      const doc = await buildDefinition({ kind, project: opts.project, name, description: opts.desc ?? "", content, tags, host: opts.host, model: opts.model });
+      console.log(`Built ${kind} '${doc.name}' in project '${doc.project}' (${content ? "from content" : "scaffold"}).`);
+      await closeClient();
+    });
+
+buildOne("skill");
+buildOne("agent");
+
+build
+  .command("seed")
+  .requiredOption("--project <project>", "Project scope.")
+  .description("Register the master skills (definition-builder, repo-indexer) into a project.")
+  .action(async (opts) => {
+    const { seedMasterSkills } = await import("./builder/seed.js");
+    const docs = await seedMasterSkills(opts.project);
+    console.log(`Seeded master skills: ${docs.map((d) => d.name).join(", ")}.`);
     await closeClient();
   });
 

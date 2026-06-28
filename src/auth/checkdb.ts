@@ -14,7 +14,7 @@
 
 import type { Db } from "mongodb";
 import { getDb } from "../db/client.js";
-import { bootstrapBaseUser, bootstrapSeedFromSettings, countUsers, rootExists } from "./users.js";
+import { bootstrapBaseUser, countUsers, rootExists } from "./users.js";
 
 const MISSING_ROOT_HINT =
   "Set AITL_BOOTSTRAP_USERNAME, AITL_BOOTSTRAP_EMAIL, AITL_BOOTSTRAP_PASSWORD,\n" +
@@ -56,13 +56,18 @@ export async function checkRbac(db: Db = getDb()): Promise<RbacCheckResult> {
     lines.push("Unique indexes OK (username, email)");
   }
 
-  // Auto-bootstrap the first root when the collection is empty and env is complete.
+  // Auto-bootstrap the first root when the collection is empty. With a valid seed it
+  // uses it; otherwise it falls back to a generated local root (unless autogen is off).
   if ((await countUsers(db)) === 0) {
-    const seed = bootstrapSeedFromSettings();
-    if (seed) {
-      const result = await bootstrapBaseUser(db, seed);
-      if (result.status === "created") lines.push(`Root user: created (${result.username})`);
-      else if (result.reason) lines.push(`Bootstrap: ${result.reason}`);
+    const result = await bootstrapBaseUser(db);
+    if (result.status === "created") {
+      lines.push(`Root user: created (${result.username})`);
+      if (result.generated && result.password) {
+        lines.push(`  ⚠ generated password: ${result.password}`);
+        lines.push("  (save this now — it is shown only once and is not recoverable)");
+      }
+    } else if (result.reason) {
+      lines.push(`Bootstrap: ${result.reason}`);
     }
   }
 

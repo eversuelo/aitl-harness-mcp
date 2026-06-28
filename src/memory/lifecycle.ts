@@ -37,28 +37,36 @@ async function relevant(
   prompt: string,
   limit: number,
   useVector = true,
+  repo?: string,
 ): Promise<Record<string, unknown>[]> {
+  // Optional repo sub-scope (ADR-0028): applied as a post-filter on the vector/text
+  // paths (whose backends only filter by project) and natively in the recency query.
+  const byRepo = (rows: Record<string, unknown>[]) =>
+    repo === undefined ? rows : rows.filter((r) => (r.repo ?? null) === repo);
+
   // The vector branch loads the embedding model (seconds on first use). A fast caller
   // (e.g. a per-prompt hook) can skip it with useVector=false and go straight to the
   // lexical/recency path, which is what runs anyway until the Atlas vector index exists.
   if (useVector && prompt.trim()) {
     try {
-      const hits = await store.vectorSearch(collection, await embedOne(prompt), { project, limit });
+      const hits = byRepo(await store.vectorSearch(collection, await embedOne(prompt), { project, limit }));
       if (hits.length > 0) return hits;
     } catch {
       // fall through to lexical
     }
   }
   try {
-    const hits = await store.textSearch(collection, prompt, { project, limit });
+    const hits = byRepo(await store.textSearch(collection, prompt, { project, limit }));
     if (hits.length > 0) return hits;
   } catch {
     // fall through to recency
   }
   try {
+    const query: Record<string, unknown> = { project };
+    if (repo !== undefined) query.repo = repo;
     return await store.db
       .collection(collection)
-      .find({ project }, { projection: { embedding: 0 } })
+      .find(query, { projection: { embedding: 0 } })
       .sort({ updated_at: -1 })
       .limit(limit)
       .toArray();
@@ -140,10 +148,10 @@ function renderConventions(rows: Record<string, unknown>[], cap: number): Sectio
 }
 
 /** Render the repo map (top symbols by PageRank). Lazily imports RepoMap to avoid the parser. */
-async function renderRepomap(store: MemoryStore, project: string, maxTokens: number): Promise<Section> {
+async function renderRepomap(store: MemoryStore, project: string, maxTokens: number, repo?: string): Promise<Section> {
   try {
     const { RepoMap } = await import("../repomap/store.js");
-    const map = await new RepoMap(store.db).render(project, { maxTokens });
+    const map = await new RepoMap(store.db).render(project, repo !== undefined ? { maxTokens, repo } : { maxTokens });
     if (!map || map.startsWith("(repo map empty")) return { text: "", count: 0 };
     return { text: ["## Repo map (top symbols by importance)", "```", map, "```"].join("\n"), count: 1 };
   } catch {
@@ -170,6 +178,8 @@ export interface HydrateOpts {
   repomapTokens?: number;
   /** Use embeddings for relevance (vector→text→recency). Set false for a fast hook path. */
   vector?: boolean;
+  /** Narrow memory + repo map to a single repo sub-scope within the project (ADR-0028). */
+  repo?: string;
 }
 
 /**
@@ -188,7 +198,7 @@ export async function hydrate(
   const sections = { memory: 0, decisions: 0, conventions: 0, repomap: 0 };
 
   if (opts.memory !== false) {
-    const sec = renderMemory(await relevant(store, "memory", project, prompt, opts.limit ?? 6, useVector), opts.maxChars ?? 4000);
+    const sec = renderMemory(await relevant(store, "memory", project, prompt, opts.limit ?? 6, useVector, opts.repo), opts.maxChars ?? 4000);
     if (sec.text) parts.push(sec.text);
     sections.memory = sec.count;
   }

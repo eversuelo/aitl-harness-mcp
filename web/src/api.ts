@@ -43,26 +43,34 @@ export interface PromptDoc {
   created_at?: string;
 }
 
+export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo";
+export type EdgeKind = "ref" | "link" | "contains" | "references";
+
 export interface GraphNode {
   id: string;
   label: string;
-  kind: "symbol" | "memory";
+  kind: NodeKind;
   project: string;
   file?: string;
   pagerank?: number;
   category?: string | null;
+  title?: string;
+  status?: string;
+  [k: string]: unknown;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
-  type: "ref" | "link";
+  type: EdgeKind;
 }
 
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
+
+export const KNOWLEDGE_KINDS: NodeKind[] = ["software", "project", "repo", "memory", "decision", "context", "symbol"];
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -109,4 +117,9 @@ export const api = {
 
   graph: (project: string, scope: "all" | "symbols" | "memory" = "all") =>
     fetch(`/api/graph?project=${encodeURIComponent(project)}&scope=${scope}`).then(json<GraphData>),
+
+  knowledgeGraph: (project: string, entities?: NodeKind[]) =>
+    fetch(
+      `/api/knowledge-graph?project=${encodeURIComponent(project)}${entities ? `&entities=${entities.join(",")}` : ""}`,
+    ).then(json<GraphData>),
 };

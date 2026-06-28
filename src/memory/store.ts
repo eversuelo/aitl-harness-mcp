@@ -14,6 +14,7 @@
 import type { Db, Document } from "mongodb";
 import { getDb } from "../db/client.js";
 import type { Event, MemoryDoc, Message } from "./schemas.js";
+import { MEMORY_CONTENT_FIELDS, type VersioningActor, archiveAndBumpVersion } from "./versioning.js";
 
 export class MemoryStore {
   readonly db: Db;
@@ -24,8 +25,21 @@ export class MemoryStore {
 
   // ── writes ───────────────────────────────────────────────────────────
   /** Insert/update a memory doc, keyed by (project, slug). */
-  async upsertMemory(doc: MemoryDoc): Promise<string> {
+  async upsertMemory(doc: MemoryDoc, opts: { actor?: VersioningActor; branch?: string | null } = {}): Promise<string> {
     doc.updated_at = new Date();
+    // Archive the prior version (if content changed) and set doc.version BEFORE overwrite.
+    await archiveAndBumpVersion({
+      db: this.db,
+      kind: "memory",
+      liveCollection: "memory",
+      historyCollection: "memory_history",
+      query: { project: doc.project, slug: doc.slug },
+      nextDoc: doc,
+      contentFields: MEMORY_CONTENT_FIELDS,
+      ref: doc.slug,
+      actor: opts.actor,
+      branch: opts.branch,
+    });
     await this.db
       .collection("memory")
       .updateOne({ project: doc.project, slug: doc.slug }, { $set: doc }, { upsert: true });

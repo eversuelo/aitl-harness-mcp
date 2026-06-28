@@ -99,7 +99,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 /** Reuse the MCP `write_memory` contract: classify + embed + upsert one doc. */
-async function upsertMemoryDoc(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function upsertMemoryDoc(body: Record<string, unknown>, actor?: Actor): Promise<Record<string, unknown>> {
   const { embedOne } = await import("../ingest/embedder.js");
   const { extractLinks } = await import("../ingest/markdown.js");
   const { Classifier } = await import("../memory/classifier.js");
@@ -126,8 +126,8 @@ async function upsertMemoryDoc(body: Record<string, unknown>): Promise<Record<st
   });
   await new Classifier().classifyMemory(doc);
   doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-  await new MemoryStore().upsertMemory(doc);
-  return { slug: doc.slug, project: doc.project, category: doc.category, type: doc.type };
+  await new MemoryStore().upsertMemory(doc, actor ? { actor: { id: actor.id, role: actor.role } } : {});
+  return { slug: doc.slug, project: doc.project, category: doc.category, type: doc.type, version: doc.version };
 }
 
 class HttpError extends Error {
@@ -173,6 +173,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return send(res, 200, graphs[project] ?? { nodes: [], edges: [] });
   }
 
+  // ── knowledge map (multi-entity projection, ADR-0029) ─────────────────────
+  if (pathname === "/api/knowledge-graph" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const { knowledgeGraphify, KNOWLEDGE_ENTITIES, MongoGraphSource } = await import("../graph/index.js");
+    const raw = searchParams.get("entities");
+    const entities = raw
+      ? (raw.split(",").map((s) => s.trim()).filter((s) => (KNOWLEDGE_ENTITIES as string[]).includes(s)) as typeof KNOWLEDGE_ENTITIES)
+      : undefined;
+    const graph = await knowledgeGraphify(new MongoGraphSource(store.db), { project, entities });
+    return send(res, 200, graph);
+  }
+
   if (pathname === "/api/memory/search" && method === "GET") {
     const project = searchParams.get("project") ?? undefined;
     const q = searchParams.get("q") ?? "";
@@ -199,7 +212,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (pathname === "/api/memory" && (method === "POST" || method === "PUT")) {
     await guard(actor, "memory", method === "POST" ? "create" : "update");
-    return send(res, 200, await upsertMemoryDoc(await readJson(req)));
+    return send(res, 200, await upsertMemoryDoc(await readJson(req), actor));
   }
 
   // /api/memory/:slug  (GET | PUT | DELETE)
@@ -215,7 +228,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     if (method === "PUT") {
       await guard(actor, "memory", "update");
-      return send(res, 200, await upsertMemoryDoc({ ...(await readJson(req)), slug }));
+      return send(res, 200, await upsertMemoryDoc({ ...(await readJson(req)), slug }, actor));
     }
     if (method === "DELETE") {
       await guard(actor, "memory", "delete");
@@ -248,6 +261,42 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       .findOne({ project, id }, { projection: { embedding: 0 } });
     if (!doc) throw new HttpError(404, `No decision '${id}' in project '${project}'.`);
     return send(res, 200, doc);
+  }
+
+  // ── context snapshots (mcp_context) ───────────────────────────────────────
+  if (pathname === "/api/context" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const query: Record<string, unknown> = { project };
+    const repo = searchParams.get("repo");
+    if (repo) query.repo = repo;
+    const rows = await store.db
+      .collection("mcp_context")
+      .find(query, { projection: { messages: 0, context: 0 } })
+      .sort({ created_at: -1 })
+      .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 100)
+      .toArray();
+    return send(res, 200, rows);
+  }
+
+  const ctx = /^\/api\/context\/([^/]+)$/.exec(pathname);
+  if (ctx && method === "GET") {
+    const id = decodeURIComponent(ctx[1]);
+    const doc = await store.db.collection("mcp_context").findOne({ context_id: id });
+    if (!doc) throw new HttpError(404, `No context '${id}'.`);
+    return send(res, 200, doc);
+  }
+
+  // ── software / repo catalog (ADR-0028) ────────────────────────────────────
+  if (pathname === "/api/softwares" && method === "GET") {
+    const { SoftwareStore } = await import("../softwares/store.js");
+    return send(res, 200, await new SoftwareStore().list({ limit: 200 }));
+  }
+  if (pathname === "/api/repos" && method === "GET") {
+    const { RepoStore } = await import("../repos/store.js");
+    const project = searchParams.get("project") ?? undefined;
+    const software = searchParams.get("software") ?? undefined;
+    return send(res, 200, await new RepoStore().list({ project, software, limit: 200 }));
   }
 
   // ── prompt history ────────────────────────────────────────────────────────

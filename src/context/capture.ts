@@ -144,6 +144,8 @@ export interface CaptureOpts {
   cwd?: string;
   /** Explicit semantic component name (added alongside the auto dir tags). */
   component?: string;
+  /** Repo sub-scope this session belongs to (ADR-0028). */
+  repo?: string;
   source?: string;
   provider?: Provider;
   store?: MemoryStore;
@@ -158,6 +160,7 @@ async function saveSnapshot(args: {
   tags: string[];
   runId: string;
   source: string;
+  repo?: string | null;
 }): Promise<string | null> {
   try {
     const coll = getDb().collection("mcp_context");
@@ -171,6 +174,7 @@ async function saveSnapshot(args: {
     await coll.insertOne({
       context_id: contextId,
       project: args.project,
+      repo: args.repo ?? null,
       title: args.title,
       summary: args.summary,
       source: args.source,
@@ -221,6 +225,7 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
     tags,
     runId,
     source,
+    repo: opts.repo ?? null,
   });
 
   return { summary, components: [...compTags, ...explicit], context_id, run_id: runId };

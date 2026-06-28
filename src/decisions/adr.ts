@@ -12,6 +12,7 @@ import type { Db } from "mongodb";
 import { getDb } from "../db/client.js";
 import { embedOne } from "../ingest/embedder.js";
 import { type ADR, makeADR } from "../memory/schemas.js";
+import { ADR_CONTENT_FIELDS, type VersioningActor, archiveAndBumpVersion } from "../memory/versioning.js";
 
 const ID_RE = /ADR-?(\d+)/i;
 const SECTION_RE = /^##\s+(Context|Decision|Consequences)\s*$/gim;
@@ -49,10 +50,23 @@ export class ADRStore {
     this.db = db ?? getDb();
   }
 
-  async upsert(adr: ADR, opts: { embed?: boolean } = {}): Promise<string> {
+  async upsert(adr: ADR, opts: { embed?: boolean; actor?: VersioningActor; branch?: string | null } = {}): Promise<string> {
     if (opts.embed !== false) {
       adr.embedding = await embedOne(`${adr.title}\n${adr.context}\n${adr.decision}`);
     }
+    // Archive the prior version (if content changed) and set adr.version BEFORE overwrite.
+    await archiveAndBumpVersion({
+      db: this.db,
+      kind: "decision",
+      liveCollection: "decisions",
+      historyCollection: "decisions_history",
+      query: { project: adr.project, id: adr.id },
+      nextDoc: adr,
+      contentFields: ADR_CONTENT_FIELDS,
+      ref: adr.id,
+      actor: opts.actor,
+      branch: opts.branch,
+    });
     await this.db
       .collection("decisions")
       .updateOne({ project: adr.project, id: adr.id }, { $set: adr }, { upsert: true });
@@ -60,7 +74,7 @@ export class ADRStore {
   }
 
   /** Mirror all docs/adr/NNNN-*.md into Mongo. Returns ADR ids written. */
-  async syncDir(directory: string, project: string): Promise<string[]> {
+  async syncDir(directory: string, project: string, opts: { actor?: VersioningActor; branch?: string | null } = {}): Promise<string[]> {
     const entries = await fs.readdir(directory, { withFileTypes: true });
     const mdFiles = entries
       // Only numbered ADR files (e.g. 0001-*.md); skip README/index and other notes.
@@ -68,7 +82,7 @@ export class ADRStore {
       .map((e) => join(directory, e.name))
       .sort();
     const ids: string[] = [];
-    for (const p of mdFiles) ids.push(await this.upsert(await parseAdrMarkdown(p, project)));
+    for (const p of mdFiles) ids.push(await this.upsert(await parseAdrMarkdown(p, project), { actor: opts.actor, branch: opts.branch }));
     return ids;
   }
 }

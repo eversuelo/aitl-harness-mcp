@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildMemoryGraph, buildProjectGraph, buildSymbolGraph } from "./build.js";
+import { buildKnowledgeGraph } from "./knowledge.js";
 import { graphify } from "./index.js";
 import { graphToDot } from "./serialize.js";
 import type { GraphSource, MemoryRow, SymbolRow } from "./index.js";
@@ -55,6 +56,10 @@ test("graphify: orchestrates fetch+build per project from a fake source", async 
     listProjects: async () => ["p1", "p2"],
     symbols: async (p) => (p === "p1" ? [{ file: "a.ts", name: "foo", refs: [] }] : []),
     memory: async (p) => (p === "p1" ? [{ slug: "x", links: [] }] : []),
+    decisions: async () => [],
+    context: async () => [],
+    softwares: async () => [],
+    repos: async () => [],
   };
   const all = await graphify(fake);
   assert.deepEqual(Object.keys(all), ["p1", "p2"]);
@@ -64,6 +69,35 @@ test("graphify: orchestrates fetch+build per project from a fake source", async 
   const one = await graphify(fake, { project: "p1", scope: "symbols" });
   assert.deepEqual(Object.keys(one), ["p1"]);
   assert.equal(one.p1.nodes.length, 1);
+});
+
+test("buildKnowledgeGraph: hierarchy contains edges + references cross-links", () => {
+  const g = buildKnowledgeGraph(
+    {
+      symbols: [],
+      memory: [{ slug: "design", links: [], repo: "api" }],
+      decisions: [{ id: "0001", title: "T", context: "see [[design]] and [[ADR-0002]]", decision: "", consequences: "", repo: null }, { id: "0002", title: "U", repo: "api" }],
+      context: [{ context_id: "ctx-123", title: "sess", repo: "api" }],
+      softwares: [{ name: "schoolar", display_name: "Schoolar", projects: ["p"] }],
+      repos: [{ name: "api", project: "p", software: "schoolar" }],
+    },
+    "p",
+  );
+  const byKind = (k: string) => g.nodes.filter((n) => n.kind === k).length;
+  assert.equal(byKind("project"), 1);
+  assert.equal(byKind("software"), 1);
+  assert.equal(byKind("repo"), 1);
+  assert.equal(byKind("memory"), 1);
+  assert.equal(byKind("decision"), 2);
+  assert.equal(byKind("context"), 1);
+  // software→project and project→repo contains edges exist.
+  assert.ok(g.edges.some((e) => e.type === "contains" && e.source === "sw:schoolar" && e.target === "proj:p"));
+  assert.ok(g.edges.some((e) => e.type === "contains" && e.source === "proj:p" && e.target === "repo:p/api"));
+  // repo-scoped memory attaches to the repo, not the project.
+  assert.ok(g.edges.some((e) => e.type === "contains" && e.source === "repo:p/api" && e.target === "mem:design"));
+  // ADR-0001 references the memory slug and ADR-0002.
+  assert.ok(g.edges.some((e) => e.type === "references" && e.source === "adr:p:0001" && e.target === "mem:design"));
+  assert.ok(g.edges.some((e) => e.type === "references" && e.source === "adr:p:0001" && e.target === "adr:p:0002"));
 });
 
 test("graphToDot: stable digraph output", () => {

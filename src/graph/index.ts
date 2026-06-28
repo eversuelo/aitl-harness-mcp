@@ -8,11 +8,13 @@
  */
 
 import { buildProjectGraph } from "./build.js";
+import { KNOWLEDGE_ENTITIES, buildKnowledgeGraph } from "./knowledge.js";
 import type { GraphSource } from "./source.js";
-import type { Graph, Scope } from "./types.js";
+import type { Graph, NodeKind, Scope } from "./types.js";
 
 export * from "./types.js";
 export * from "./build.js";
+export * from "./knowledge.js";
 export * from "./serialize.js";
 export { MongoGraphSource } from "./source.js";
 export type { GraphSource } from "./source.js";
@@ -32,4 +34,27 @@ export async function graphify(
     out[p] = buildProjectGraph({ symbols, memory }, p, opts.scope ?? "all");
   }
   return out;
+}
+
+/**
+ * Build the multi-entity knowledge map for ONE project (ADR-0029): software →
+ * project → repo → {memory, decision, symbol, context}. `entities` selects which
+ * kinds to fetch/include; symbols are excluded by default (large; in the Graph tab).
+ */
+export async function knowledgeGraphify(
+  source: GraphSource,
+  opts: { project: string; entities?: NodeKind[] },
+): Promise<Graph> {
+  const include = opts.entities ?? KNOWLEDGE_ENTITIES.filter((k) => k !== "symbol");
+  const want = new Set(include);
+  const p = opts.project;
+  const [symbols, memory, decisions, context, softwares, repos] = await Promise.all([
+    want.has("symbol") ? source.symbols(p) : Promise.resolve([]),
+    want.has("memory") ? source.memory(p) : Promise.resolve([]),
+    want.has("decision") ? source.decisions(p) : Promise.resolve([]),
+    want.has("context") ? source.context(p) : Promise.resolve([]),
+    want.has("software") ? source.softwares(p) : Promise.resolve([]),
+    want.has("repo") ? source.repos(p) : Promise.resolve([]),
+  ]);
+  return buildKnowledgeGraph({ symbols, memory, decisions, context, softwares, repos }, p, include);
 }

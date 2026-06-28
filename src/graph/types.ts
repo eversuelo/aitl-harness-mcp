@@ -8,19 +8,25 @@
 
 export type Scope = "all" | "symbols" | "memory";
 
+/** Entity kinds a node can represent (ADR-0029 knowledge map adds the hierarchy kinds). */
+export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo";
+
+/** Edge kinds (ADR-0029 adds `contains` for hierarchy and `references` for cross-links). */
+export type EdgeKind = "ref" | "link" | "contains" | "references";
+
 export interface GraphNode {
   id: string;
   label: string;
-  kind: "symbol" | "memory";
+  kind: NodeKind;
   project: string;
-  /** symbol nodes carry `file`/`pagerank`; memory nodes carry `category`. */
+  /** symbol nodes carry `file`/`pagerank`; memory nodes carry `category`; etc. */
   [k: string]: unknown;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
-  type: "ref" | "link";
+  type: EdgeKind;
 }
 
 export interface Graph {
@@ -42,6 +48,38 @@ export interface MemoryRow {
   slug?: string;
   category?: string | null;
   links?: string[];
+  repo?: string | null;
+  [k: string]: unknown;
+}
+
+/** Minimal shapes for the knowledge-map entities (ADR-0029). */
+export interface DecisionRow {
+  id?: string;
+  title?: string;
+  status?: string;
+  context?: string;
+  decision?: string;
+  consequences?: string;
+  repo?: string | null;
+  [k: string]: unknown;
+}
+export interface ContextRow {
+  context_id?: string;
+  title?: string;
+  repo?: string | null;
+  run_id?: string | null;
+  [k: string]: unknown;
+}
+export interface SoftwareRow {
+  name?: string;
+  display_name?: string;
+  projects?: string[];
+  [k: string]: unknown;
+}
+export interface RepoRow {
+  name?: string;
+  project?: string;
+  software?: string | null;
   [k: string]: unknown;
 }
 

@@ -63,6 +63,7 @@ export type Message = z.infer<typeof MessageSchema>;
 export const MemoryDocSchema = z.object({
   ...BaseShape,
   slug: z.string(),
+  repo: z.string().nullable().default(null), // repo sub-scope within the project (ADR-0028)
   type: z.enum(MEMORY_TYPES).default("project"),
   description: z.string().default(""),
   body: z.string().default(""),
@@ -71,6 +72,10 @@ export const MemoryDocSchema = z.object({
   source_path: z.string().nullable().default(null),
   category: z.string().nullable().default(null),
   tags: z.array(z.string()).default([]),
+  version: z.number().int().default(1), // bumped on each content change; history in memory_history
+  actor_id: z.string().nullable().default(null), // who authored the current version (provenance)
+  actor_role: z.string().nullable().default(null),
+  branch: z.string().nullable().default(null), // git branch this version was authored on (ADR-0028)
   embedding: z.array(z.number()).nullable().default(null),
 });
 export type MemoryDoc = z.infer<typeof MemoryDocSchema>;
@@ -87,13 +92,34 @@ export const ADRSchema = z.object({
   model: z.string().nullable().default(null),
   trigger: z.string().nullable().default(null),
   git_ref: z.string().nullable().default(null),
+  version: z.number().int().default(1), // bumped on each content change; history in decisions_history
+  actor_id: z.string().nullable().default(null), // who authored the current version (provenance)
+  actor_role: z.string().nullable().default(null),
+  branch: z.string().nullable().default(null), // git branch this version was authored on (ADR-0028)
   embedding: z.array(z.number()).nullable().default(null),
 });
 export type ADR = z.infer<typeof ADRSchema>;
 
+// ── HistoryEntry: an archived prior version of an ADR or memory doc ──────────
+// Append-only revision history. Before a live (decisions/memory) doc is overwritten
+// with changed content, the previous doc is snapshotted here (embedding stripped).
+export const HistoryEntrySchema = z.object({
+  ...BaseShape,
+  kind: z.enum(["decision", "memory"]),
+  ref: z.string(), // the ADR id ("0007") or memory slug
+  version: z.number().int(), // the version number of the archived snapshot
+  actor_id: z.string().default("system"),
+  actor_role: z.string().default("system"),
+  branch: z.string().nullable().default(null), // git branch the archived version was authored on
+  snapshot: z.record(z.unknown()), // the prior doc, without its embedding
+  archived_at: z.date().default(now),
+});
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+
 // ── Symbol: a repo-map symbol with its PageRank importance ───────────────────
 export const SymbolSchema = z.object({
   ...BaseShape,
+  repo: z.string().nullable().default(null), // repo sub-scope within the project (ADR-0028)
   file: z.string(),
   name: z.string(),
   kind: z.string(),
@@ -137,6 +163,7 @@ export const makeRun = (v: z.input<typeof RunSchema>): Run => RunSchema.parse(v)
 export const makeMessage = (v: z.input<typeof MessageSchema>): Message => MessageSchema.parse(v);
 export const makeMemoryDoc = (v: z.input<typeof MemoryDocSchema>): MemoryDoc => MemoryDocSchema.parse(v);
 export const makeADR = (v: z.input<typeof ADRSchema>): ADR => ADRSchema.parse(v);
+export const makeHistoryEntry = (v: z.input<typeof HistoryEntrySchema>): HistoryEntry => HistoryEntrySchema.parse(v);
 export const makeSymbol = (v: z.input<typeof SymbolSchema>): Symbol => SymbolSchema.parse(v);
 export const makeConvention = (v: z.input<typeof ConventionSchema>): Convention => ConventionSchema.parse(v);
 export const makeEvent = (v: z.input<typeof EventSchema>): Event => EventSchema.parse(v);

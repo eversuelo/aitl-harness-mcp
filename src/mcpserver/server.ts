@@ -32,6 +32,7 @@ import { RepoMap } from "../repomap/store.js";
 import { DefinitionStore } from "../projectctx/store.js";
 import { AGENTS_COLLECTION, SKILLS_COLLECTION, type DefinitionKind } from "../projectctx/schemas.js";
 import { MongoGraphSource, type Scope, graphToDot, graphify } from "../graph/index.js";
+import { currentBranch } from "../util/git.js";
 
 /** Recursively strip Mongo `_id`/`embedding` and stringify ObjectId/Date. */
 function jsonable(value: unknown): unknown {
@@ -234,6 +235,12 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   graphify: { resource: "memory", action: "update" },
   record_decision: { resource: "decisions", action: "create" },
   record_prompt: { resource: "prompts", action: "create" },
+  write_software: { resource: "softwares", action: "create" },
+  delete_software: { resource: "softwares", action: "delete" },
+  write_repo: { resource: "repos", action: "create" },
+  delete_repo: { resource: "repos", action: "delete" },
+  index_repo: { resource: "memory", action: "create" },
+  build_definition: { resource: "agents_skills", action: "create" },
 };
 
 /**
@@ -358,36 +365,41 @@ export function buildServer(): McpServer {
       description: z.string().default(""),
       type: z.string().default("project"),
       tags: z.array(z.string()).optional(),
+      repo: z.string().optional(),
     },
-    async ({ project, slug, body, description, type, tags }) => {
-      return runLogged("write_memory", { project, slug, body, description, type, tags }, async () => {
+    async ({ project, slug, body, description, type, tags, repo }) => {
+      return runLogged("write_memory", { project, slug, body, description, type, tags, repo }, async () => {
         const t: MemoryType = (MEMORY_TYPES as readonly string[]).includes(type) && type !== "synthesis"
           ? (type as MemoryType)
           : "project";
-        const doc = makeMemoryDoc({ project, slug, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
+        const doc = makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
         await new Classifier().classifyMemory(doc);
         doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-        await new MemoryStore().upsertMemory(doc);
-        return text({ slug: doc.slug, category: doc.category, type: doc.type });
+        const a = mcpActor();
+        await new MemoryStore().upsertMemory(doc, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
+        return text({ slug: doc.slug, category: doc.category, type: doc.type, version: doc.version });
       });
     },
   );
 
   server.tool(
     "ingest_path",
-    "Bulk-ingest a directory of markdown memory files into a project.",
-    { path: z.string(), project: z.string() },
-    async ({ path, project }) => {
-      return runLogged("ingest_path", { path, project }, async () => {
+    "Bulk-ingest a directory of markdown memory files into a project. Optional `repo` sub-scope.",
+    { path: z.string(), project: z.string(), repo: z.string().optional() },
+    async ({ path, project, repo }) => {
+      return runLogged("ingest_path", { path, project, repo }, async () => {
         const store = new MemoryStore();
         const clf = new Classifier();
+        const a = mcpActor();
+        const branch = currentBranch();
         const docs = await parseMarkdownDir(path, project);
         for (const doc of docs) {
+          if (repo) doc.repo = repo;
           await clf.classifyMemory(doc);
           doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-          await store.upsertMemory(doc);
+          await store.upsertMemory(doc, { actor: { id: a.id, role: a.role }, branch });
         }
-        return text({ ingested: docs.length, project });
+        return text({ ingested: docs.length, project, repo: repo ?? null });
       });
     },
   );
@@ -590,13 +602,13 @@ export function buildServer(): McpServer {
 
   server.tool(
     "get_repomap",
-    "Return the tree-sitter + PageRank repo map for a project. If `root` is given it is (re)built first; otherwise the cached map is rendered.",
-    { project: z.string(), root: z.string().optional(), maxTokens: z.number().int().default(1024) },
-    async ({ project, root, maxTokens }) => {
-      return runLogged("get_repomap", { project, root, maxTokens }, async () => {
+    "Return the tree-sitter + PageRank repo map for a project (optional `repo` sub-scope). If `root` is given it is (re)built first; otherwise the cached map is rendered.",
+    { project: z.string(), root: z.string().optional(), maxTokens: z.number().int().default(1024), repo: z.string().optional() },
+    async ({ project, root, maxTokens, repo }) => {
+      return runLogged("get_repomap", { project, root, maxTokens, repo }, async () => {
         const rm = new RepoMap();
-        if (root) await rm.build(root, project);
-        return text(await rm.render(project, { maxTokens }));
+        if (root) await rm.build(root, project, repo ?? null);
+        return text(await rm.render(project, repo ? { maxTokens, repo } : { maxTokens }));
       });
     },
   );
@@ -630,9 +642,92 @@ export function buildServer(): McpServer {
       return runLogged("record_decision", { project, id, title, context, decision, consequences, status }, async () => {
         const { makeADR } = await import("../memory/schemas.js");
         const adr = makeADR({ project, id, title, context, decision, consequences, status });
-        await new ADRStore().upsert(adr);
-        return text({ id: adr.id, title: adr.title, status: adr.status });
+        const a = mcpActor();
+        await new ADRStore().upsert(adr, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
+        return text({ id: adr.id, title: adr.title, status: adr.status, version: adr.version });
       });
+    },
+  );
+
+  // ── revision history (ADR-0027): read-only, ungated like other reads ─────────
+  const stripEmbedding = (d: Record<string, unknown> | null) => {
+    if (!d) return d;
+    const { embedding, _id, ...rest } = d;
+    return rest;
+  };
+
+  server.tool(
+    "list_decision_versions",
+    "List the revision history of an ADR (current live version + archived snapshots).",
+    { project: z.string(), id: z.string() },
+    async ({ project, id }) => {
+      const db = getDb();
+      const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
+      const history = await db
+        .collection("decisions_history")
+        .find({ project, ref: id }, { projection: { "snapshot.embedding": 0 } })
+        .sort({ version: -1 })
+        .toArray();
+      return text({
+        ref: id,
+        current: typeof live?.version === "number" ? live.version : live ? 1 : null,
+        title: live?.title ?? null,
+        status: live?.status ?? null,
+        branch: live?.branch ?? null,
+        history: history.map((h) => jsonable({ version: h.version, archived_at: h.archived_at, actor_id: h.actor_id, actor_role: h.actor_role, branch: h.branch ?? null, title: (h.snapshot as Record<string, unknown>)?.title, status: (h.snapshot as Record<string, unknown>)?.status })),
+      });
+    },
+  );
+
+  server.tool(
+    "get_decision_version",
+    "Fetch a specific ADR version (live if it is the current version, else from history).",
+    { project: z.string(), id: z.string(), version: z.number().int() },
+    async ({ project, id, version }) => {
+      const db = getDb();
+      const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
+      const liveVersion = typeof live?.version === "number" ? live.version : 1;
+      if (live && liveVersion === version) return text(jsonable(stripEmbedding(live as Record<string, unknown>)));
+      const hist = await db.collection("decisions_history").findOne({ project, ref: id, version });
+      if (!hist) return text({ error: `no version ${version} for ADR ${id}` });
+      return text(jsonable((hist as Record<string, unknown>).snapshot));
+    },
+  );
+
+  server.tool(
+    "list_memory_versions",
+    "List the revision history of a memory doc (current live version + archived snapshots).",
+    { project: z.string(), slug: z.string() },
+    async ({ project, slug }) => {
+      const db = getDb();
+      const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
+      const history = await db
+        .collection("memory_history")
+        .find({ project, ref: slug }, { projection: { "snapshot.embedding": 0 } })
+        .sort({ version: -1 })
+        .toArray();
+      return text({
+        ref: slug,
+        current: typeof live?.version === "number" ? live.version : live ? 1 : null,
+        description: live?.description ?? null,
+        branch: live?.branch ?? null,
+        history: history.map((h) => jsonable({ version: h.version, archived_at: h.archived_at, actor_id: h.actor_id, actor_role: h.actor_role, branch: h.branch ?? null, description: (h.snapshot as Record<string, unknown>)?.description })),
+      });
+    },
+  );
+
+  server.tool(
+    "get_memory_version",
+    "Fetch a specific memory doc version (live if it is the current version, else from history).",
+    { project: z.string(), slug: z.string(), version: z.number().int() },
+    async ({ project, slug, version }) => {
+      const db = getDb();
+      const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
+      const liveVersion = typeof live?.version === "number" ? live.version : 1;
+      if (live && liveVersion === version) return text(jsonable(stripEmbedding(live as Record<string, unknown>)));
+      const hist = await db.collection("memory_history").findOne({ project, ref: slug, version });
+      if (!hist) return text({ error: `no version ${version} for memory ${slug}` });
+      return text(jsonable((hist as Record<string, unknown>).snapshot));
     },
   );
 
@@ -719,6 +814,164 @@ export function buildServer(): McpServer {
 
   registerDefinitionTools("agent");
   registerDefinitionTools("skill");
+
+  // ── software / repo catalog (ADR-0028: software -> projects -> repos) ─────────
+  server.tool(
+    "write_software",
+    "Create/update ONE software (top of software->projects->repos), keyed by `name`. `projects` lists member project scopes.",
+    {
+      name: z.string(),
+      display_name: z.string().default(""),
+      description: z.string().default(""),
+      projects: z.array(z.string()).optional(),
+      tags: z.array(z.string()).optional(),
+    },
+    async ({ name, display_name, description, projects, tags }) => {
+      return runLogged("write_software", { name, display_name, description, projects, tags }, async () => {
+        const { SoftwareStore } = await import("../softwares/store.js");
+        const doc = await new SoftwareStore().upsert({ name, display_name, description, projects: projects ?? [], tags: tags ?? [] });
+        return text(jsonable(doc));
+      });
+    },
+  );
+  server.tool(
+    "get_software",
+    "Fetch ONE software by `name`. Returns null if absent.",
+    { name: z.string() },
+    async ({ name }) => {
+      return runLogged("get_software", { name }, async () => {
+        const { SoftwareStore } = await import("../softwares/store.js");
+        const doc = await new SoftwareStore().get(name);
+        return text(doc ? jsonable(doc) : null);
+      });
+    },
+  );
+  server.tool(
+    "list_softwares",
+    "List softwares, newest first. Optional tag filter.",
+    { limit: z.number().int().min(1).max(200).default(100), tag: z.string().optional() },
+    async ({ limit, tag }) => {
+      return runLogged("list_softwares", { limit, tag }, async () => {
+        const { SoftwareStore } = await import("../softwares/store.js");
+        return text((await new SoftwareStore().list({ tag, limit })).map(jsonable));
+      });
+    },
+  );
+  server.tool(
+    "search_softwares",
+    "Search softwares by text (name/display_name/description). Mongo $text with regex fallback.",
+    { query: z.string(), limit: z.number().int().min(1).max(50).default(10) },
+    async ({ query, limit }) => {
+      return runLogged("search_softwares", { query, limit }, async () => {
+        const { SoftwareStore } = await import("../softwares/store.js");
+        return text((await new SoftwareStore().search(query, limit)).map(jsonable));
+      });
+    },
+  );
+  server.tool(
+    "delete_software",
+    "Delete ONE software by `name`. Returns whether a doc was removed.",
+    { name: z.string() },
+    async ({ name }) => {
+      return runLogged("delete_software", { name }, async () => {
+        const { SoftwareStore } = await import("../softwares/store.js");
+        return text({ name, deleted: await new SoftwareStore().delete(name) });
+      });
+    },
+  );
+
+  server.tool(
+    "write_repo",
+    "Create/update ONE repo (leaf of software->projects->repos), keyed by (project, name). `name` doubles as the data sub-scope `repo`.",
+    {
+      project: z.string(),
+      name: z.string(),
+      software: z.string().optional(),
+      remote: z.string().default(""),
+      branch: z.string().default(""),
+      path: z.string().default(""),
+      description: z.string().default(""),
+      tags: z.array(z.string()).optional(),
+    },
+    async ({ project, name, software, remote, branch, path, description, tags }) => {
+      return runLogged("write_repo", { project, name, software, remote, branch, path, description, tags }, async () => {
+        const { RepoStore } = await import("../repos/store.js");
+        const doc = await new RepoStore().upsert({ project, name, software: software ?? null, remote, branch, path, description, tags: tags ?? [] });
+        return text(jsonable(doc));
+      });
+    },
+  );
+  server.tool(
+    "get_repo",
+    "Fetch ONE repo by (project, name). Returns null if absent.",
+    { project: z.string(), name: z.string() },
+    async ({ project, name }) => {
+      return runLogged("get_repo", { project, name }, async () => {
+        const { RepoStore } = await import("../repos/store.js");
+        const doc = await new RepoStore().get(project, name);
+        return text(doc ? jsonable(doc) : null);
+      });
+    },
+  );
+  server.tool(
+    "list_repos",
+    "List repos by project and/or software, newest first.",
+    { project: z.string().optional(), software: z.string().optional(), limit: z.number().int().min(1).max(200).default(100), tag: z.string().optional() },
+    async ({ project, software, limit, tag }) => {
+      return runLogged("list_repos", { project, software, limit, tag }, async () => {
+        const { RepoStore } = await import("../repos/store.js");
+        return text((await new RepoStore().list({ project, software, tag, limit })).map(jsonable));
+      });
+    },
+  );
+  server.tool(
+    "delete_repo",
+    "Delete ONE repo by (project, name). Returns whether a doc was removed.",
+    { project: z.string(), name: z.string() },
+    async ({ project, name }) => {
+      return runLogged("delete_repo", { project, name }, async () => {
+        const { RepoStore } = await import("../repos/store.js");
+        return text({ project, name, deleted: await new RepoStore().delete(project, name) });
+      });
+    },
+  );
+
+  // ── master indexer + definition builder (ADR-0030) ───────────────────────────
+  server.tool(
+    "index_repo",
+    "Master indexer: build the repo map + (optionally) ingest markdown memory + sync ADRs for a project/repo in one pass.",
+    { project: z.string(), root: z.string(), repo: z.string().optional(), memory: z.string().optional(), adr: z.string().optional() },
+    async ({ project, root, repo, memory, adr }) => {
+      return runLogged("index_repo", { project, root, repo, memory, adr }, async () => {
+        const { indexRepo } = await import("../indexing/indexRepo.js");
+        const a = mcpActor();
+        const r = await indexRepo({ project, root, repo: repo ?? null, memoryDir: memory, adrDir: adr, actor: { id: a.id, role: a.role } });
+        return text(jsonable(r));
+      });
+    },
+  );
+
+  server.tool(
+    "build_definition",
+    "Builder: construct and persist ONE skill or agent definition (from inline content or a scaffold template), keyed by (project, name).",
+    {
+      kind: z.enum(["skill", "agent"]),
+      project: z.string(),
+      name: z.string(),
+      description: z.string().default(""),
+      content: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      host: z.string().optional(),
+      model: z.string().optional(),
+    },
+    async ({ kind, project, name, description, content, tags, host, model }) => {
+      return runLogged("build_definition", { kind, project, name, description, tags, host, model }, async () => {
+        const { buildDefinition } = await import("../builder/buildDefinition.js");
+        const doc = await buildDefinition({ kind, project, name, description, content, tags, host, model });
+        return text(jsonable(doc));
+      });
+    },
+  );
 
   // ── graphify ─────────────────────────────────────────────────────────────────
   server.tool(
@@ -851,7 +1104,11 @@ async function connectDb(): Promise<void> {
     logEvent("db:connected", { uri: result.uri, db: result.dbName, via: result.label, serverVersion: result.serverVersion ?? null });
     try {
       const user = await bootstrapBaseUser();
-      logEvent("user:bootstrap", { status: user.status, username: user.username ?? null, email: user.email ?? null, role: user.role ?? null });
+      logEvent("user:bootstrap", { status: user.status, username: user.username ?? null, email: user.email ?? null, role: user.role ?? null, generated: user.generated ?? false });
+      // Surface the auto-generated root credentials exactly once (logs only).
+      if (user.generated && user.password) {
+        logEvent("user:bootstrap:generated", { username: user.username, password: user.password, note: "local root auto-generated — save this password; it is shown only once." });
+      }
     } catch (err) {
       logEvent("user:bootstrap:error", { error: errorInfo(err) });
     }

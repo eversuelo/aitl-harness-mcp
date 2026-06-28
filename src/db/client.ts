@@ -20,6 +20,8 @@ export const COLLECTIONS = [
   "messages",
   "memory",
   "decisions",
+  "decisions_history",
+  "memory_history",
   "prompts",
   "mcp_context",
   "mcp_tool_calls",
@@ -29,6 +31,8 @@ export const COLLECTIONS = [
   "conventions",
   "categories",
   "events",
+  "softwares",
+  "repos",
 ] as const;
 
 let _client: MongoClient | null = null;

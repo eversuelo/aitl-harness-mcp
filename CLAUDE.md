@@ -20,8 +20,12 @@ spelling — those fragment the history. Verify the hash above matches
 > history: ADRs 0001–0009, prompt log, Codex context) and a stray `AITL-Harness-JS` key
 > created by mistake. They were merged into `aitl-js`: the stray ADRs were renumbered
 > 0010–0013 and the stray key was emptied. ADRs were contiguous 0001–0013 right after
-> the merge; subsequent work extended the ledger, which is now contiguous **0001–0024**
-> (verified against the `decisions` collection on 2026-06-28; next free **0025**).
+> the merge; subsequent work extended the ledger, which is now contiguous **0001–0030**
+> (verified against the `decisions` collection on 2026-06-28; next free **0031**).
+> Ciclo 0026–0030 (2026-06-28): 0026 auto-bootstrap de root local; 0027 versionamiento
+> append-only de ADRs/memoria (`*_history`); 0028 jerarquía software→projects→repos +
+> sub-scope `repo`; 0029 knowledge map multi-entidad (graphify + UI); 0030 skill
+> constructora + indexador maestro + hook de seed.
 
 ## Stack
 
@@ -36,5 +40,5 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Context lookups (memory, decisions, conventions, skills) use a robust cascade
   (vector → text → recency) so they work even before the Atlas vector index exists.
 - Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0025). Keep ADR ids contiguous and never reuse one. The number is the
+  currently 0031). Keep ADR ids contiguous and never reuse one. The number is the
   next-free read from the `decisions` collection at BUILD time — never pin it in docs.

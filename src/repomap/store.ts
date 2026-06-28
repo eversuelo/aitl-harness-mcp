@@ -20,8 +20,12 @@ export class RepoMap {
     this.db = db ?? getDb();
   }
 
-  /** Parse the tree, rank symbols, upsert into Mongo. Returns symbol count. */
-  async build(root: string, project: string): Promise<number> {
+  /**
+   * Parse the tree, rank symbols, upsert into Mongo. Returns symbol count.
+   * When `repo` is given, symbols are tagged with it and only that repo's symbols
+   * are replaced (rebuilding one repo does not wipe the project's other repos).
+   */
+  async build(root: string, project: string, repo: string | null = null): Promise<number> {
     const files = await parseTree(root);
     const scores = rankSymbols(files);
 
@@ -34,11 +38,12 @@ export class RepoMap {
       }
     }
 
-    await this.db.collection("symbols").deleteMany({ project });
+    await this.db.collection("symbols").deleteMany(repo ? { project, repo } : { project, repo: null });
     const docs = files.flatMap((fsym) =>
       fsym.defs.map(([name, kind]) =>
         makeSymbol({
           project,
+          repo,
           file: fsym.file,
           name,
           kind,
@@ -52,9 +57,11 @@ export class RepoMap {
     return docs.length;
   }
 
-  /** Render the top-ranked symbols within a token budget (agent-facing). */
-  async render(project: string, opts: { maxTokens?: number } = {}): Promise<string> {
-    const rows = await this.db.collection("symbols").find({ project }).toArray();
+  /** Render the top-ranked symbols within a token budget (agent-facing). Optional repo filter. */
+  async render(project: string, opts: { maxTokens?: number; repo?: string } = {}): Promise<string> {
+    const query: Record<string, unknown> = { project };
+    if (opts.repo !== undefined) query.repo = opts.repo;
+    const rows = await this.db.collection("symbols").find(query).toArray();
     const scores = new Map<string, number>();
     for (const r of rows) {
       scores.set(`${r.file}${String.fromCharCode(1)}${r.name}`, (r.pagerank as number) ?? 0);

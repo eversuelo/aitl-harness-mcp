@@ -39,6 +39,11 @@ export interface BootstrapUserResult {
   username?: string;
   email?: string;
   role?: string;
+  /** True when the root was auto-generated as a local fallback (no valid seed). */
+  generated?: boolean;
+  /** Plaintext password — ONLY present for a generated root, returned once so the
+   *  caller can surface it. Never persisted (only the hash is stored). */
+  password?: string;
 }
 
 export interface VerifyUserResult {
@@ -80,6 +85,30 @@ export function validateUserSeed(seed: UserSeed): void {
     throw new Error("password must be at least 12 characters.");
   }
   if (seed.role !== undefined && seed.role !== "") validateRole(seed.role);
+}
+
+/** Non-throwing variant of {@link validateUserSeed} — for fallback decisions. */
+export function seedIsValid(seed: UserSeed): { ok: boolean; reason?: string } {
+  try {
+    validateUserSeed(seed);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * A self-contained local root seed used as the no-user fallback: a generated,
+ * RBAC-compliant password (>= 12 chars) so the harness is usable out of the box
+ * on a single-user host. The plaintext is returned to the caller exactly once.
+ */
+export function generateLocalRootSeed(): UserSeed {
+  return {
+    username: "local-root",
+    email: "local-root@aitl.local",
+    password: randomBytes(18).toString("base64url"),
+    role: "root",
+  };
 }
 
 function hashPassword(password: string): { password_hash: string; password_salt: string; password_algo: string } {
@@ -193,32 +222,35 @@ export async function setUserDisabled(username: string, disabled: boolean, db: D
 
 /**
  * Idempotent first-user bootstrap. Enforces the RBAC-REGISTRO rules:
- *   1. If `users` is empty, create the first user ONLY when its role is `root`.
- *   2. If any user already exists, do not register more here (use `aitl user create`
+ *   1. If any user already exists, do not register more here (use `aitl user create`
  *      as an authenticated root).
+ *   2. If `users` is empty, create the first root. The seed comes from settings when
+ *      valid; otherwise — as the no-user fallback — a local root is auto-generated
+ *      (unless `AITL_BOOTSTRAP_AUTOGEN=false`).
+ *
+ * Never throws: a misconfigured seed degrades to autogen or to a clear `skipped`
+ * status, so a bad password can never break server startup.
  */
 export async function bootstrapBaseUser(
   db: Db = getDb(),
   seed: UserSeed | null = bootstrapSeedFromSettings(),
 ): Promise<BootstrapUserResult> {
-  if (seed === null) return { status: "skipped", reason: "bootstrap user env is not configured" };
-  validateUserSeed(seed);
-
-  const username = normalizeUsername(seed.username);
-  const email = normalizeEmail(seed.email);
-  const role = (seed.role ?? "root").trim() || "root";
   const coll = db.collection(USERS_COLLECTION);
-
   const total = await coll.countDocuments();
+
   if (total > 0) {
-    const existing = await coll.findOne({ $or: [{ username }, { email }] });
-    if (existing) {
-      return {
-        status: "exists",
-        username: String(existing.username ?? username),
-        email: String(existing.email ?? email),
-        role: String(existing.role ?? role),
-      };
+    if (seed) {
+      const existing = await coll.findOne({
+        $or: [{ username: normalizeUsername(seed.username) }, { email: normalizeEmail(seed.email) }],
+      });
+      if (existing) {
+        return {
+          status: "exists",
+          username: String(existing.username ?? ""),
+          email: String(existing.email ?? ""),
+          role: String(existing.role ?? ""),
+        };
+      }
     }
     return {
       status: "skipped",
@@ -226,25 +258,38 @@ export async function bootstrapBaseUser(
     };
   }
 
-  if (role !== "root") {
-    return {
-      status: "needs-root",
-      reason: "the first user must be root. Set AITL_BOOTSTRAP_ROLE=root and run again.",
-    };
+  // No users yet → resolve a usable root seed.
+  let generated = false;
+  let effective = seed;
+  const role = (effective?.role ?? "root").trim() || "root";
+  if (!effective || !seedIsValid(effective).ok || role !== "root") {
+    if (settings.bootstrapAutogen === false) {
+      return {
+        status: "skipped",
+        reason: !effective
+          ? "no bootstrap seed configured and autogen disabled (AITL_BOOTSTRAP_AUTOGEN=false)."
+          : `bootstrap seed unusable (${seedIsValid(effective).reason ?? "role must be root"}) and autogen disabled.`,
+      };
+    }
+    effective = generateLocalRootSeed();
+    generated = true;
   }
 
-  validateRole(role);
+  const username = normalizeUsername(effective.username);
+  const email = normalizeEmail(effective.email);
   const now = new Date();
   await coll.insertOne({
     username,
     email,
-    role,
-    ...hashPassword(seed.password),
+    role: "root",
+    ...hashPassword(effective.password),
     disabled: false,
     created_at: now,
     updated_at: now,
   });
-  return { status: "created", username, email, role };
+  return generated
+    ? { status: "created", username, email, role: "root", generated: true, password: effective.password }
+    : { status: "created", username, email, role: "root" };
 }
 
 export async function verifyUserCredentials(opts: UserSeed, db: Db = getDb()): Promise<VerifyUserResult> {

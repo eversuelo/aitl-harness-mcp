@@ -8,7 +8,7 @@
  */
 
 import type { Db } from "mongodb";
-import type { MemoryRow, SymbolRow } from "./types.js";
+import type { ContextRow, DecisionRow, MemoryRow, RepoRow, SoftwareRow, SymbolRow } from "./types.js";
 
 export interface GraphSource {
   /** Distinct projects that have durable state worth graphing. */
@@ -17,6 +17,14 @@ export interface GraphSource {
   symbols(project: string): Promise<SymbolRow[]>;
   /** `memory` rows for a project (embedding stripped). */
   memory(project: string): Promise<MemoryRow[]>;
+  /** `decisions` (ADR) rows for a project (knowledge map, ADR-0029). */
+  decisions(project: string): Promise<DecisionRow[]>;
+  /** `mcp_context` snapshot rows for a project (lightweight). */
+  context(project: string): Promise<ContextRow[]>;
+  /** `softwares` whose `projects` include this project. */
+  softwares(project: string): Promise<SoftwareRow[]>;
+  /** `repos` belonging to a project. */
+  repos(project: string): Promise<RepoRow[]>;
 }
 
 /** MongoDB-backed source. Reads symbols/memory and discovers projects. */
@@ -37,5 +45,26 @@ export class MongoGraphSource implements GraphSource {
 
   async memory(project: string): Promise<MemoryRow[]> {
     return this.db.collection("memory").find({ project }, { projection: { embedding: 0 } }).toArray() as Promise<MemoryRow[]>;
+  }
+
+  async decisions(project: string): Promise<DecisionRow[]> {
+    return this.db.collection("decisions").find({ project }, { projection: { embedding: 0 } }).toArray() as Promise<DecisionRow[]>;
+  }
+
+  async context(project: string): Promise<ContextRow[]> {
+    return this.db
+      .collection("mcp_context")
+      .find({ project }, { projection: { messages: 0, context: 0, content_text: 0 } })
+      .sort({ created_at: -1 })
+      .limit(200)
+      .toArray() as Promise<ContextRow[]>;
+  }
+
+  async softwares(project: string): Promise<SoftwareRow[]> {
+    return this.db.collection("softwares").find({ projects: project }).toArray() as Promise<SoftwareRow[]>;
+  }
+
+  async repos(project: string): Promise<RepoRow[]> {
+    return this.db.collection("repos").find({ project }).toArray() as Promise<RepoRow[]>;
   }
 }

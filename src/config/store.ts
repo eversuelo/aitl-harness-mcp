@@ -36,6 +36,7 @@ export const ENV_KEYS = [
   "AITL_BOOTSTRAP_EMAIL",
   "AITL_BOOTSTRAP_PASSWORD",
   "AITL_BOOTSTRAP_ROLE",
+  "AITL_BOOTSTRAP_AUTOGEN",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
