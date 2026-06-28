@@ -16,6 +16,27 @@ en la colección `decisions` de Mongo vía `aitl adr-sync --dir docs/adr --proje
 | [0007](0007-memory-admin-web-ui.md) | UI web de administración de memorias sobre una proyección HTTP de `MemoryStore` | Accepted | 2026-06-23 |
 | [0008](0008-interactive-control-panel.md) | Panel de control interactivo (`aitl -i`) como supervisor readline sin dependencias | Accepted | 2026-06-23 |
 | [0009](0009-atlas-migration-via-driver.md) | Migración de base a Atlas vía el driver de Node (`aitl migrate-atlas`) | Accepted | 2026-06-24 |
+| 0010 | Conexión a MongoDB Atlas por seedlist con fallback | Accepted | — |
+| 0011 | Colecciones agents/skills nativas del harness | Accepted | — |
+| 0012 | Fase A — Ciclo de vida de memoria de sesión en runAgent | Accepted | — |
+| 0013 | Fase B — Router de skills en la hidratación de runAgent | Accepted | — |
+| 0014 | Enforcement determinista y auditoría de gates dentro de runAgent | Accepted | — |
+| 0015 | Resiliencia del loop de runAgent (Núcleo H2) | Accepted | — |
+| 0016 | Hidratación completa del system prompt (Núcleo H3) | Accepted | — |
+| 0017 | Repo map operativo vía extractor heurístico (fallback de tree-sitter) | Accepted | — |
+| 0018 | Fase C — Orquestador flaco con sub-agentes paralelos | Accepted | — |
+| 0019 | Provider OpenRouter vía gateway compatible con OpenAI | Accepted | — |
+| 0020 | Providers consolidados en OpenRouter + HostAdapters | Accepted | — |
+| 0021 | Empaquetado para instalación global (npm i -g) y rename a aitl-mcp | Accepted | — |
+| 0022 | Inyección/captura de contexto en hosts externos vía hooks | Accepted | — |
+| 0023 | Hook de hidratación en SessionStart y rutas POSIX en hooks | Accepted | — |
+| 0024 | RBAC y registro de usuarios: AITL como gateway seguro a MongoDB | Accepted | — |
+
+> **Nota de reconciliación (2026-06-28).** Fuente de verdad: la colección `decisions` en Atlas
+> (`list_decisions`), con **0001–0024 contiguas** (next-free **0025**). Los ADRs **0010–0024**
+> existen solo en el ledger — aún no se exportan a `.md` en este directorio (de ahí fecha `—` y sin
+> enlace). `aitl adr-sync` opera archivo→ledger; la inversa (ledger→archivo) es trabajo aparte. Este
+> índice se corrige *hacia* el ledger, nunca al revés.
 
 ## Hilo de la sesión 2026-06-23
 

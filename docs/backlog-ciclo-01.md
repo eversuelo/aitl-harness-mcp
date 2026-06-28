@@ -33,7 +33,12 @@ El ciclo se repite por cada tarea o grupo de tareas:
 
 ### Numeración ADR
 
-**Verificado contra la bitácora real** (colección `decisions` en Atlas, proyecto `aitl-js`): existen 23 ADRs contiguas **0001–0023**, por lo que el **próximo id libre es `0024`**. Este ciclo ocupa el bloque contiguo **0024–0037** (C1=0024 … E8=0037). Tareas puramente operativas (tests, `doctor`) **no** emiten ADR.
+> ⚠️ **Los números `ADR-00NN` por tarea de abajo son ILUSTRATIVOS (plan), no un contrato.** No se
+> pinnean: cada ADR toma el **next-free real** del ledger (`decisions` en Atlas) en el momento de
+> BUILD. Estado verificado **2026-06-28**: ledger contiguo **0001–0024** → **next-free `0025`** (el
+> `0024` lo tomó la ADR de RBAC, no C1). El contrato de numeración de cierre vive en
+> `docs/ciclo-01-definition-of-done.md`, no aquí. Tareas puramente operativas (tests, `doctor`) **no**
+> emiten ADR.
 
 ### Plantilla de tarea (contrato fijo)
 

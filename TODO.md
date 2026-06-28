@@ -14,8 +14,10 @@ no expone `tags`/`components`.
 
 - [ ] Añadir `components: string[]` al schema de `decisions` (`src/memory/schemas.ts`).
 - [ ] Exponerlo en el CLI/MCP `record_decision`.
-- [ ] Backfill de las 23 ADRs existentes con sus componentes (`src/providers`, `src/orchestration`, …).
-- [ ] Registrar como **ADR-0024**.
+- [ ] Backfill de las ADRs existentes con sus componentes (`src/providers`, `src/orchestration`, …).
+- [ ] Registrar como una ADR propia, tomando el **next-free real** del ledger al hacer BUILD
+      (no se pinnea: el `0024` que este TODO reservaba ya lo tomó la ADR de RBAC; este trabajo de
+      component-scope tomará el id que toque cuando se escriba).
 
 > Con la recall semántica en español débil hasta el índice vectorial de Atlas (ADR-0010),
 > el match exacto por tag es lo fiable hoy → esta capa es tag-based, no semántica.
