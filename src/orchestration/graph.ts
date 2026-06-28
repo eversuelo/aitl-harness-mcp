@@ -38,6 +38,9 @@ export interface RunAgentOpts {
   gates?: boolean;
   /** Extra path/command deny patterns, added as a project-policy gate. */
   denyPaths?: string[];
+  /** Engineering roles (H11) to attach: gate-mode roles veto in-loop; review/pair roles
+   *  critique at the end-of-run checkpoint, producing a DecisionBrief for the engineer. */
+  roles?: string[];
   /** Register the built-in Read/Write/Shell tools before running (default false). */
   installDefaultTools?: boolean;
   /** Max provider-call retries on transient errors, per turn (default 3). */
@@ -68,6 +71,8 @@ export interface RunAgentResult {
   gate_denials?: number;
   /** Final run status. */
   status?: "done" | "error";
+  /** Role review checkpoint output (H11), if roles were attached. */
+  decision_brief?: import("../roles/schema.js").DecisionBrief;
 }
 
 /** Rebuild a live convo from a run's persisted transcript (for resume). */
@@ -108,6 +113,25 @@ export async function runAgent(
   if (opts.gates !== false) {
     installDefaultGates(registry); // idempotent per registry
     if (opts.denyPaths?.length) registry.addGate(denyPathsGate(opts.denyPaths));
+  }
+
+  // ── engineering roles (H11): gate-mode roles veto in-loop; review/pair are
+  //    applied at the end-of-run checkpoint (see below). They assist the engineer. ──
+  let activeRoles: import("../roles/schema.js").Role[] = [];
+  if (opts.roles?.length) {
+    try {
+      const { RoleStore } = await import("../roles/store.js");
+      const { roleGate } = await import("../roles/engine.js");
+      const rs = new RoleStore(store.db);
+      for (const name of opts.roles) {
+        const role = await rs.get(project, name);
+        if (!role) continue;
+        activeRoles.push(role);
+        if (role.mode === "gate") registry.addGate(roleGate(role)); // blocking coupling
+      }
+    } catch {
+      // roles are best-effort; never block the run.
+    }
   }
 
   // ── resolve the run: fresh, or resumed from its durable transcript ──
@@ -307,6 +331,19 @@ export async function runAgent(
     }
   }
 
+  // ── role checkpoint (H11): review/pair roles critique the final output, producing
+  //    a DecisionBrief (advice + attributed objections) to assist the engineer. ──
+  let decisionBrief: import("../roles/schema.js").DecisionBrief | undefined;
+  const checkpointRoles = activeRoles.filter((r) => r.mode === "review" || r.mode === "pair");
+  if (checkpointRoles.length) {
+    try {
+      const { deliberate } = await import("../roles/engine.js");
+      decisionBrief = await deliberate({ project, target: finalText, roles: checkpointRoles, provider, store, runId });
+    } catch {
+      // role review is best-effort advice; never fail a completed run over it.
+    }
+  }
+
   await store.db
     .collection("runs")
     .updateOne(
@@ -319,6 +356,8 @@ export async function runAgent(
           iters: it,
           tool_calls: toolCalls,
           gate_denials: gateDenials,
+          roles: activeRoles.map((r) => r.name),
+          decision_blocked: decisionBrief?.blocked ?? false,
         },
       },
     );
@@ -330,6 +369,7 @@ export async function runAgent(
     selected_skills: selectedSkills,
     gate_denials: gateDenials,
     status: "done",
+    decision_brief: decisionBrief,
   };
 }
 

@@ -191,9 +191,23 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 
 ## 12. Comandos del CLI (`aitl <cmd>`)
 
-`interactive` · `check-db` · `init-db` · `ingest` · `search` · **`run`** · **`run-host`** · **`orchestrate`** ·
-`synthesize` · `repomap` · `adr-sync` · `export` · `eval` · `mcp` · `config {path,show,export,import,set,unset}` ·
-`ui` · `prompt {add,list,search}` · `init agent` · `migrate-atlas`.
+`interactive` · `check-db` · `init-db` · `ingest [--repo]` · `search` · **`run [--bare] [--verify-cmd] [--roles]`** ·
+**`run-host`** · **`orchestrate`** · `run-show <runId>` · `intervene <runId>` · `synthesize` · `repomap [--repo]` ·
+`index-repo` · `adr-sync` · `adr history` · `memory history` · `export` · `eval` · `mcp` ·
+`config {…}` · `ui` · `prompt {add,list,search}` · `init agent` · `migrate-atlas`.
+
+**Ciclo 0024–0033 (plataforma + tesis):**
+`software {add,list,get,rm}` · `repo {add,list,get,rm}` · `branch {sync,list,rm}` ·
+`build {skill,agent,seed}` · **`role {seed,list,rm,gate-check}`** · **`review <target|@file> --roles`**.
+
+> **Roles de ingeniería (H11, ADR-0033):** `role` = persona/lens + modo (`review`/`pair`/`gate`) +
+> severidad + binding. Asisten al ingeniero produciendo un **DecisionBrief** (objeciones atribuidas por
+> rol), no deciden por él. `gate` veta determinista en el loop (sin modelo); `review`/`pair` critican por
+> modelo. `aitl run --roles security,architect` los acopla; `aitl review` delibera sobre un target.
+
+> **Instrumentación del piloto (ADR-0032):** `aitl run-show` expone tokens/iters/tool_calls + `hydrate`
+> + intervenciones humanas + roles/decision_blocked; `--bare` = condición C0; `--verify-cmd` = quality
+> gate como condición de terminación del loop; `aitl intervene` registra supervisión humana (Tabla 4.3 #6).
 
 ---
 
@@ -203,4 +217,5 @@ Emitidos a la colección `events` por `runAgent`/`orchestrate`:
 
 `loop_iter` · `compaction` · `tool_call` · `gate` (denegación auditada) · `synthesis` ·
 `hydrate` (desglose memory/decisions/conventions/repomap) · `session_summary` · `skills_route` ·
-`retry` · `verify` · `error` · `resume` · `spawn` (sub-agente lanzado).
+`retry` · `verify` · `error` · `resume` · `spawn` (sub-agente lanzado) ·
+**`review`** · **`role_veto`** · **`deliberation`** (objeciones de rol, H11) · **`human_intervention`** (Tabla 4.3 #6).

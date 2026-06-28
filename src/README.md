@@ -8,22 +8,28 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [config.ts](config.ts) | Config efectiva: env, perfil global y defaults. |
 | [config/store.ts](config/store.ts) | Perfil `~/.aitl/config.json`; ver [ADR-0006](../docs/adr/0006-user-level-config-profile.md). |
 | [contracts.ts](contracts.ts) | Tipos/contratos compartidos. |
-| [providers/](providers/) | Puerto LLM agnostico: Gemini, OpenAI, Anthropic. |
-| [orchestration/](orchestration/) | Loop agente y checkpointing. |
-| [memory/](memory/) | Schemas, store, clasificador y sintetizador de memoria. |
+| [providers/](providers/) | Puerto LLM agnostico (gateway OpenAI-compatible: OpenRouter). |
+| [orchestration/](orchestration/) | Loop agente, checkpointing y rollup de telemetria por run. |
+| [memory/](memory/) | Schemas, store, clasificador, sintetizador, versionado (`versioning.ts`/`history.ts`). |
+| [auth/](auth/) | RBAC + usuarios + auditoria (ADR-0024/0026). |
+| [softwares/](softwares/) · [repos/](repos/) · [branches/](branches/) | Jerarquia software→projects→repos + grafo de ramas (ADR-0028/0031). |
+| [roles/](roles/) | **Roles de ingenieria (H11)**: schema/store/engine/seed (review/pair/gate). ADR-0033. |
+| [builder/](builder/) · [indexing/](indexing/) | Constructora de skills/agentes e indexador maestro (ADR-0030). |
+| [graph/](graph/) | `graphify` puro + knowledge map multi-entidad (ADR-0025/0029). |
 | [db/](db/) | Cliente Mongo e indices. |
 | [ingest/](ingest/) | Ingesta de markdown/transcripts y embeddings. |
-| [repomap/](repomap/) | Parseo, ranking y cache del mapa de repo. |
-| [decisions/](decisions/) | ADR store y sincronizacion. |
+| [repomap/](repomap/) | Parseo, ranking y cache del mapa de repo (sub-scope `repo`). |
+| [decisions/](decisions/) | ADR store y sincronizacion (+ versionado). |
 | [tools/](tools/) | Registry y herramientas de filesystem/shell. |
 | [hooks/](hooks/) | Gates deterministas. |
+| [context/](context/) | Captura/hidratacion de sesion para hosts externos (ADR-0022). |
 | [conventions/](conventions/) | Carga de convenciones del proyecto. |
 | [adapters/](adapters/) | Export a Cursor, Copilot, Antigravity, Kiro, Trae y AGENTS.md. |
-| [mcpserver/](mcpserver/) | Servidor MCP stdio. |
-| [server/](server/) | API HTTP y launcher de UI web. |
+| [mcpserver/](mcpserver/) | Servidor MCP stdio + HTTP. |
+| [server/](server/) | API HTTP y launcher de UI web (incluye knowledge map). |
 | [interactive/](interactive/) | Panel `aitl -i`; ver [ADR-0008](../docs/adr/0008-interactive-control-panel.md). |
 | [eval/](eval/) | Runner de evaluacion. |
-| [util/](util/) | Helpers sin dominio. |
+| [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`). |
 
 ## Flujos de lectura
 

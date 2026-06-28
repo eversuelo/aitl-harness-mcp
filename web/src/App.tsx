@@ -672,7 +672,8 @@ function GraphView({ project, onError }: { project: string; onError: (m: string)
               (e.target as Element).setPointerCapture?.(e.pointerId);
             }}
             onPointerMove={(e) => {
-              if (drag.current) setView((v) => ({ ...v, tx: e.clientX - drag.current!.x, ty: e.clientY - drag.current!.y }));
+              const d = drag.current;
+              if (d) setView((v) => ({ ...v, tx: e.clientX - d.x, ty: e.clientY - d.y }));
             }}
             onPointerUp={() => {
               drag.current = null;
@@ -831,7 +832,8 @@ function KnowledgeMapView({ project, onError }: { project: string; onError: (m: 
               (e.target as Element).setPointerCapture?.(e.pointerId);
             }}
             onPointerMove={(e) => {
-              if (drag.current) setView((v) => ({ ...v, tx: e.clientX - drag.current!.x, ty: e.clientY - drag.current!.y }));
+              const d = drag.current;
+              if (d) setView((v) => ({ ...v, tx: e.clientX - d.x, ty: e.clientY - d.y }));
             }}
             onPointerUp={() => {
               drag.current = null;

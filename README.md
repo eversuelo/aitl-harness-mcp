@@ -86,7 +86,24 @@ El harness envuelve al host con contexto durable y telemetria. Hosts: `claude-co
 | `aitl adr-sync --dir docs/adr --project demo` | Espeja ADRs en Mongo. |
 | `aitl export --adapter cursor --project demo` | Proyecta canon a herramientas externas. |
 | `aitl mcp` | Arranca servidor MCP stdio. |
-| `aitl ui --project demo` | Arranca API + SPA de memoria. |
+| `aitl ui --project demo` | Arranca API + SPA de memoria (incl. knowledge map). |
+
+### Roles de ingeniería (H11) y medición (ciclo 0024–0033)
+
+| Comando | Uso |
+|---|---|
+| `aitl role seed --project demo` | Crea el catálogo de roles (security, devops, qa, architect, devsecops). |
+| `aitl role list --project demo` | Lista roles (modo review/pair/gate + severidad). |
+| `aitl role gate-check .env --project demo --role security` | Veto determinista de un gate-role (sin modelo). |
+| `aitl review @diff.txt --project demo --roles security,architect` | Roles revisan un target → **DecisionBrief** que asiste la decisión. |
+| `aitl run "task" --project demo --roles security,qa` | Acopla roles al loop (gate veta; review/pair critican al cierre). |
+| `aitl run "task" --project demo --bare` | Condición **C0** (sin memoria/skills/gates). |
+| `aitl run "task" --project demo --verify-cmd "npm test"` | Quality gate: el loop no cierra hasta verde. |
+| `aitl run-show <runId>` | Telemetría del run: tokens, iters, tool_calls, hydrate, intervenciones, roles. |
+| `aitl intervene <runId> --reason "…" --minutes 5` | Registra supervisión humana (Tabla 4.3 #6). |
+| `aitl software/repo/branch …` | Catálogo software→projects→repos + grafo de ramas. |
+| `aitl build {skill,agent,seed}` · `aitl index-repo …` | Constructora de definiciones e indexador maestro. |
+| `aitl adr history <id> --diff` · `aitl memory history <slug> --diff` | Historial versionado con diff. |
 
 ## MCP aitl-js
 

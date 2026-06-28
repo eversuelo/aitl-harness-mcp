@@ -153,18 +153,60 @@ program
   .requiredOption("--project <project>", "Project scope.")
   .option("--model <m>", "primary | secondary | openrouter", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
+  .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
+  .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
   .description("Run the model-agnostic agent loop, persisting the run/transcript to Mongo.")
   .action(async (task, opts) => {
     const { runAgent } = await import("./orchestration/graph.js");
     const { getProvider } = await import("./providers/base.js");
+    // --verify-cmd turns the quality gate into the loop's termination condition: the run
+    // only finishes when the command exits 0, so "I'm done" before green can't end it.
+    const verify = opts.verifyCmd
+      ? async (): Promise<true | string> => {
+          const { execSync } = await import("node:child_process");
+          try {
+            execSync(opts.verifyCmd, { stdio: "pipe", encoding: "utf8" });
+            return true;
+          } catch (e) {
+            const err = e as { stdout?: string; stderr?: string; message?: string };
+            return `Quality gate failed (\`${opts.verifyCmd}\`). Fix it, then finish:\n${(err.stdout ?? "") + (err.stderr ?? "") || err.message || "non-zero exit"}`.slice(0, 2000);
+          }
+        }
+      : undefined;
     // --bare operationalizes condition C0 (memory/specs/gates OFF); default is C2 (all ON).
+    const roles = opts.roles ? String(opts.roles).split(",").map((r: string) => r.trim()).filter(Boolean) : undefined;
     const result = await runAgent(task, opts.project, {
       provider: await getProvider(opts.model),
       installDefaultTools: true,
+      ...(verify ? { verify } : {}),
+      ...(roles ? { roles } : {}),
       ...(opts.bare ? { hydrate: false, skills: false, gates: false } : {}),
     });
     console.log(`run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials}`);
-    console.log(result.final_text);
+    if (result.decision_brief) {
+      console.log(`\n── Decision brief (H11) ── ${result.decision_brief.summary}`);
+      for (const v of result.decision_brief.verdicts) {
+        console.log(`  [${v.role}/${v.mode}] ${v.stance}${v.findings.length ? `: ${v.findings.join("; ")}` : ""}`);
+      }
+    }
+    console.log(`\n${result.final_text}`);
+    await closeClient();
+  });
+
+program
+  .command("intervene")
+  .argument("<runId>", "Run id the human intervened on.")
+  .requiredOption("--reason <text>", "What you had to intervene on and why.")
+  .option("--minutes <n>", "Approximate duration of the intervention.", "0")
+  .description("Record a human intervention on a run (Tabla 4.3 #6 supervisión humana).")
+  .action(async (runId, opts) => {
+    const { getDb } = await import("./db/client.js");
+    const { MemoryStore } = await import("./memory/store.js");
+    const { makeEvent } = await import("./memory/schemas.js");
+    const run = await getDb().collection("runs").findOne({ _id: runId as never });
+    const project = (run?.project as string) ?? "unknown";
+    await new MemoryStore().logEvent(makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
+    console.log(`Recorded human intervention on ${runId} (${opts.minutes} min): ${opts.reason}`);
     await closeClient();
   });
 
@@ -185,10 +227,12 @@ program
     const events = await db.collection("events").find({ run_id: runId }).toArray();
     const byType: Record<string, number> = {};
     let hydrateSections: Record<string, unknown> | null = null;
+    let interventionMinutes = 0;
     for (const e of events) {
       const t = String(e.type);
       byType[t] = (byType[t] ?? 0) + 1;
       if (t === "hydrate") hydrateSections = (e.payload as Record<string, unknown>) ?? null;
+      if (t === "human_intervention") interventionMinutes += Number((e.payload as Record<string, unknown>)?.minutes ?? 0);
     }
     const tu = (run.token_usage as { input?: number; output?: number }) ?? {};
     const ms = run.started_at && run.ended_at ? new Date(run.ended_at as string).getTime() - new Date(run.started_at as string).getTime() : null;
@@ -204,6 +248,10 @@ program
       iters: run.iters ?? null,
       tool_calls: run.tool_calls ?? byType.tool_call ?? 0,
       gate_denials: run.gate_denials ?? byType.gate ?? 0,
+      human_interventions: { count: byType.human_intervention ?? 0, minutes: interventionMinutes },
+      roles: run.roles ?? [],
+      decision_blocked: run.decision_blocked ?? false,
+      review_events: { review: byType.review ?? 0, role_veto: byType.role_veto ?? 0, deliberation: byType.deliberation ?? 0 },
       event_counts: byType,
       hydrate: hydrateSections,
     }, null, 2));
@@ -889,6 +937,94 @@ branch
   .action(async (name, opts) => {
     const { BranchStore } = await import("./branches/store.js");
     console.log((await new BranchStore().delete(opts.project, opts.repo, name)) ? `Deleted '${name}'.` : `(no branch '${name}')`);
+    await closeClient();
+  });
+
+// ── engineering roles (H11): asisten al Software Engineer a decidir con criterio ──
+const role = program.command("role").description("Engineering roles (review/pair/gate) that assist the engineer's decision.");
+
+role
+  .command("seed")
+  .requiredOption("--project <project>", "Project scope.")
+  .description("Seed the role catalog (security, devops, qa, architect, devsecops).")
+  .action(async (opts) => {
+    const { seedRoles } = await import("./roles/seed.js");
+    const { RoleStore } = await import("./roles/store.js");
+    const names = await seedRoles(opts.project, new RoleStore());
+    console.log(`Seeded roles: ${names.join(", ")}.`);
+    await closeClient();
+  });
+
+role
+  .command("list")
+  .requiredOption("--project <project>", "Project scope.")
+  .description("List engineering roles.")
+  .action(async (opts) => {
+    const { RoleStore } = await import("./roles/store.js");
+    const roles = await new RoleStore().list(opts.project);
+    for (const r of roles) console.log(`- ${r.name}  (${r.mode}/${r.severity})  ${r.description}`.trimEnd());
+    if (!roles.length) console.log("(no roles — run: aitl role seed)");
+    await closeClient();
+  });
+
+role
+  .command("rm")
+  .argument("<name>", "Role name.")
+  .requiredOption("--project <project>", "Project scope.")
+  .action(async (name, opts) => {
+    const { RoleStore } = await import("./roles/store.js");
+    console.log((await new RoleStore().delete(opts.project, name)) ? `Deleted '${name}'.` : `(no role '${name}')`);
+    await closeClient();
+  });
+
+// Deterministic gate check (no model/key): does a role's gate block a path?
+role
+  .command("gate-check")
+  .argument("<path>", "Path the agent would write/touch.")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--role <name>", "Gate-mode role to check against.")
+  .description("Check a gate-mode role's deterministic veto for a path (no model needed).")
+  .action(async (path, opts) => {
+    const { RoleStore } = await import("./roles/store.js");
+    const { roleGate } = await import("./roles/engine.js");
+    const r = await new RoleStore().get(opts.project, opts.role);
+    if (!r) { console.log(`(no role '${opts.role}')`); await closeClient(); return; }
+    const [allowed, reason] = roleGate(r)("write_file", { path });
+    console.log(allowed ? `ALLOW ${path}` : `VETO ${path} — ${reason}`);
+    await closeClient();
+  });
+
+// Model-based deliberation: roles review a target and produce a DecisionBrief.
+program
+  .command("review")
+  .argument("<target>", "Text, or @file to review.")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--roles <list>", "Comma-separated roles to consult.")
+  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .description("Have engineering roles review a target → DecisionBrief (assists the engineer).")
+  .action(async (target, opts) => {
+    const { RoleStore } = await import("./roles/store.js");
+    const { deliberate } = await import("./roles/engine.js");
+    const { getProvider } = await import("./providers/base.js");
+    const { MemoryStore } = await import("./memory/store.js");
+    let text = target;
+    if (String(target).startsWith("@")) {
+      const { readFile } = await import("node:fs/promises");
+      text = await readFile(String(target).slice(1), "utf8");
+    }
+    const store = new RoleStore();
+    const names = String(opts.roles).split(",").map((r: string) => r.trim()).filter(Boolean);
+    const resolved = await Promise.all(names.map((n: string) => store.get(opts.project, n)));
+    const present = resolved.filter((r): r is NonNullable<typeof r> => r != null);
+    if (!present.length) { console.log("(no matching roles — run: aitl role seed)"); await closeClient(); return; }
+    const brief = await deliberate({ project: opts.project, target: text, roles: present, provider: await getProvider(opts.model), store: new MemoryStore() });
+    console.log(`Decision brief: ${brief.summary}\n`);
+    for (const v of brief.verdicts) {
+      console.log(`[${v.role}/${v.mode}/${v.severity}] ${v.stance}`);
+      for (const f of v.findings) console.log(`   - ${f}`);
+      if (v.recommendation) console.log(`   → ${v.recommendation}`);
+    }
+    console.log(`\nblocked=${brief.blocked} (el ingeniero decide con estos criterios)`);
     await closeClient();
   });
 

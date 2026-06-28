@@ -243,6 +243,8 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   build_definition: { resource: "agents_skills", action: "create" },
   sync_branches: { resource: "branches", action: "create" },
   delete_branch: { resource: "branches", action: "delete" },
+  write_role: { resource: "agents_skills", action: "create" },
+  seed_roles: { resource: "agents_skills", action: "create" },
 };
 
 /**
@@ -970,6 +972,68 @@ export function buildServer(): McpServer {
       return runLogged("delete_branch", { project, repo, name }, async () => {
         const { BranchStore } = await import("../branches/store.js");
         return text({ project, repo, name, deleted: await new BranchStore().delete(project, repo, name) });
+      });
+    },
+  );
+
+  // ── engineering roles (H11): assist the engineer's decision ──────────────────
+  server.tool(
+    "list_roles",
+    "List engineering roles (review/pair/gate) for a project.",
+    { project: z.string() },
+    async ({ project }) => {
+      return runLogged("list_roles", { project }, async () => {
+        const { RoleStore } = await import("../roles/store.js");
+        return text((await new RoleStore().list(project)).map(jsonable));
+      });
+    },
+  );
+  server.tool(
+    "write_role",
+    "Create/update ONE engineering role (persona/lens + mode review|pair|gate + severity + binding).",
+    {
+      project: z.string(),
+      name: z.string(),
+      lens: z.string(),
+      mode: z.enum(["review", "pair", "gate"]).default("review"),
+      severity: z.enum(["advisory", "blocking"]).default("advisory"),
+      triggers: z.array(z.string()).optional(),
+      denyGlobs: z.array(z.string()).optional(),
+      skills: z.array(z.string()).optional(),
+      description: z.string().default(""),
+    },
+    async ({ project, name, lens, mode, severity, triggers, denyGlobs, skills, description }) => {
+      return runLogged("write_role", { project, name, mode, severity }, async () => {
+        const { RoleStore } = await import("../roles/store.js");
+        const { makeRole } = await import("../roles/schema.js");
+        const role = makeRole({ name, lens, mode, severity, triggers: triggers ?? [], denyGlobs: denyGlobs ?? [], skills: skills ?? [], description });
+        await new RoleStore().upsert(project, role);
+        return text(jsonable(role));
+      });
+    },
+  );
+  server.tool(
+    "seed_roles",
+    "Seed the default role catalog (security, devops, qa, architect, devsecops) into a project.",
+    { project: z.string() },
+    async ({ project }) => {
+      return runLogged("seed_roles", { project }, async () => {
+        const { seedRoles } = await import("../roles/seed.js");
+        const { RoleStore } = await import("../roles/store.js");
+        return text({ seeded: await seedRoles(project, new RoleStore()) });
+      });
+    },
+  );
+
+  server.tool(
+    "record_human_intervention",
+    "Record a human intervention on a run (Tabla 4.3 #6 supervisión humana): reason + minutes.",
+    { project: z.string(), run_id: z.string(), reason: z.string(), minutes: z.number().default(0) },
+    async ({ project, run_id, reason, minutes }) => {
+      return runLogged("record_human_intervention", { project, run_id, reason, minutes }, async () => {
+        const { makeEvent } = await import("../memory/schemas.js");
+        await new MemoryStore().logEvent(makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
+        return text({ ok: true, run_id, minutes });
       });
     },
   );

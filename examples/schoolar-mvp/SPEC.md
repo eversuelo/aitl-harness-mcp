@@ -37,8 +37,28 @@ npm test --prefix examples/schoolar-mvp
 Estado inicial: **RED** (la implementación es un stub que lanza "not implemented").
 La tarea está completa cuando las 4 pruebas pasan.
 
-## Fuera de alcance de T1 (después)
+---
 
-- **T3 — Aislamiento por tenant** (`tenantId` obligatorio en consultas, índices
-  compuestos, `validate_tenant_isolation`). Es la dimensión de seguridad; se añade como
-  segunda tarea, no aquí.
+# T3 — Restricción de consultas por tenant (ADR-SCH-002)
+
+## Objetivo
+
+Implementar `findStudentsByTenant(tenantId)` en `src/tenant.ts` con **filtro obligatorio
+por `tenantId`**, de modo que ninguna consulta devuelva datos de otro tenant.
+
+## Criterios de aceptación (gate = `npm run test:t3`)
+
+1. Una consulta por tenant devuelve **solo** los alumnos de ese tenant.
+2. `validateTenantIsolation(repo, tenants)` (el tool `schoolar.validate_tenant_isolation`
+   de la Tabla 4.3 "Seguridad") devuelve **0** (sin fugas entre tenants).
+3. Un tenant desconocido devuelve cero alumnos.
+
+Estado inicial: **RED** (el stub `findStudentsByTenant` devuelve todos los rows = fuga).
+
+## Gates por tarea
+
+```bash
+npm run test:t1 --prefix examples/schoolar-mvp   # T1
+npm run test:t3 --prefix examples/schoolar-mvp   # T3
+npm test        --prefix examples/schoolar-mvp   # ambas
+```
