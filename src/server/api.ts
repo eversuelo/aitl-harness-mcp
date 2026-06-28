@@ -163,6 +163,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return send(res, 200, await store.listProjects());
   }
 
+  // ── graph (durable-state projection) ──────────────────────────────────────
+  if (pathname === "/api/graph" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const scope = (searchParams.get("scope") ?? "all") as "all" | "symbols" | "memory";
+    const { graphify, MongoGraphSource } = await import("../graph/index.js");
+    const graphs = await graphify(new MongoGraphSource(store.db), { project, scope });
+    return send(res, 200, graphs[project] ?? { nodes: [], edges: [] });
+  }
+
   if (pathname === "/api/memory/search" && method === "GET") {
     const project = searchParams.get("project") ?? undefined;
     const q = searchParams.get("q") ?? "";

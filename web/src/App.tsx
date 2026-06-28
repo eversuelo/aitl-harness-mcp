@@ -3,6 +3,7 @@ import {
   GitBranch,
   Loader2,
   MessageSquare,
+  Network,
   Pencil,
   Plus,
   RefreshCw,
@@ -11,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { type DecisionDoc, type MemoryDoc, type MemoryInput, type PromptDoc, api } from "./api.js";
+import {
+  type DecisionDoc,
+  type GraphData,
+  type GraphNode,
+  type MemoryDoc,
+  type MemoryInput,
+  type PromptDoc,
+  api,
+} from "./api.js";
 
 const TYPES = ["user", "feedback", "project", "reference"] as const;
 const DEFAULT_PROJECT = (import.meta.env.VITE_DEFAULT_PROJECT as string) || "";
@@ -35,7 +44,7 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "memory" | "decisions" | "prompts";
+type Tab = "memory" | "decisions" | "prompts" | "graph";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -75,6 +84,9 @@ export function App() {
               <TabsTrigger value="prompts">
                 <MessageSquare /> Prompts
               </TabsTrigger>
+              <TabsTrigger value="graph">
+                <Network /> Graph
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
@@ -108,6 +120,7 @@ export function App() {
         {tab === "memory" && <MemoryView project={project} onError={setError} />}
         {tab === "decisions" && <DecisionsView project={project} onError={setError} />}
         {tab === "prompts" && <PromptsView project={project} onError={setError} />}
+        {tab === "graph" && <GraphView project={project} onError={setError} />}
       </div>
     </div>
   );
@@ -475,6 +488,211 @@ function PromptsView({ project, onError }: { project: string; onError: (e: strin
         ))}
         {!items.length && !loading && (
           <div className="py-10 text-center text-sm text-muted-foreground">No prompts recorded yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Graph view ───────────────────────────────────────────────────────────────
+type GraphScope = "all" | "symbols" | "memory";
+const VW = 960;
+const VH = 640;
+const MAX_NODES = 300;
+const NODE_FILL: Record<GraphNode["kind"], string> = { symbol: "#6366f1", memory: "#f59e0b" };
+
+/** Deterministic Fruchterman–Reingold-style force layout (pure, no deps). */
+function computeLayout(nodes: GraphNode[], edges: GraphData["edges"]): Map<string, { x: number; y: number }> {
+  const pos = new Map<string, { x: number; y: number }>();
+  const N = nodes.length;
+  if (!N) return pos;
+  const R = Math.min(VW, VH) * 0.36;
+  nodes.forEach((n, i) => {
+    const a = (2 * Math.PI * i) / N;
+    pos.set(n.id, { x: VW / 2 + Math.cos(a) * R, y: VH / 2 + Math.sin(a) * R });
+  });
+  const links = edges.filter((e) => pos.has(e.source) && pos.has(e.target));
+  const k = Math.sqrt((VW * VH) / N) * 0.8;
+  const iters = N > 120 ? 120 : 300;
+  for (let it = 0; it < iters; it++) {
+    const disp = new Map(nodes.map((n) => [n.id, { x: 0, y: 0 }]));
+    for (let i = 0; i < N; i++) {
+      const a = pos.get(nodes[i].id)!;
+      for (let j = i + 1; j < N; j++) {
+        const b = pos.get(nodes[j].id)!;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        const f = (k * k) / d;
+        const da = disp.get(nodes[i].id)!;
+        const db = disp.get(nodes[j].id)!;
+        da.x += (dx / d) * f;
+        da.y += (dy / d) * f;
+        db.x -= (dx / d) * f;
+        db.y -= (dy / d) * f;
+      }
+    }
+    for (const e of links) {
+      const a = pos.get(e.source)!;
+      const b = pos.get(e.target)!;
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const d = Math.hypot(dx, dy) || 0.01;
+      const f = (d * d) / k;
+      const da = disp.get(e.source)!;
+      const db = disp.get(e.target)!;
+      da.x -= (dx / d) * f;
+      da.y -= (dy / d) * f;
+      db.x += (dx / d) * f;
+      db.y += (dy / d) * f;
+    }
+    const temp = k * (1 - it / iters);
+    for (const n of nodes) {
+      const dp = disp.get(n.id)!;
+      const d = Math.hypot(dp.x, dp.y) || 0.01;
+      const p = pos.get(n.id)!;
+      p.x = Math.max(24, Math.min(VW - 24, p.x + (dp.x / d) * Math.min(d, temp)));
+      p.y = Math.max(24, Math.min(VH - 24, p.y + (dp.y / d) * Math.min(d, temp)));
+    }
+  }
+  return pos;
+}
+
+function GraphView({ project, onError }: { project: string; onError: (m: string) => void }) {
+  const [scope, setScope] = useState<GraphScope>("memory");
+  const [data, setData] = useState<GraphData>({ nodes: [], edges: [] });
+  const [loading, setLoading] = useState(false);
+  const [hover, setHover] = useState<string | null>(null);
+  const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
+  const drag = useRef<{ x: number; y: number } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!project) return;
+    setLoading(true);
+    try {
+      setData(await api.graph(project, scope));
+      setView({ scale: 1, tx: 0, ty: 0 });
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [project, scope, onError]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load already closes over deps
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Cap very large graphs to the highest-ranked nodes so the SVG stays responsive.
+  const { nodes, edges, capped } = useMemo(() => {
+    let ns = data.nodes;
+    let cap = false;
+    if (ns.length > MAX_NODES) {
+      ns = [...ns].sort((a, b) => (b.pagerank ?? 0) - (a.pagerank ?? 0)).slice(0, MAX_NODES);
+      cap = true;
+    }
+    const keep = new Set(ns.map((n) => n.id));
+    return { nodes: ns, edges: data.edges.filter((e) => keep.has(e.source) && keep.has(e.target)), capped: cap };
+  }, [data]);
+
+  const pos = useMemo(() => computeLayout(nodes, edges), [nodes, edges]);
+  const showLabels = nodes.length <= 60;
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-3 border-b px-5 py-2.5">
+        <h2 className="text-sm font-semibold">Graph</h2>
+        <Select value={scope} onValueChange={(v) => setScope(v as GraphScope)}>
+          <SelectTrigger className="h-8 w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="memory">memory (links)</SelectItem>
+            <SelectItem value="symbols">symbols (refs)</SelectItem>
+            <SelectItem value="all">all</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+        </Button>
+        <div className="ml-2 flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: NODE_FILL.symbol }} /> symbol
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: NODE_FILL.memory }} /> memory
+          </span>
+          <span>· {nodes.length} nodes · {edges.length} edges</span>
+          {capped && <Badge variant="outline">top {MAX_NODES} by rank</Badge>}
+        </div>
+        <span className="ml-auto text-xs text-muted-foreground">scroll = zoom · drag = pan</span>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
+        {!loading && !nodes.length ? (
+          <div className="py-16 text-center text-sm text-muted-foreground">
+            No graph for “{project}” at scope “{scope}”. Memory edges need <code>[[wiki-links]]</code>; symbol edges
+            need a built repo map (<code>aitl repomap</code>).
+          </div>
+        ) : (
+          <svg
+            className="h-full w-full cursor-grab active:cursor-grabbing"
+            viewBox={`0 0 ${VW} ${VH}`}
+            preserveAspectRatio="xMidYMid meet"
+            onWheel={(e) => {
+              const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+              setView((v) => ({ ...v, scale: Math.max(0.3, Math.min(4, v.scale * f)) }));
+            }}
+            onPointerDown={(e) => {
+              drag.current = { x: e.clientX - view.tx, y: e.clientY - view.ty };
+              (e.target as Element).setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (drag.current) setView((v) => ({ ...v, tx: e.clientX - drag.current!.x, ty: e.clientY - drag.current!.y }));
+            }}
+            onPointerUp={() => {
+              drag.current = null;
+            }}
+          >
+            <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
+              {edges.map((e, i) => {
+                const a = pos.get(e.source);
+                const b = pos.get(e.target);
+                if (!a || !b) return null;
+                return (
+                  <line
+                    key={`${e.source}-${e.target}-${i}`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={e.type === "ref" ? "#a5b4fc" : "#fcd34d"}
+                    strokeWidth={0.6}
+                    strokeOpacity={0.6}
+                  />
+                );
+              })}
+              {nodes.map((n) => {
+                const p = pos.get(n.id);
+                if (!p) return null;
+                const r = n.kind === "memory" ? 7 : 4 + Math.min(8, (n.pagerank ?? 0) * 12);
+                const active = hover === n.id;
+                return (
+                  <g key={n.id} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}>
+                    <circle cx={p.x} cy={p.y} r={r} fill={NODE_FILL[n.kind]} stroke={active ? "#111827" : "#fff"} strokeWidth={active ? 1.5 : 0.8}>
+                      <title>{`${n.kind}: ${n.label}${n.file ? `\n${n.file}` : ""}${n.category ? `\n#${n.category}` : ""}`}</title>
+                    </circle>
+                    {(showLabels || active) && (
+                      <text x={p.x + r + 2} y={p.y + 3} fontSize={7} fill="currentColor" className="pointer-events-none select-none">
+                        {n.label}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          </svg>
         )}
       </div>
     </div>

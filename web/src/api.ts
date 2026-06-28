@@ -43,6 +43,27 @@ export interface PromptDoc {
   created_at?: string;
 }
 
+export interface GraphNode {
+  id: string;
+  label: string;
+  kind: "symbol" | "memory";
+  project: string;
+  file?: string;
+  pagerank?: number;
+  category?: string | null;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  type: "ref" | "link";
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -85,4 +106,7 @@ export const api = {
 
   prompts: (project: string) =>
     fetch(`/api/prompts?project=${encodeURIComponent(project)}`).then(json<PromptDoc[]>),
+
+  graph: (project: string, scope: "all" | "symbols" | "memory" = "all") =>
+    fetch(`/api/graph?project=${encodeURIComponent(project)}&scope=${scope}`).then(json<GraphData>),
 };
