@@ -31,6 +31,7 @@ import { ADRStore } from "../decisions/adr.js";
 import { RepoMap } from "../repomap/store.js";
 import { DefinitionStore } from "../projectctx/store.js";
 import { AGENTS_COLLECTION, SKILLS_COLLECTION, type DefinitionKind } from "../projectctx/schemas.js";
+import { MongoGraphSource, type Scope, graphToDot, graphify } from "../graph/index.js";
 
 /** Recursively strip Mongo `_id`/`embedding` and stringify ObjectId/Date. */
 function jsonable(value: unknown): unknown {
@@ -726,20 +727,18 @@ export function buildServer(): McpServer {
     { project: z.string().optional(), scope: z.string().default("all"), fmt: z.string().default("json") },
     async ({ project, scope, fmt }) => {
       return runLogged("graphify", { project, scope, fmt }, async () => {
-        const db = getDb();
-        const projects = project ? [project] : await allProjects(db);
+        const graphs = await graphify(new MongoGraphSource(getDb()), { project, scope: scope as Scope });
         const per: Record<string, unknown> = {};
         let totalNodes = 0;
         let totalEdges = 0;
-        for (const proj of projects) {
-          const { nodes, edges } = await graphForProject(db, proj, scope);
-          per[proj] = { nodes, edges, counts: { nodes: nodes.length, edges: edges.length } };
-          totalNodes += nodes.length;
-          totalEdges += edges.length;
+        for (const [proj, g] of Object.entries(graphs)) {
+          per[proj] = { nodes: g.nodes, edges: g.edges, counts: { nodes: g.nodes.length, edges: g.edges.length } };
+          totalNodes += g.nodes.length;
+          totalEdges += g.edges.length;
         }
-        if (fmt === "dot") return text(graphToDot(per));
+        if (fmt === "dot") return text(graphToDot(graphs));
         if (project) return text(per[project]);
-        return text({ projects: per, counts: { projects: projects.length, nodes: totalNodes, edges: totalEdges } });
+        return text({ projects: per, counts: { projects: Object.keys(graphs).length, nodes: totalNodes, edges: totalEdges } });
       });
     },
   );
@@ -747,61 +746,7 @@ export function buildServer(): McpServer {
   return server;
 }
 
-// ── graphify helpers (mirror server.py) ────────────────────────────────────────
-async function allProjects(db: ReturnType<typeof getDb>): Promise<string[]> {
-  const names = new Set<string>();
-  for (const coll of ["symbols", "memory", "decisions"]) {
-    for (const n of await db.collection(coll).distinct("project")) if (n) names.add(String(n));
-  }
-  return [...names].sort();
-}
-
-async function graphForProject(db: ReturnType<typeof getDb>, project: string, scope: string) {
-  const nodes: Record<string, unknown>[] = [];
-  const edges: Record<string, unknown>[] = [];
-
-  if (scope === "all" || scope === "symbols") {
-    const syms = await db.collection("symbols").find({ project }, { projection: { embedding: 0 } }).toArray();
-    const byName = new Map<string, string>();
-    for (const s of syms) {
-      const nid = `sym:${s.file}::${s.name}`;
-      if (!byName.has(s.name)) byName.set(s.name, nid);
-      nodes.push({ id: nid, label: s.name, kind: "symbol", project, file: s.file, pagerank: Number(s.pagerank ?? 0) });
-    }
-    for (const s of syms) {
-      const src = `sym:${s.file}::${s.name}`;
-      for (const ref of (s.refs as string[]) ?? []) {
-        const tgt = byName.get(ref);
-        if (tgt && tgt !== src) edges.push({ source: src, target: tgt, type: "ref" });
-      }
-    }
-  }
-
-  if (scope === "all" || scope === "memory") {
-    const mems = await db.collection("memory").find({ project }, { projection: { embedding: 0 } }).toArray();
-    const slugs = new Set(mems.map((m) => m.slug as string));
-    for (const m of mems) nodes.push({ id: `mem:${m.slug}`, label: m.slug, kind: "memory", project, category: m.category });
-    for (const m of mems) {
-      for (const link of (m.links as string[]) ?? []) {
-        if (slugs.has(link)) edges.push({ source: `mem:${m.slug}`, target: `mem:${link}`, type: "link" });
-      }
-    }
-  }
-
-  return { nodes, edges };
-}
-
-function graphToDot(perProject: Record<string, any>): string {
-  const lines = ["digraph aitl {", "  rankdir=LR; node [shape=box];"];
-  for (const [proj, g] of Object.entries(perProject)) {
-    lines.push(`  subgraph "cluster_${proj}" { label="${proj}";`);
-    for (const n of g.nodes) lines.push(`    "${proj}::${n.id}" [label="${n.label}"];`);
-    lines.push("  }");
-    for (const e of g.edges) lines.push(`  "${proj}::${e.source}" -> "${proj}::${e.target}";`);
-  }
-  lines.push("}");
-  return lines.join("\n");
-}
+// graphify logic now lives in `../graph` (pure builders + serializers + GraphSource port).
 
 export interface HttpOptions {
   host?: string;
