@@ -245,6 +245,9 @@ program
       ended_at: run.ended_at,
       duration_ms: ms,
       tokens: { input: tu.input ?? 0, output: tu.output ?? 0, total: (tu.input ?? 0) + (tu.output ?? 0) },
+      // Host runs (Cara B) carry the host's own telemetry: cost, turns, cache breakdown.
+      host_meta: run.host_meta ?? null,
+      spec: run.spec ?? false,
       iters: run.iters ?? null,
       tool_calls: run.tool_calls ?? byType.tool_call ?? 0,
       gate_denials: run.gate_denials ?? byType.gate ?? 0,
@@ -265,6 +268,8 @@ program
   .requiredOption("--host <host>", "Agent host to run over: claude-code | codex | antigravity")
   .option("--cwd <dir>", "Working directory for the host process.")
   .option("--timeout <ms>", "Kill the host after N ms.")
+  .option("--no-record-prompt", "Do not persist the prompt to the durable history.")
+  .option("--no-spec-synthesis", "Do not synthesize spec-classified runs into durable memory.")
   .description("Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry.")
   .action(async (task, opts) => {
     const { runOnHost } = await import("./hosts/run.js");
@@ -272,8 +277,18 @@ program
       host: opts.host,
       cwd: opts.cwd,
       timeoutMs: opts.timeout ? Number(opts.timeout) : undefined,
+      recordPrompt: opts.recordPrompt, // commander sets false for --no-record-prompt
+      synthesizeSpec: opts.specSynthesis, // commander sets false for --no-spec-synthesis
     });
+    const tu = result.token_usage;
+    const cost = (result.meta?.cost_usd as number | null) ?? null;
     console.log(`run_id=${result.run_id} host=${result.host} status=${result.status} exit=${result.exit_code}`);
+    console.log(
+      `tokens: in=${tu.input} out=${tu.output} total=${tu.input + tu.output}` +
+        (cost != null ? ` cost_usd=${cost}` : "") +
+        ` spec=${result.spec}` +
+        (result.synthesis_slug ? ` synthesis=${result.synthesis_slug}` : ""),
+    );
     console.log(result.final_text);
     await closeClient();
   });
@@ -1194,8 +1209,12 @@ program
         component: opts.component,
         source: opts.source,
       });
+      const tu = res.token_usage;
+      const a = res.artifacts;
       console.error(
         `[aitl capture-session] run=${res.run_id.slice(0, 8)} ` +
+          `tokens=${tu.input + tu.output} (in=${tu.input} out=${tu.output}) ` +
+          `artifacts=[ADRs ${a.decisions.length}, mem ${a.memories.length}, prompts ${a.prompts.length}] ` +
           `memory=${res.summary?.slug ?? "(none)"} ` +
           `components=[${res.components.join(", ")}] snapshot=${res.context_id ? "ok" : "skipped"}`,
       );

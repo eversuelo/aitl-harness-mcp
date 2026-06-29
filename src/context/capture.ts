@@ -20,6 +20,8 @@ import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client.js";
 import { MemoryStore } from "../memory/store.js";
 import { summarizeSession, type SessionSummary } from "../memory/lifecycle.js";
+import { makeRun } from "../memory/schemas.js";
+import { classifySpec } from "../specs/classify.js";
 import type { Provider } from "../providers/base.js";
 
 /** Tool names whose input names a file the session edited. */
@@ -32,9 +34,29 @@ export interface Msg {
   [key: string]: unknown;
 }
 
+/** Durable artifacts a session produced, parsed from its MCP tool_use calls (ADR-0035). */
+export interface SessionArtifacts {
+  decisions: string[]; // ADR ids written via record_decision
+  memories: string[]; // memory slugs written via write_memory
+  prompts: string[]; // prompt titles/snippets recorded via record_prompt
+  interventions: number; // record_human_intervention calls
+}
+
 export interface ParsedTranscript {
   convo: Msg[];
   editedPaths: string[];
+  /** Durable artifacts (ADRs/memories/prompts) the session wrote via MCP. */
+  artifacts: SessionArtifacts;
+  /** Summed token usage across assistant turns (input includes cache tokens). */
+  usage: { input: number; output: number };
+  /** Cache-token breakdown + fresh input, for host_meta (cache_read is billed cheaply). */
+  cache: { creation: number; read: number; freshInput: number };
+  /** Model id seen on the assistant turns (last one wins). */
+  model: string | null;
+  /** Number of assistant turns (the host's loop-iteration analog). */
+  turns: number;
+  startedAt: Date | null;
+  endedAt: Date | null;
 }
 
 /** Read all of stdin (returns "" when nothing is piped / stdin is a TTY). */
@@ -57,8 +79,18 @@ export async function readHookStdin(): Promise<Record<string, unknown>> {
   }
 }
 
-/** Flatten a message `content` (string OR array of blocks) into plain text + collect tool edits. */
-function flattenContent(content: unknown, editedPaths: string[]): string {
+/** Record a durable artifact written by an MCP tool_use call (matched by name suffix). */
+function collectArtifact(name: string, input: Record<string, unknown>, artifacts?: SessionArtifacts): void {
+  if (!artifacts) return;
+  if (name.endsWith("record_decision") && input.id) artifacts.decisions.push(String(input.id));
+  else if (name.endsWith("write_memory") && input.slug) artifacts.memories.push(String(input.slug));
+  else if (name.endsWith("record_prompt"))
+    artifacts.prompts.push(String(input.title || String(input.prompt ?? "").replace(/\s+/g, " ").slice(0, 60)));
+  else if (name.endsWith("record_human_intervention")) artifacts.interventions += 1;
+}
+
+/** Flatten a message `content` (string OR array of blocks) into plain text + collect tool edits/artifacts. */
+function flattenContent(content: unknown, editedPaths: string[], artifacts?: SessionArtifacts): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
@@ -71,6 +103,7 @@ function flattenContent(content: unknown, editedPaths: string[]): string {
       const name = String(b.name ?? "");
       const input = (b.input ?? {}) as Record<string, unknown>;
       const file = (input.file_path ?? input.notebook_path ?? input.path) as string | undefined;
+      collectArtifact(name, input, artifacts);
       if (EDIT_TOOLS.has(name) && file) {
         editedPaths.push(file);
         parts.push(`[edit ${name}: ${file}]`);
@@ -86,11 +119,24 @@ function flattenContent(content: unknown, editedPaths: string[]): string {
 export async function parseTranscript(path: string): Promise<ParsedTranscript> {
   const convo: Msg[] = [];
   const editedPaths: string[] = [];
+  const artifacts: SessionArtifacts = { decisions: [], memories: [], prompts: [], interventions: 0 };
+  const usage = { input: 0, output: 0 };
+  const cache = { creation: 0, read: 0, freshInput: 0 };
+  let model: string | null = null;
+  let turns = 0;
+  let startedAt: Date | null = null;
+  let endedAt: Date | null = null;
+  const finish = (): ParsedTranscript => {
+    artifacts.decisions = [...new Set(artifacts.decisions)];
+    artifacts.memories = [...new Set(artifacts.memories)];
+    artifacts.prompts = [...new Set(artifacts.prompts)];
+    return { convo, editedPaths, artifacts, usage, cache, model, turns, startedAt, endedAt };
+  };
   let raw = "";
   try {
     raw = await readFile(path, "utf-8");
   } catch {
-    return { convo, editedPaths };
+    return finish();
   }
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -101,14 +147,36 @@ export async function parseTranscript(path: string): Promise<ParsedTranscript> {
     } catch {
       continue;
     }
+    // Track the session's wall-clock span from the line timestamps.
+    const ts = typeof entry.timestamp === "string" ? new Date(entry.timestamp) : null;
+    if (ts && !Number.isNaN(ts.getTime())) {
+      if (!startedAt || ts < startedAt) startedAt = ts;
+      if (!endedAt || ts > endedAt) endedAt = ts;
+    }
     const message = entry.message as Record<string, unknown> | undefined;
     if (!message || typeof message !== "object") continue;
     const role = String(message.role ?? entry.type ?? "");
     if (role !== "user" && role !== "assistant") continue;
-    const text = flattenContent(message.content, editedPaths);
+
+    // Accumulate measured tokens from each assistant turn (same fields as `claude -p` JSON).
+    if (role === "assistant" && message.usage && typeof message.usage === "object") {
+      const u = message.usage as Record<string, number>;
+      const fresh = u.input_tokens ?? 0;
+      const cc = u.cache_creation_input_tokens ?? 0;
+      const cr = u.cache_read_input_tokens ?? 0;
+      usage.input += fresh + cc + cr;
+      usage.output += u.output_tokens ?? 0;
+      cache.freshInput += fresh;
+      cache.creation += cc;
+      cache.read += cr;
+      turns += 1;
+      if (typeof message.model === "string") model = message.model;
+    }
+
+    const text = flattenContent(message.content, editedPaths, artifacts);
     if (text) convo.push({ role, content: text });
   }
-  return { convo, editedPaths };
+  return finish();
 }
 
 /** Derive `component:<dir>` tags from edited file paths (relative to cwd, first 2 segments). */
@@ -135,6 +203,10 @@ export interface CaptureResult {
   components: string[];
   context_id: string | null;
   run_id: string;
+  /** Measured token usage recorded on the run (zeros if the transcript had none). */
+  token_usage: { input: number; output: number };
+  /** Durable artifacts the session produced (linked in the per-session graph). */
+  artifacts: SessionArtifacts;
 }
 
 export interface CaptureOpts {
@@ -205,11 +277,62 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
 
   const parsed = opts.transcriptPath
     ? await parseTranscript(opts.transcriptPath)
-    : { convo: [] as Msg[], editedPaths: [] as string[] };
+    : {
+        convo: [] as Msg[],
+        editedPaths: [] as string[],
+        artifacts: { decisions: [], memories: [], prompts: [], interventions: 0 } as SessionArtifacts,
+        usage: { input: 0, output: 0 },
+        cache: { creation: 0, read: 0, freshInput: 0 },
+        model: null as string | null,
+        turns: 0,
+        startedAt: null as Date | null,
+        endedAt: null as Date | null,
+      };
 
   const compTags = componentTags(parsed.editedPaths, opts.cwd);
   const explicit = opts.component ? [`component:${opts.component}`] : [];
   const tags = [...new Set([`host:${source}`, ...compTags, ...explicit])];
+
+  // Record the session as a first-class `run` with its MEASURED tokens, so it shows up in
+  // `aitl run-show` and the UI's Runs tab — the human-driven analog of run-host (ADR-0034).
+  const firstUser = parsed.convo.find((m) => m.role === "user");
+  const isSpec = firstUser ? classifySpec(String(firstUser.content)).isSpec : false;
+  try {
+    const run = makeRun({
+      project: opts.project,
+      model: `host:${source}`,
+      status: "done",
+      token_usage: parsed.usage,
+      started_at: parsed.startedAt ?? new Date(),
+      ended_at: parsed.endedAt ?? new Date(),
+      harness_config: { role: "host", host: source, captured: true, spec: isSpec },
+      tags,
+    });
+    await store.db.collection("runs").updateOne(
+      { _id: runId as never },
+      {
+        $set: {
+          ...run,
+          iters: parsed.turns,
+          spec: isSpec,
+          // Durable artifacts produced this session (linked in the per-session graph, ADR-0035).
+          artifacts: parsed.artifacts,
+          host_meta: {
+            model: parsed.model,
+            num_turns: parsed.turns,
+            duration_ms:
+              parsed.startedAt && parsed.endedAt ? parsed.endedAt.getTime() - parsed.startedAt.getTime() : null,
+            cache: { creation: parsed.cache.creation, read: parsed.cache.read },
+            raw_input_tokens: parsed.cache.freshInput,
+            captured_from: "transcript",
+          },
+        },
+      },
+      { upsert: true },
+    );
+  } catch {
+    // recording the run is best-effort; never break a capture hook over it
+  }
 
   const summary = await summarizeSession(opts.project, runId, parsed.convo, {
     store,
@@ -228,5 +351,12 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
     repo: opts.repo ?? null,
   });
 
-  return { summary, components: [...compTags, ...explicit], context_id, run_id: runId };
+  return {
+    summary,
+    components: [...compTags, ...explicit],
+    context_id,
+    run_id: runId,
+    token_usage: parsed.usage,
+    artifacts: parsed.artifacts,
+  };
 }

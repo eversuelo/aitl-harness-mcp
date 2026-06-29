@@ -6,6 +6,51 @@ UI web de memoria y panel interactivo.
 
 El binario publico es `aitl`.
 
+## Cómo lo uso (flujo diario)
+
+Este es el flujo mínimo de día a día: levantar el MCP, levantar la UI, y dejar que Claude
+Code lea/escriba el estado durable en `aitl-js`.
+
+```bash
+# 1) (una sola vez) configura Mongo a nivel usuario — ver "Instalación global" abajo
+aitl config set MONGODB_URI "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/aitl?appName=<app>"
+aitl config set MONGODB_DB aitl
+aitl check-db          # valida la conexión
+aitl init-db           # crea colecciones e índices (idempotente)
+
+# 2) levanta el servidor MCP (lo consume Claude Code; transporte stdio por defecto)
+aitl mcp               # déjalo corriendo; los logs van a stderr / AITL_MCP_LOG_FILE
+
+# 3) levanta la UI de memoria + métricas (otra terminal)
+aitl ui --project aitl-js
+#   API  → http://localhost:4317/api
+#   SPA  → http://localhost:5317   (tabs: Memory · Decisions · Prompts · Runs · Graph · Knowledge)
+```
+
+Con el MCP registrado en Claude Code (ver [Forzar que Claude Code use siempre el
+MCP](#forzar-que-claude-code-use-siempre-el-mcp)), abre tu sesión de Claude Code en el
+repo y pégale este contrato corto para que escriba en `aitl-js`:
+
+```text
+Usa el MCP aitl-js con project="aitl-js".
+ANTES de cualquier decisión no trivial: search_memory + list_decisions.
+DESPUÉS de decidir/aprender: record_decision (ADR) y/o write_memory; y record_prompt del prompt que guió el trabajo.
+Si el MCP y tus supuestos chocan, gana el MCP (o explícita el conflicto).
+```
+
+Para medir una tarea ejecutada por Claude Code (tokens/costo/turnos), corre la tarea
+*sobre* el host y revisa su telemetría:
+
+```bash
+aitl run-host "<tarea o spec>" --project aitl-js --host claude-code
+aitl run-show <runId>     # tokens in/out/total, costo, iters, eventos, hidratación
+```
+
+Si el prompt es una **especificación** (SDD), el harness lo detecta solo, lo guarda en el
+historial de prompts (tag `spec`) y escribe una **síntesis spec↔tarea** en memoria
+(`spec-synthesis-<run>`) que une el spec, el resultado y las métricas. Todo aparece en la
+pestaña **Runs** de la UI.
+
 ## Instalacion global
 
 ### Desde este checkout
@@ -41,14 +86,47 @@ aitl check-db
 La instalacion global usa perfil de usuario en `~/.aitl/config.json`, no depende de
 un `.env` local. Ver [ADR-0006](docs/adr/0006-user-level-config-profile.md).
 
-## Configuracion minima
+## Configuracion de la cadena Mongo
 
-Para Mongo local compatible con el docker compose del port Python:
+La instalación global guarda un perfil de usuario en `~/.aitl/config.json` (override con
+`AITL_HOME`), independiente de cualquier `.env` del repo (ver
+[ADR-0006](docs/adr/0006-user-level-config-profile.md)). Ese perfil lo usan el CLI, los
+**hooks** de Claude Code y, si quieres, también el servidor MCP. Precedencia:
+`variables de entorno > perfil > defaults`.
 
-```powershell
+**MongoDB Atlas (recomendado para la tesis).** Copia tu connection string del cluster
+(Atlas → Connect → Drivers) y guárdalo en el perfil — **no** en git:
+
+```bash
+aitl config set MONGODB_URI "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/aitl?appName=<app>"
+aitl config set MONGODB_DB aitl
+aitl config set EMBEDDING_PROVIDER local
+aitl config set EMBEDDING_MODEL "Xenova/all-MiniLM-L6-v2"
+aitl config set EMBEDDING_DIMS 384
+```
+
+Puedes definir un fallback local con `MONGODB_URI_FALLBACK` (Atlas por seedlist con caída
+a local; ver ADR-0010). Si la contraseña tiene caracteres especiales (`@ : / ? # %`),
+URL-encódeala (por ejemplo `*` → `%2A`).
+
+**Mongo local** (p. ej. el docker compose del port Python):
+
+```bash
 aitl config set MONGODB_URI "mongodb://localhost:27018/?directConnection=true"
 aitl config set MONGODB_DB aitl
 ```
+
+Verifica e inicializa (idempotente: crea colecciones e índices, incl. el vectorial):
+
+```bash
+aitl config show   # config efectiva, con secretos enmascarados
+aitl check-db
+aitl init-db
+```
+
+> Seguridad: el perfil `~/.aitl/config.json` guarda secretos en claro en tu máquina. No lo
+> subas a git. `aitl config show`/`export` enmascaran secretos por defecto (usa `--secrets`
+> solo para transferir). Si pegaste la cadena con contraseña en un `.mcp.json`, rótala.
 
 Para usar modelos via OpenRouter (unico provider de modelo; gateway compatible con OpenAI):
 
@@ -69,6 +147,77 @@ aitl run-host "haz una tarea" --project demo --host claude-code
 
 El harness envuelve al host con contexto durable y telemetria. Hosts: `claude-code`, `codex`, `antigravity`.
 
+## Forzar que Claude Code use siempre el MCP
+
+No se puede *obligar* al modelo a invocar una tool concreta a mitad de su razonamiento,
+pero sí puedes apilar cuatro capas que, juntas, hacen que cada sesión lea y escriba el
+estado durable. De la más débil (disponibilidad) a la más fuerte (determinista):
+
+**1. Registrar y habilitar el server** (lo hace disponible). En el `.mcp.json` del repo:
+
+```json
+{
+  "mcpServers": {
+    "aitl-js": { "command": "aitl", "args": ["mcp"] }
+  }
+}
+```
+
+Y en `.claude/settings.local.json`, habilítalo para que Claude Code lo cargue sin
+preguntar en cada arranque:
+
+```json
+{ "enableAllProjectMcpServers": true, "enabledMcpjsonServers": ["aitl-js"] }
+```
+
+**2. Auto-aprobar las tools del server** para que no te pida permiso cada vez (si no, la
+fricción hace que el agente las evite). En `.claude/settings.local.json`:
+
+```json
+{ "permissions": { "allow": ["mcp__aitl-js"] } }
+```
+
+`mcp__aitl-js` permite todas las tools del server; para acotar usa
+`mcp__aitl-js__search_memory`, `mcp__aitl-js__write_memory`, etc.
+
+**3. Contrato de operación que el modelo lee.** Claude Code carga `CLAUDE.md`
+automáticamente; genera además un `AGENTS.md` que ordena consultar el MCP **antes** de cada
+decisión y persistir **después**:
+
+```bash
+aitl init agent --project aitl-js --mcp aitl-js --out AGENTS.md
+```
+
+**4. Hooks — la única capa determinista.** Los hooks de Claude Code corren comandos shell
+pase lo que pase, sin depender de que el modelo "se acuerde". Añádelos a
+`.claude/settings.local.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "aitl hydrate --project aitl-js --no-vector" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "aitl capture-session --project aitl-js" } ] }
+    ]
+  }
+}
+```
+
+- `UserPromptSubmit → aitl hydrate`: inyecta el preámbulo durable (memoria + ADRs +
+  convenciones + repo map) en **cada** prompt. El stdout del hook se agrega al contexto.
+- `Stop → aitl capture-session`: al terminar la sesión, resume el transcript en **un** doc
+  de memoria + un snapshot, auto-etiquetado por los componentes (directorios) que editaste.
+
+> Los hooks ejecutan el binario `aitl` **fuera** del proceso MCP, así que necesitan
+> `MONGODB_URI`/`MONGODB_DB` en `~/.aitl/config.json` (por eso el perfil global de
+> ADR-0006). Sin instalación global, reemplaza `aitl` por
+> `npm --prefix /ruta/al/repo run aitl --` en los comandos del hook. Ver ADR-0022/ADR-0023.
+
+En resumen: capas 1–3 hacen que el MCP esté disponible, sin fricción y "ordenado"; la capa
+4 es la que realmente **garantiza** lectura (hydrate) y escritura (capture) en cada turno.
+
 ## Comandos principales
 
 | Comando | Uso |
@@ -80,13 +229,13 @@ El harness envuelve al host con contexto durable y telemetria. Hosts: `claude-co
 | `aitl ingest --path docs --project demo` | Ingiere memoria markdown. |
 | `aitl search "query" --project demo` | Busca en memoria durable. |
 | `aitl run "task" --project demo --model openrouter` | Ejecuta el loop agente (modelos via OpenRouter). |
-| `aitl run-host "task" --project demo --host claude-code` | Corre la tarea SOBRE un agente-host (Codex/Claude Code/Antigravity). |
+| `aitl run-host "task" --project demo --host claude-code` | Corre la tarea SOBRE un agente-host; mide tokens/costo/turnos (Claude Code vía JSON) y auto-sintetiza specs. |
 | `aitl orchestrate "task" --project demo` | Descompone la tarea y corre sub-agentes en paralelo. |
 | `aitl repomap --root . --project demo` | Construye mapa de repo. |
 | `aitl adr-sync --dir docs/adr --project demo` | Espeja ADRs en Mongo. |
 | `aitl export --adapter cursor --project demo` | Proyecta canon a herramientas externas. |
 | `aitl mcp` | Arranca servidor MCP stdio. |
-| `aitl ui --project demo` | Arranca API + SPA de memoria (incl. knowledge map). |
+| `aitl ui --project demo` | Arranca API + SPA (Memory · Decisions · Prompts · **Runs/métricas** · Graph · Knowledge map). |
 
 ### Roles de ingeniería (H11) y medición (ciclo 0024–0033)
 
@@ -99,7 +248,7 @@ El harness envuelve al host con contexto durable y telemetria. Hosts: `claude-co
 | `aitl run "task" --project demo --roles security,qa` | Acopla roles al loop (gate veta; review/pair critican al cierre). |
 | `aitl run "task" --project demo --bare` | Condición **C0** (sin memoria/skills/gates). |
 | `aitl run "task" --project demo --verify-cmd "npm test"` | Quality gate: el loop no cierra hasta verde. |
-| `aitl run-show <runId>` | Telemetría del run: tokens, iters, tool_calls, hydrate, intervenciones, roles. |
+| `aitl run-show <runId>` | Telemetría del run: tokens, iters, tool_calls, hydrate, intervenciones, roles; en runs de host además costo/turnos (`host_meta`) y `spec`. |
 | `aitl intervene <runId> --reason "…" --minutes 5` | Registra supervisión humana (Tabla 4.3 #6). |
 | `aitl software/repo/branch …` | Catálogo software→projects→repos + grafo de ramas. |
 | `aitl build {skill,agent,seed}` · `aitl index-repo …` | Constructora de definiciones e indexador maestro. |

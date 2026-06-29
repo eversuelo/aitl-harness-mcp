@@ -16,6 +16,8 @@
  *   POST   /api/memory                       {project,slug,body,description,type,tags}
  *   PUT    /api/memory/:slug                 (same body; upsert)
  *   DELETE /api/memory/:slug?project=
+ *   GET    /api/runs?project=&limit=         run telemetry (tokens, cost, iters, status)
+ *   GET    /api/runs/:id                     one run + event counts + supervision minutes
  */
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -304,6 +306,47 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const repo = searchParams.get("repo") ?? undefined;
     const kind = searchParams.get("kind") ?? undefined;
     return send(res, 200, await new BranchStore().list({ project, repo, kind, limit: 500 }));
+  }
+
+  // ── runs (measured telemetry: tokens, cost, iters, tool calls, status) ──────
+  if (pathname === "/api/runs" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const rows = await store.db
+      .collection("runs")
+      .find({ project })
+      .sort({ started_at: -1 })
+      .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 200)
+      .toArray();
+    return send(res, 200, rows);
+  }
+
+  // Per-session graph (ADR-0035): the run linked to the ADRs/memories/prompts it produced.
+  const rg = /^\/api\/runs\/([^/]+)\/graph$/.exec(pathname);
+  if (rg && method === "GET") {
+    const id = decodeURIComponent(rg[1]);
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const { sessionGraph } = await import("../graph/session.js");
+    const graph = await sessionGraph(store.db, project, id, { temporal: searchParams.get("temporal") === "1" });
+    if (!graph) throw new HttpError(404, `No run '${id}'.`);
+    return send(res, 200, graph);
+  }
+
+  const rr = /^\/api\/runs\/([^/]+)$/.exec(pathname);
+  if (rr && method === "GET") {
+    const id = decodeURIComponent(rr[1]);
+    const run = await store.db.collection("runs").findOne({ _id: id as never });
+    if (!run) throw new HttpError(404, `No run '${id}'.`);
+    const events = await store.db.collection("events").find({ run_id: id }).toArray();
+    const byType: Record<string, number> = {};
+    let interventionMinutes = 0;
+    for (const e of events) {
+      const t = String(e.type);
+      byType[t] = (byType[t] ?? 0) + 1;
+      if (t === "human_intervention") interventionMinutes += Number((e.payload as Record<string, unknown>)?.minutes ?? 0);
+    }
+    return send(res, 200, { run, event_counts: byType, intervention_minutes: interventionMinutes });
   }
 
   // ── prompt history ────────────────────────────────────────────────────────

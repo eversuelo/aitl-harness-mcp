@@ -32,11 +32,14 @@ en la colección `decisions` de Mongo vía `aitl adr-sync --dir docs/adr --proje
 | 0023 | Hook de hidratación en SessionStart y rutas POSIX en hooks | Accepted | — |
 | 0024 | RBAC y registro de usuarios: AITL como gateway seguro a MongoDB | Accepted | — |
 
-> **Nota de reconciliación (2026-06-28).** Fuente de verdad: la colección `decisions` en Atlas
-> (`list_decisions`), con **0001–0024 contiguas** (next-free **0025**). Los ADRs **0010–0024**
-> existen solo en el ledger — aún no se exportan a `.md` en este directorio (de ahí fecha `—` y sin
-> enlace). `aitl adr-sync` opera archivo→ledger; la inversa (ledger→archivo) es trabajo aparte. Este
-> índice se corrige *hacia* el ledger, nunca al revés.
+> **Nota de reconciliación (2026-06-29).** Fuente de verdad: la colección `decisions` en Atlas
+> (`list_decisions`), hoy con **0001–0034 contiguas** (next-free **0035**). Los ADRs **0010–0034**
+> existen en el ledger pero solo algunos están exportados a `.md` aquí (de ahí filas con fecha `—`
+> y sin enlace). Hitos recientes: 0025 graphify desacoplado · 0026 auto-bootstrap · 0027 versionado
+> append-only · 0028 jerarquía software→repos · 0029 knowledge map · 0030 skills-meta · 0031 grafo de
+> ramas · 0032 instrumentación del piloto · 0033 roles H11 · **0034 tokens en `run-host` + SDD
+> (specs auto-clasificados/sintetizados) + pestaña UI Runs**. `aitl adr-sync` opera archivo→ledger;
+> la inversa (ledger→archivo) es trabajo aparte. Este índice se corrige *hacia* el ledger, nunca al revés.
 
 ## Hilo de la sesión 2026-06-23
 

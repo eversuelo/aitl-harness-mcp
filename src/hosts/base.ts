@@ -17,6 +17,10 @@ export interface HostResult {
   text: string;
   raw: string; // stdout+stderr, for the durable transcript
   exitCode: number;
+  /** Token usage parsed from the host's structured output, when available. */
+  usage?: { input: number; output: number };
+  /** Extra host telemetry (cost, turns, duration, session id…), when available. */
+  meta?: Record<string, unknown>;
 }
 
 export interface HostRunOpts {
@@ -37,11 +41,57 @@ export interface CliHostSpec {
   promptVia?: "stdin" | "arg";
   /** Run through a shell (needed on Windows to resolve `.cmd` shims). */
   shell?: boolean;
+  /**
+   * Parse the host's stdout into final text + measured token usage + meta. Hosts emit
+   * different structured formats (e.g. Claude Code `--output-format json`); when omitted
+   * the raw stdout is the final text and no metrics are captured. Best-effort: a throw or
+   * null falls back to the trimmed raw text.
+   */
+  parse?: (stdout: string) => {
+    text?: string;
+    usage?: { input: number; output: number };
+    meta?: Record<string, unknown>;
+  } | null;
+}
+
+/**
+ * Parse the JSON envelope emitted by `claude -p --output-format json`. It is a single
+ * object with `result` (final text), `usage` (input/output/cache tokens), `total_cost_usd`,
+ * `num_turns` and `duration_ms`. Input is the sum of fresh + cache tokens (the billed
+ * input side); the breakdown is preserved in `meta`.
+ */
+export function parseClaudeJson(stdout: string): ReturnType<NonNullable<CliHostSpec["parse"]>> {
+  const obj = JSON.parse(stdout.trim()) as Record<string, unknown>;
+  const u = (obj.usage ?? {}) as Record<string, number>;
+  const input =
+    (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  const output = u.output_tokens ?? 0;
+  return {
+    text: typeof obj.result === "string" ? obj.result : stdout.trim(),
+    usage: { input, output },
+    meta: {
+      cost_usd: obj.total_cost_usd ?? null,
+      num_turns: obj.num_turns ?? null,
+      duration_ms: obj.duration_ms ?? null,
+      duration_api_ms: obj.duration_api_ms ?? null,
+      session_id: obj.session_id ?? null,
+      model: obj.model ?? null,
+      is_error: obj.is_error ?? null,
+      raw_input_tokens: u.input_tokens ?? 0,
+      cache: { creation: u.cache_creation_input_tokens ?? 0, read: u.cache_read_input_tokens ?? 0 },
+    },
+  };
 }
 
 /** Default headless invocations for known agent hosts (override via AITL_HOST_CMD_<NAME>). */
 export const HOST_SPECS: Record<string, CliHostSpec> = {
-  "claude-code": { command: "claude", args: ["-p"], promptVia: "stdin" },
+  // JSON output lets the harness measure tokens/cost/turns (thesis metric #7) for Cara B.
+  "claude-code": {
+    command: "claude",
+    args: ["-p", "--output-format", "json"],
+    promptVia: "stdin",
+    parse: parseClaudeJson,
+  },
   codex: { command: "codex", args: ["exec", "-"], promptVia: "stdin" },
   antigravity: { command: "agy", args: ["run"], promptVia: "stdin" },
 };
@@ -82,7 +132,24 @@ export class CliHostAdapter implements HostAdapter {
       });
       child.on("close", (code) => {
         if (timer) clearTimeout(timer);
-        resolve({ text: out.trim(), raw: `${out}${err}`, exitCode: code ?? -1 });
+        let text = out.trim();
+        let usage: HostResult["usage"];
+        let meta: HostResult["meta"];
+        // Parse structured output (tokens/cost/turns) only on a clean exit; the parser is
+        // best-effort, so a malformed/partial payload falls back to the raw text.
+        if (code === 0 && this.spec.parse) {
+          try {
+            const parsed = this.spec.parse(out);
+            if (parsed) {
+              if (typeof parsed.text === "string") text = parsed.text;
+              usage = parsed.usage;
+              meta = parsed.meta;
+            }
+          } catch {
+            // keep the raw text; no metrics captured for this run
+          }
+        }
+        resolve({ text, raw: `${out}${err}`, exitCode: code ?? -1, usage, meta });
       });
       if (via === "stdin") {
         child.stdin.write(prompt);

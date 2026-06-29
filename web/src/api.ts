@@ -40,11 +40,38 @@ export interface PromptDoc {
   title?: string;
   source?: string;
   tags?: string[];
+  model?: string | null;
+  run_id?: string | null;
+  metadata?: Record<string, unknown>;
   created_at?: string;
 }
 
-export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo" | "branch";
-export type EdgeKind = "ref" | "link" | "contains" | "references" | "derives";
+export interface RunDoc {
+  _id: string;
+  project: string;
+  model: string;
+  status: "running" | "done" | "error";
+  token_usage?: { input: number; output: number };
+  iters?: number | null;
+  tool_calls?: number | null;
+  gate_denials?: number | null;
+  roles?: string[];
+  spec?: boolean;
+  decision_blocked?: boolean;
+  host_meta?: Record<string, unknown> | null;
+  started_at?: string;
+  ended_at?: string | null;
+  harness_config?: Record<string, unknown>;
+}
+
+export interface RunDetail {
+  run: RunDoc;
+  event_counts: Record<string, number>;
+  intervention_minutes: number;
+}
+
+export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo" | "branch" | "run" | "prompt";
+export type EdgeKind = "ref" | "link" | "contains" | "references" | "derives" | "produced";
 
 export interface GraphNode {
   id: string;
@@ -114,6 +141,16 @@ export const api = {
 
   prompts: (project: string) =>
     fetch(`/api/prompts?project=${encodeURIComponent(project)}`).then(json<PromptDoc[]>),
+
+  runs: (project: string) =>
+    fetch(`/api/runs?project=${encodeURIComponent(project)}`).then(json<RunDoc[]>),
+
+  run: (id: string) => fetch(`/api/runs/${encodeURIComponent(id)}`).then(json<RunDetail>),
+
+  sessionGraph: (project: string, id: string, temporal = false) =>
+    fetch(
+      `/api/runs/${encodeURIComponent(id)}/graph?project=${encodeURIComponent(project)}${temporal ? "&temporal=1" : ""}`,
+    ).then(json<GraphData>),
 
   graph: (project: string, scope: "all" | "symbols" | "memory" = "all") =>
     fetch(`/api/graph?project=${encodeURIComponent(project)}&scope=${scope}`).then(json<GraphData>),

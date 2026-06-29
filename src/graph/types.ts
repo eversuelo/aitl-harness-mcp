@@ -8,11 +8,27 @@
 
 export type Scope = "all" | "symbols" | "memory";
 
-/** Entity kinds a node can represent (ADR-0029 knowledge map; ADR-0031 adds `branch`). */
-export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo" | "branch";
+/**
+ * Entity kinds a node can represent (ADR-0029 knowledge map; ADR-0031 adds `branch`;
+ * ADR-0035 adds `run`/`prompt` for the per-session graph).
+ */
+export type NodeKind =
+  | "symbol"
+  | "memory"
+  | "decision"
+  | "context"
+  | "software"
+  | "project"
+  | "repo"
+  | "branch"
+  | "run"
+  | "prompt";
 
-/** Edge kinds (ADR-0029 `contains`/`references`; ADR-0031 `derives` for branch graph). */
-export type EdgeKind = "ref" | "link" | "contains" | "references" | "derives";
+/**
+ * Edge kinds (ADR-0029 `contains`/`references`; ADR-0031 `derives` for branch graph;
+ * ADR-0035 `produced` linking a run to the artifacts written during its session).
+ */
+export type EdgeKind = "ref" | "link" | "contains" | "references" | "derives" | "produced";
 
 export interface GraphNode {
   id: string;

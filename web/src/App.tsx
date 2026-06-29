@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   FileText,
   GitBranch,
   Loader2,
@@ -33,6 +34,8 @@ import {
   type MemoryInput,
   type NodeKind,
   type PromptDoc,
+  type RunDetail,
+  type RunDoc,
   api,
 } from "./api.js";
 
@@ -47,7 +50,7 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "memory" | "decisions" | "prompts" | "graph" | "knowledge";
+type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -86,6 +89,9 @@ export function App() {
               </TabsTrigger>
               <TabsTrigger value="prompts">
                 <MessageSquare /> Prompts
+              </TabsTrigger>
+              <TabsTrigger value="runs">
+                <BarChart3 /> Runs
               </TabsTrigger>
               <TabsTrigger value="graph">
                 <Network /> Graph
@@ -126,6 +132,7 @@ export function App() {
         {tab === "memory" && <MemoryView project={project} onError={setError} />}
         {tab === "decisions" && <DecisionsView project={project} onError={setError} />}
         {tab === "prompts" && <PromptsView project={project} onError={setError} />}
+        {tab === "runs" && <RunsView project={project} onError={setError} />}
         {tab === "graph" && <GraphView project={project} onError={setError} />}
         {tab === "knowledge" && <KnowledgeMapView project={project} onError={setError} />}
       </div>
@@ -501,6 +508,322 @@ function PromptsView({ project, onError }: { project: string; onError: (e: strin
   );
 }
 
+/* ── runs / métricas ─────────────────────────────────────────────────────── */
+const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
+  done: "default",
+  running: "secondary",
+  error: "destructive",
+};
+
+const tokensOf = (r: RunDoc) => (r.token_usage?.input ?? 0) + (r.token_usage?.output ?? 0);
+const durationMs = (r: RunDoc) =>
+  r.started_at && r.ended_at ? new Date(r.ended_at).getTime() - new Date(r.started_at).getTime() : null;
+const fmtMs = (ms: number | null) => (ms == null ? "—" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
+const fmtNum = (n: number) => n.toLocaleString("en-US");
+
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-0.5 font-mono text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function RunsView({ project, onError }: { project: string; onError: (e: string | null) => void }) {
+  const [items, setItems] = useState<RunDoc[]>([]);
+  const [selected, setSelected] = useState<RunDoc | null>(null);
+  const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!project) return;
+    onError(null);
+    setLoading(true);
+    try {
+      setItems(await api.runs(project));
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [project, onError]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load on project change
+  useEffect(() => {
+    setSelected(null);
+    setDetail(null);
+    void refresh();
+  }, [project]);
+
+  useEffect(() => {
+    if (!selected) return setDetail(null);
+    api.run(selected._id).then(setDetail).catch((e) => onError((e as Error).message));
+  }, [selected, onError]);
+
+  // Aggregate totals across runs (thesis-level rollup: tokens & cost spent on this project).
+  const totals = useMemo(() => {
+    let tokens = 0;
+    let cost = 0;
+    let withTokens = 0;
+    for (const r of items) {
+      tokens += tokensOf(r);
+      const c = r.host_meta?.cost_usd;
+      if (typeof c === "number") cost += c;
+      if (tokensOf(r) > 0) withTokens += 1;
+    }
+    return { tokens, cost, withTokens };
+  }, [items]);
+
+  return (
+    <TwoPane
+      list={
+        <>
+          <div className="flex items-center gap-2 border-b p-3">
+            <div className="flex flex-1 flex-wrap items-center gap-3 text-xs text-muted-foreground">
+              <span>{items.length} runs</span>
+              <span>· Σ tokens {fmtNum(totals.tokens)}</span>
+              {totals.cost > 0 && <span>· Σ cost ${totals.cost.toFixed(4)}</span>}
+            </div>
+            <Button variant="outline" size="icon" onClick={refresh} disabled={!project || loading}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="flex flex-col gap-2">
+              {items.map((r) => (
+                <Card
+                  key={r._id}
+                  onClick={() => setSelected(r)}
+                  className={`cursor-pointer p-3 transition-colors hover:bg-accent ${
+                    selected?._id === r._id ? "border-primary ring-1 ring-primary" : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-mono text-xs">{r.model}</span>
+                    <Badge variant={STATUS_VARIANT[r.status] ?? "outline"}>{r.status}</Badge>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span className="font-mono">{fmtNum(tokensOf(r))} tok</span>
+                    {typeof r.host_meta?.cost_usd === "number" && (
+                      <span className="font-mono">${(r.host_meta.cost_usd as number).toFixed(4)}</span>
+                    )}
+                    {typeof r.iters === "number" && <span>{r.iters} iters</span>}
+                    {r.spec && <Badge variant="secondary">spec</Badge>}
+                  </div>
+                  <div className="mt-1 font-mono text-[10px] text-muted-foreground/70">{r._id.slice(0, 8)}</div>
+                </Card>
+              ))}
+              {!items.length && !loading && (
+                <div className="px-2 py-10 text-center text-sm text-muted-foreground">
+                  No runs yet. Run <code>aitl run</code> or <code>aitl run-host</code> for this project.
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      }
+      detail={
+        selected ? (
+          <RunDetailView project={project} run={selected} detail={detail} />
+        ) : (
+          <Empty icon={<BarChart3 className="h-10 w-10 opacity-30" />} text="Select a run to see its metrics." />
+        )
+      }
+    />
+  );
+}
+
+function RunDetailView({ project, run, detail }: { project: string; run: RunDoc; detail: RunDetail | null }) {
+  const tu = run.token_usage ?? { input: 0, output: 0 };
+  const meta = (detail?.run.host_meta ?? run.host_meta ?? {}) as Record<string, unknown>;
+  const events = detail?.event_counts ?? {};
+  const cache = (meta.cache ?? null) as { creation?: number; read?: number } | null;
+  return (
+    <article className="mx-auto max-w-3xl p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="font-mono text-sm text-muted-foreground">{run._id.slice(0, 8)}</span>
+        <Badge variant={STATUS_VARIANT[run.status] ?? "outline"}>{run.status}</Badge>
+        {run.spec && <Badge variant="secondary">spec</Badge>}
+        {run.decision_blocked && <Badge variant="destructive">blocked</Badge>}
+      </div>
+      <h2 className="mb-4 font-mono text-lg font-semibold">{run.model}</h2>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="tokens in" value={fmtNum(tu.input)} />
+        <Stat label="tokens out" value={fmtNum(tu.output)} />
+        <Stat label="tokens total" value={fmtNum(tu.input + tu.output)} />
+        <Stat label="cost (usd)" value={typeof meta.cost_usd === "number" ? `$${(meta.cost_usd as number).toFixed(4)}` : "—"} />
+        <Stat label="iters / turns" value={run.iters ?? (meta.num_turns as number) ?? "—"} />
+        <Stat label="tool calls" value={run.tool_calls ?? events.tool_call ?? "—"} />
+        <Stat label="gate denials" value={run.gate_denials ?? events.gate ?? 0} />
+        <Stat label="duration" value={fmtMs((meta.duration_ms as number) ?? durationMs(run))} />
+      </div>
+
+      {(cache?.creation || cache?.read) && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          cache: creation {fmtNum(cache.creation ?? 0)} · read {fmtNum(cache.read ?? 0)}
+          {typeof meta.raw_input_tokens === "number" && ` · fresh input ${fmtNum(meta.raw_input_tokens as number)}`}
+        </p>
+      )}
+
+      {run.roles && run.roles.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">roles:</span>
+          {run.roles.map((r) => (
+            <Badge key={r} variant="outline">{r}</Badge>
+          ))}
+        </div>
+      )}
+
+      {Object.keys(events).length > 0 && (
+        <>
+          <Separator className="my-4" />
+          <h3 className="mb-2 text-sm font-semibold">Events</h3>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(events).map(([t, n]) => (
+              <Badge key={t} variant="outline" className="font-mono">
+                {t}: {n}
+              </Badge>
+            ))}
+          </div>
+          {detail && detail.intervention_minutes > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">human supervision: {detail.intervention_minutes} min</p>
+          )}
+        </>
+      )}
+
+      <Separator className="my-4" />
+      <SessionGraphView project={project} runId={run._id} />
+
+      <Separator className="my-4" />
+      <div className="text-xs text-muted-foreground">
+        <div>started: {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}</div>
+        <div>ended: {run.ended_at ? new Date(run.ended_at).toLocaleString() : "—"}</div>
+        {typeof meta.session_id === "string" && <div className="font-mono">session: {meta.session_id}</div>}
+      </div>
+    </article>
+  );
+}
+
+/** Per-session graph: the run linked to the ADRs/memories/prompts it produced (ADR-0035). */
+function SessionGraphView({ project, runId }: { project: string; runId: string }) {
+  const [data, setData] = useState<GraphData>({ nodes: [], edges: [] });
+  const [temporal, setTemporal] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [hover, setHover] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .sessionGraph(project, runId, temporal)
+      .then(setData)
+      .catch(() => setData({ nodes: [], edges: [] }))
+      .finally(() => setLoading(false));
+  }, [project, runId, temporal]);
+
+  const pos = useMemo(() => computeLayout(data.nodes, data.edges), [data]);
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const n of data.nodes) if (n.kind !== "run") c[n.kind] = (c[n.kind] ?? 0) + 1;
+    return c;
+  }, [data]);
+  const produced = data.nodes.length - 1; // minus the run node
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-3">
+        <h3 className="text-sm font-semibold">Session graph</h3>
+        <span className="text-xs text-muted-foreground">
+          {produced > 0 ? `${produced} artefactos` : "sin artefactos"}
+          {Object.entries(counts).map(([k, n]) => ` · ${n} ${k}`)}
+        </span>
+        <label className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input type="checkbox" checked={temporal} onChange={(e) => setTemporal(e.target.checked)} />
+          incluir ventana temporal
+        </label>
+        {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+      </div>
+      {produced === 0 && !loading ? (
+        <p className="rounded-md border border-dashed p-4 text-xs text-muted-foreground">
+          Este run no tiene artefactos ligados. Se ligan vía las llamadas MCP del transcript
+          (<code>record_decision</code>/<code>write_memory</code>/<code>record_prompt</code>),
+          o activa “ventana temporal”. Vuelve a correr <code>aitl capture-session</code> para refrescar.
+        </p>
+      ) : (
+        <>
+          <svg
+            className="w-full rounded-md border bg-muted/20"
+            viewBox={`0 0 ${VW} ${VH}`}
+            preserveAspectRatio="xMidYMid meet"
+            style={{ maxHeight: 360 }}
+          >
+            {data.edges.map((e, i) => {
+              const a = pos.get(e.source);
+              const b = pos.get(e.target);
+              if (!a || !b) return null;
+              return (
+                <line
+                  key={`${e.source}-${e.target}-${i}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={e.type === "produced" ? "#94a3b8" : "#fcd34d"}
+                  strokeWidth={0.8}
+                  strokeOpacity={0.7}
+                  strokeDasharray={e.type === "link" ? "3 2" : undefined}
+                />
+              );
+            })}
+            {data.nodes.map((n) => {
+              const p = pos.get(n.id);
+              if (!p) return null;
+              const r = n.kind === "run" ? 11 : 6;
+              const active = hover === n.id;
+              const soft = n.basis === "temporal";
+              return (
+                <g key={n.id} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}>
+                  <circle
+                    cx={p.x}
+                    cy={p.y}
+                    r={r}
+                    fill={NODE_FILL[n.kind]}
+                    fillOpacity={soft ? 0.5 : 1}
+                    stroke={active ? "#111827" : "#fff"}
+                    strokeWidth={active ? 1.6 : 0.8}
+                  >
+                    <title>{`${n.kind}: ${n.label}${n.basis ? `\n(${n.basis})` : ""}`}</title>
+                  </circle>
+                  {(active || n.kind === "run" || data.nodes.length <= 24) && (
+                    <text x={p.x + r + 2} y={p.y + 3} fontSize={8} fill="currentColor" className="pointer-events-none select-none">
+                      {String(n.label).slice(0, 40)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {data.nodes
+              .filter((n) => n.kind !== "run")
+              .map((n) => (
+                <Badge
+                  key={n.id}
+                  variant="outline"
+                  style={{ borderColor: NODE_FILL[n.kind], color: NODE_FILL[n.kind] }}
+                  title={`${n.kind} · ${String(n.basis ?? "")}`}
+                >
+                  {n.kind === "decision" ? "ADR" : n.kind}: {String(n.label).slice(0, 32)}
+                </Badge>
+              ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Graph view ───────────────────────────────────────────────────────────────
 type GraphScope = "all" | "symbols" | "memory";
 const VW = 960;
@@ -515,6 +838,8 @@ const NODE_FILL: Record<GraphNode["kind"], string> = {
   project: "#8b5cf6",
   repo: "#22c55e",
   branch: "#0ea5e9",
+  run: "#0f172a",
+  prompt: "#64748b",
 };
 const EDGE_STROKE: Record<string, string> = {
   ref: "#a5b4fc",
@@ -733,6 +1058,8 @@ const KIND_LABEL: Record<NodeKind, string> = {
   decision: "decision",
   context: "context",
   symbol: "symbol",
+  run: "run",
+  prompt: "prompt",
 };
 
 function KnowledgeMapView({ project, onError }: { project: string; onError: (m: string) => void }) {

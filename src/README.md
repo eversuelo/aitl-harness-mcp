@@ -14,6 +14,8 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [auth/](auth/) | RBAC + usuarios + auditoria (ADR-0024/0026). |
 | [softwares/](softwares/) · [repos/](repos/) · [branches/](branches/) | Jerarquia software→projects→repos + grafo de ramas (ADR-0028/0031). |
 | [roles/](roles/) | **Roles de ingenieria (H11)**: schema/store/engine/seed (review/pair/gate). ADR-0033. |
+| [specs/](specs/) | **SDD (Pilar 4)**: `classify.ts` (auto-detección de specs ES/EN, sin flags) + `synthesis.ts` (síntesis spec↔tarea con métricas). ADR-0034. |
+| [hosts/](hosts/) | HostAdapters (claude-code/codex/antigravity). `claude-code` mide tokens/costo/turnos vía `--output-format json`; `run.ts` persiste el run, el prompt y la síntesis de specs. ADR-0020/0034. |
 | [builder/](builder/) · [indexing/](indexing/) | Constructora de skills/agentes e indexador maestro (ADR-0030). |
 | [graph/](graph/) | `graphify` puro + knowledge map multi-entidad (ADR-0025/0029). |
 | [db/](db/) | Cliente Mongo e indices. |
@@ -40,6 +42,15 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 3. [orchestration/graph.ts](orchestration/graph.ts) ejecuta el loop.
 4. [tools/base.ts](tools/base.ts) despacha tools.
 5. [memory/store.ts](memory/store.ts) persiste runs, mensajes y memoria.
+
+### Medir una tarea sobre un host (Cara B)
+
+1. [cli.ts](cli.ts) resuelve `run-host`.
+2. [specs/classify.ts](specs/classify.ts) clasifica el prompt (spec vs tarea).
+3. [hosts/run.ts](hosts/run.ts) hidrata, ejecuta el host y persiste el run.
+4. [hosts/base.ts](hosts/base.ts) parsea el JSON de Claude Code → tokens/costo/turnos.
+5. Si es spec, [specs/synthesis.ts](specs/synthesis.ts) escribe la síntesis spec↔tarea.
+6. `aitl run-show` / `GET /api/runs` exponen la telemetría (UI: pestaña Runs).
 
 ### Ingestar y buscar memoria
 
