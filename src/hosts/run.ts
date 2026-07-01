@@ -86,7 +86,7 @@ export async function runOnHost(
   const recordPrompt = async (extra: Record<string, unknown>): Promise<void> => {
     if (opts.recordPrompt === false) return;
     try {
-      const rec = await new PromptStore(store.db).add({
+      const rec = await new PromptStore().add({
         project,
         prompt,
         source: "host",

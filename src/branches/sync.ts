@@ -7,7 +7,7 @@
 import { branchHeadSha, detectBaseBranch, listLocalBranches } from "../util/git.js";
 import { classifyBranch } from "../util/branches.js";
 import { BranchStore } from "./store.js";
-import type { BranchRecord } from "./schemas.js";
+import type { BranchRecord } from "../models/branch.model.js";
 
 const TRUNK_NAMES = new Set(["main", "master", "develop", "dev", "staging", "stage", "qa"]);
 
