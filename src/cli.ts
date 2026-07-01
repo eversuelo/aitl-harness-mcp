@@ -204,10 +204,12 @@ program
   .option("--minutes <n>", "Approximate duration of the intervention.", "0")
   .description("Record a human intervention on a run (Tabla 4.3 #6 supervisión humana).")
   .action(async (runId, opts) => {
-    const { getDb } = await import("./db/client.js");
     const { MemoryStore } = await import("./memory/store.js");
     const { makeEvent } = await import("./models/event.model.js");
-    const run = await getDb().collection("runs").findOne({ _id: runId as never });
+    const { ensureMongoose } = await import("./db/mongoose.js");
+    const { RunModel } = await import("./models/run.model.js");
+    await ensureMongoose();
+    const run = await RunModel.findOne({ _id: runId }).lean();
     const project = (run?.project as string) ?? "unknown";
     await new MemoryStore().logEvent(makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
     console.log(`Recorded human intervention on ${runId} (${opts.minutes} min): ${opts.reason}`);
@@ -220,8 +222,11 @@ program
   .description("Show a run's measurable totals: tokens, iterations, tool calls, gate denials, hydrate.")
   .action(async (runId) => {
     const { getDb } = await import("./db/client.js");
+    const { ensureMongoose } = await import("./db/mongoose.js");
+    const { RunModel } = await import("./models/run.model.js");
     const db = getDb();
-    const run = await db.collection("runs").findOne({ _id: runId as never });
+    await ensureMongoose();
+    const run = (await RunModel.findOne({ _id: runId }).lean()) as Record<string, unknown> | null;
     if (!run) {
       console.log(`(no run '${runId}')`);
       await closeClient();

@@ -13,6 +13,8 @@
  */
 
 import type { Db } from "mongodb";
+import { ensureMongoose } from "../db/mongoose.js";
+import { RunModel } from "../models/run.model.js";
 import type { Graph, GraphEdge, GraphNode } from "./types.js";
 
 /** How a doc came to be linked to the run, surfaced on the node for transparency. */
@@ -87,7 +89,10 @@ export async function sessionGraph(
   runId: string,
   opts: { temporal?: boolean } = {},
 ): Promise<Graph | null> {
-  const run = await db.collection("runs").findOne({ _id: runId as never });
+  await ensureMongoose();
+  // Lean read; the run also carries dynamic per-run fields written via `$set` (artifacts,
+  // spec, host_meta…) that aren't in the base schema, so access it as a loose record.
+  const run = (await RunModel.findOne({ _id: runId }).lean()) as Record<string, unknown> | null;
   if (!run) return null;
 
   const artifacts = (run.artifacts ?? {}) as { decisions?: string[]; memories?: string[]; prompts?: string[] };

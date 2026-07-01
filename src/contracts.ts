@@ -8,7 +8,7 @@
  *   1. Re-exports the durable document types under their canonical names
  *      (`DecisionDoc` = ADR, `SymbolDoc` = Symbol, `LoopEvent` = Event) so both
  *      ecosystems use the same names without breaking existing data/imports. The core
- *      durable docs now come from the Mongoose models; `ToolCall`/`Run` are still Zod.
+ *      durable docs now come from the Mongoose models; `ToolCall` is still Zod.
  *   2. Defines the structural *ports* the core depends on (ProviderPort, ToolPort,
  *      MemoryPort, LoopStrategy) plus small value types (ToolCall, GateResult, MetricRecord).
  *
@@ -20,7 +20,8 @@ import { z } from "zod";
 
 // ── 1. canonical aliases for the durable document types ──────────────────────
 import { ToolCallSchema } from "./memory/schemas.js";
-import type { Run, ToolCall } from "./memory/schemas.js";
+import type { ToolCall } from "./memory/schemas.js";
+import type { Run } from "./models/run.model.js";
 import type { ADR as DecisionDoc } from "./models/decision.model.js";
 import type { Event as LoopEvent } from "./models/event.model.js";
 import type { MemoryDoc } from "./models/memory.model.js";

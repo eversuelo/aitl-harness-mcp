@@ -19,9 +19,9 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { ensureMongoose } from "../db/mongoose.js";
 import { McpContextModel } from "../models/mcpContext.model.js";
+import { RunModel, makeRun } from "../models/run.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { summarizeSession, type SessionSummary } from "../memory/lifecycle.js";
-import { makeRun } from "../memory/schemas.js";
 import { classifySpec } from "../specs/classify.js";
 import type { Provider } from "../providers/base.js";
 
@@ -309,8 +309,9 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
       harness_config: { role: "host", host: source, captured: true, spec: isSpec },
       tags,
     });
-    await store.db.collection("runs").updateOne(
-      { _id: runId as never },
+    await ensureMongoose();
+    await RunModel.updateOne(
+      { _id: runId },
       {
         $set: {
           ...run,

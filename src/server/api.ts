@@ -317,12 +317,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (pathname === "/api/runs" && method === "GET") {
     const project = searchParams.get("project");
     if (!project) throw new HttpError(400, "`project` query param is required.");
-    const rows = await store.db
-      .collection("runs")
-      .find({ project })
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { RunModel } = await import("../models/run.model.js");
+    await ensureMongoose();
+    const rows = await RunModel.find({ project })
       .sort({ started_at: -1 })
       .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 200)
-      .toArray();
+      .lean();
     return send(res, 200, rows);
   }
 
@@ -341,7 +342,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const rr = /^\/api\/runs\/([^/]+)$/.exec(pathname);
   if (rr && method === "GET") {
     const id = decodeURIComponent(rr[1]);
-    const run = await store.db.collection("runs").findOne({ _id: id as never });
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { RunModel } = await import("../models/run.model.js");
+    await ensureMongoose();
+    const run = await RunModel.findOne({ _id: id }).lean();
     if (!run) throw new HttpError(404, `No run '${id}'.`);
     const events = await store.db.collection("events").find({ run_id: id }).toArray();
     const byType: Record<string, number> = {};

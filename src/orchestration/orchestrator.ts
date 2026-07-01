@@ -10,8 +10,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { makeRun } from "../memory/schemas.js";
+import { ensureMongoose } from "../db/mongoose.js";
 import { makeEvent } from "../models/event.model.js";
+import { RunModel, makeRun } from "../models/run.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { type Provider, getProvider } from "../providers/base.js";
 import { type RunAgentOpts, type RunAgentResult, runAgent } from "./graph.js";
@@ -72,7 +73,8 @@ export async function orchestrate(
 
   const runId = randomUUID();
   const run = makeRun({ project, model: provider.name, harness_config: { role: "orchestrator" } });
-  await store.db.collection("runs").insertOne({ ...run, _id: runId as never });
+  await ensureMongoose();
+  await RunModel.create({ ...run, _id: runId });
 
   // 1. Decide the subtasks.
   let tasks =
@@ -130,9 +132,8 @@ export async function orchestrate(
     }),
   );
 
-  await store.db
-    .collection("runs")
-    .updateOne({ _id: runId as never }, { $set: { status: "done", ended_at: new Date() } });
+  await ensureMongoose();
+  await RunModel.updateOne({ _id: runId }, { $set: { status: "done", ended_at: new Date() } });
 
   return { run_id: runId, final_text: final, subagents };
 }
