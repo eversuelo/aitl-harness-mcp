@@ -15,7 +15,7 @@ import { initIndexes } from "../src/db/indexes.js";
 async function main(): Promise<void> {
   console.log(`Connecting to ${settings.mongodbUri} (db=${settings.mongodbDb}) ...`);
   const db = await initIndexes();
-  const user = await bootstrapBaseUser(db);
+  const user = await bootstrapBaseUser();
   const names = (await db.listCollections().toArray()).map((c) => c.name).sort();
   console.log(`OK. Collections: ${names.join(", ")}`);
   console.log(`Bootstrap user: ${user.status}${user.username ? ` (${user.username}, ${user.email})` : ""}`);

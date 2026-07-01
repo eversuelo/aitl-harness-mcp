@@ -58,8 +58,8 @@ export async function checkRbac(db: Db = getDb()): Promise<RbacCheckResult> {
 
   // Auto-bootstrap the first root when the collection is empty. With a valid seed it
   // uses it; otherwise it falls back to a generated local root (unless autogen is off).
-  if ((await countUsers(db)) === 0) {
-    const result = await bootstrapBaseUser(db);
+  if ((await countUsers()) === 0) {
+    const result = await bootstrapBaseUser();
     if (result.status === "created") {
       lines.push(`Root user: created (${result.username})`);
       if (result.generated && result.password) {
@@ -71,7 +71,7 @@ export async function checkRbac(db: Db = getDb()): Promise<RbacCheckResult> {
     }
   }
 
-  if (await rootExists(db)) {
+  if (await rootExists()) {
     lines.push("Root user: exists");
     lines.push("RBAC status: ready");
     return { ready: true, lines };

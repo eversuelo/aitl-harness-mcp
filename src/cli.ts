@@ -470,10 +470,10 @@ user
   .command("list")
   .description("List users (no password hashes). Root-only.")
   .action(async () => {
-    const { connectWithFallback, getDb } = await import("./db/client.js");
+    const { connectWithFallback } = await import("./db/client.js");
     const { listUsers } = await import("./auth/users.js");
     await connectWithFallback();
-    const rows = await listUsers(getDb());
+    const rows = await listUsers();
     for (const u of rows) {
       console.log(`${u.username}\t${u.role}\t${u.email}${u.disabled ? "\t(disabled)" : ""}`);
     }
@@ -489,20 +489,19 @@ user
   .option("--role <role>", "root | admin | user | agent | auditor", "user")
   .description("Create a user. Root-only; audited.")
   .action(async (opts) => {
-    const { connectWithFallback, getDb } = await import("./db/client.js");
+    const { connectWithFallback } = await import("./db/client.js");
     const { createUser } = await import("./auth/users.js");
     const { assertCan } = await import("./auth/rbac.js");
     const { recordAudit } = await import("./auth/audit.js");
     await connectWithFallback();
-    const db = getDb();
     try {
       assertCan(CLI_ACTOR, "users", "create");
-      const created = await createUser({ username: opts.username, email: opts.email, password: opts.password, role: opts.role }, db);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.create", resource: `user:${created.username}`, ok: true }, db);
+      const created = await createUser({ username: opts.username, email: opts.email, password: opts.password, role: opts.role });
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.create", resource: `user:${created.username}`, ok: true });
       console.log(`Created user: ${created.username} (${created.email}, role=${created.role})`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.create", resource: `user:${opts.username}`, ok: false, reason }, db);
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.create", resource: `user:${opts.username}`, ok: false, reason });
       console.error(`Create failed: ${reason}`);
       process.exitCode = 1;
     }
@@ -515,20 +514,19 @@ user
   .requiredOption("--role <role>", "root | admin | user | agent | auditor")
   .description("Change a user's role. Root-only; audited.")
   .action(async (opts) => {
-    const { connectWithFallback, getDb } = await import("./db/client.js");
+    const { connectWithFallback } = await import("./db/client.js");
     const { setUserRole } = await import("./auth/users.js");
     const { assertCan } = await import("./auth/rbac.js");
     const { recordAudit } = await import("./auth/audit.js");
     await connectWithFallback();
-    const db = getDb();
     try {
       assertCan(CLI_ACTOR, "users", "set_role");
-      const u = await setUserRole(opts.username, opts.role, db);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.set_role", resource: `user:${u.username}`, ok: true, reason: `role=${u.role}` }, db);
+      const u = await setUserRole(opts.username, opts.role);
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.set_role", resource: `user:${u.username}`, ok: true, reason: `role=${u.role}` });
       console.log(`Updated ${u.username}: role=${u.role}`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.set_role", resource: `user:${opts.username}`, ok: false, reason }, db);
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.set_role", resource: `user:${opts.username}`, ok: false, reason });
       console.error(`Set-role failed: ${reason}`);
       process.exitCode = 1;
     }
@@ -541,21 +539,20 @@ user
   .option("--enable", "Re-enable instead of disabling.")
   .description("Disable (or re-enable) a user. Root-only; audited.")
   .action(async (opts) => {
-    const { connectWithFallback, getDb } = await import("./db/client.js");
+    const { connectWithFallback } = await import("./db/client.js");
     const { setUserDisabled } = await import("./auth/users.js");
     const { assertCan } = await import("./auth/rbac.js");
     const { recordAudit } = await import("./auth/audit.js");
     await connectWithFallback();
-    const db = getDb();
     const disabled = !opts.enable;
     try {
       assertCan(CLI_ACTOR, "users", "disable");
-      const u = await setUserDisabled(opts.username, disabled, db);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.disable", resource: `user:${u.username}`, ok: true, reason: `disabled=${disabled}` }, db);
+      const u = await setUserDisabled(opts.username, disabled);
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.disable", resource: `user:${u.username}`, ok: true, reason: `disabled=${disabled}` });
       console.log(`Updated ${u.username}: disabled=${disabled}`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.disable", resource: `user:${opts.username}`, ok: false, reason }, db);
+      await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.disable", resource: `user:${opts.username}`, ok: false, reason });
       console.error(`Disable failed: ${reason}`);
       process.exitCode = 1;
     }

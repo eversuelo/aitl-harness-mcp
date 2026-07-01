@@ -378,21 +378,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (pathname === "/api/users" && method === "GET") {
     await guard(actor, "users", "read");
     const { listUsers } = await import("../auth/users.js");
-    return send(res, 200, await listUsers(store.db));
+    return send(res, 200, await listUsers());
   }
   if (pathname === "/api/users" && method === "POST") {
     await guard(actor, "users", "create");
     const { createUser } = await import("../auth/users.js");
     const body = await readJson(req);
-    const created = await createUser(
-      {
-        username: String(body.username ?? ""),
-        email: String(body.email ?? ""),
-        password: String(body.password ?? ""),
-        role: body.role ? String(body.role) : undefined,
-      },
-      store.db,
-    );
+    const created = await createUser({
+      username: String(body.username ?? ""),
+      email: String(body.email ?? ""),
+      password: String(body.password ?? ""),
+      role: body.role ? String(body.role) : undefined,
+    });
     return send(res, 201, created);
   }
   const ur = /^\/api\/users\/([^/]+)\/role$/.exec(pathname);
@@ -400,7 +397,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     await guard(actor, "users", "set_role");
     const { setUserRole } = await import("../auth/users.js");
     const body = await readJson(req);
-    const updated = await setUserRole(decodeURIComponent(ur[1]), String(body.role ?? ""), store.db);
+    const updated = await setUserRole(decodeURIComponent(ur[1]), String(body.role ?? ""));
     return send(res, 200, updated);
   }
 

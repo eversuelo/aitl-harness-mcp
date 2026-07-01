@@ -1,10 +1,9 @@
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Db } from "mongodb";
 import { settings } from "../config.js";
-import { getDb } from "../db/client.js";
+import { ensureMongoose } from "../db/mongoose.js";
+import { UserModel, type UserDoc } from "../models/user.model.js";
 import { ROLES, type Role, isRole } from "./rbac.js";
 
-const USERS_COLLECTION = "users";
 const HASH_ITERATIONS = 310_000;
 const HASH_KEYLEN = 32;
 const HASH_DIGEST = "sha256";
@@ -16,6 +15,8 @@ export const PUBLIC_USER_PROJECTION = {
   password_algo: 0,
   _id: 0,
 } as const;
+
+export type { UserDoc };
 
 export interface UserSeed {
   username: string;
@@ -144,44 +145,45 @@ export function bootstrapSeedFromSettings(): UserSeed | null {
   return { username, email, password, role: settings.bootstrapRole.trim() || "root" };
 }
 
-export async function countUsers(db: Db = getDb()): Promise<number> {
-  return db.collection(USERS_COLLECTION).countDocuments();
+export async function countUsers(): Promise<number> {
+  await ensureMongoose();
+  return UserModel.countDocuments();
 }
 
-export async function rootExists(db: Db = getDb()): Promise<boolean> {
-  return (await db.collection(USERS_COLLECTION).countDocuments({ role: "root" })) > 0;
+export async function rootExists(): Promise<boolean> {
+  await ensureMongoose();
+  return (await UserModel.countDocuments({ role: "root" })) > 0;
 }
 
-export async function getUser(username: string, db: Db = getDb()): Promise<PublicUser | null> {
-  const doc = await db
-    .collection(USERS_COLLECTION)
-    .findOne({ username: normalizeUsername(username) }, { projection: PUBLIC_USER_PROJECTION });
+export async function getUser(username: string): Promise<PublicUser | null> {
+  await ensureMongoose();
+  const doc = await UserModel.findOne({ username: normalizeUsername(username) }, PUBLIC_USER_PROJECTION).lean();
   return (doc as PublicUser | null) ?? null;
 }
 
-export async function listUsers(db: Db = getDb()): Promise<PublicUser[]> {
-  return (await db
-    .collection(USERS_COLLECTION)
-    .find({}, { projection: PUBLIC_USER_PROJECTION })
+export async function listUsers(): Promise<PublicUser[]> {
+  await ensureMongoose();
+  return (await UserModel.find({}, PUBLIC_USER_PROJECTION)
     .sort({ created_at: 1 })
-    .toArray()) as unknown as PublicUser[];
+    .lean()) as unknown as PublicUser[];
 }
 
 /**
  * Insert a new user. Validation + uniqueness only — RBAC (only `root` may create
  * users) is enforced at the call site, which also writes the audit event.
  */
-export async function createUser(seed: UserSeed, db: Db = getDb()): Promise<PublicUser> {
+export async function createUser(seed: UserSeed): Promise<PublicUser> {
   validateUserSeed(seed);
   const username = normalizeUsername(seed.username);
   const email = normalizeEmail(seed.email);
   const role = validateRole((seed.role ?? "user").trim() || "user");
 
-  const existing = await db.collection(USERS_COLLECTION).findOne({ $or: [{ username }, { email }] });
+  await ensureMongoose();
+  const existing = await UserModel.findOne({ $or: [{ username }, { email }] }).lean();
   if (existing) throw new Error(`a user with that username or email already exists.`);
 
   const now = new Date();
-  await db.collection(USERS_COLLECTION).insertOne({
+  await UserModel.create({
     username,
     email,
     role,
@@ -193,29 +195,27 @@ export async function createUser(seed: UserSeed, db: Db = getDb()): Promise<Publ
   return { username, email, role, disabled: false, created_at: now, updated_at: now };
 }
 
-export async function setUserRole(username: string, role: string, db: Db = getDb()): Promise<PublicUser> {
+export async function setUserRole(username: string, role: string): Promise<PublicUser> {
   const newRole = validateRole(role);
   const uname = normalizeUsername(username);
-  const res = await db
-    .collection(USERS_COLLECTION)
-    .findOneAndUpdate(
-      { username: uname },
-      { $set: { role: newRole, updated_at: new Date() } },
-      { returnDocument: "after", projection: PUBLIC_USER_PROJECTION },
-    );
+  await ensureMongoose();
+  const res = await UserModel.findOneAndUpdate(
+    { username: uname },
+    { $set: { role: newRole, updated_at: new Date() } },
+    { returnDocument: "after", projection: PUBLIC_USER_PROJECTION },
+  ).lean();
   if (!res) throw new Error(`no user '${uname}'.`);
   return res as unknown as PublicUser;
 }
 
-export async function setUserDisabled(username: string, disabled: boolean, db: Db = getDb()): Promise<PublicUser> {
+export async function setUserDisabled(username: string, disabled: boolean): Promise<PublicUser> {
   const uname = normalizeUsername(username);
-  const res = await db
-    .collection(USERS_COLLECTION)
-    .findOneAndUpdate(
-      { username: uname },
-      { $set: { disabled, updated_at: new Date() } },
-      { returnDocument: "after", projection: PUBLIC_USER_PROJECTION },
-    );
+  await ensureMongoose();
+  const res = await UserModel.findOneAndUpdate(
+    { username: uname },
+    { $set: { disabled, updated_at: new Date() } },
+    { returnDocument: "after", projection: PUBLIC_USER_PROJECTION },
+  ).lean();
   if (!res) throw new Error(`no user '${uname}'.`);
   return res as unknown as PublicUser;
 }
@@ -232,17 +232,16 @@ export async function setUserDisabled(username: string, disabled: boolean, db: D
  * status, so a bad password can never break server startup.
  */
 export async function bootstrapBaseUser(
-  db: Db = getDb(),
   seed: UserSeed | null = bootstrapSeedFromSettings(),
 ): Promise<BootstrapUserResult> {
-  const coll = db.collection(USERS_COLLECTION);
-  const total = await coll.countDocuments();
+  await ensureMongoose();
+  const total = await UserModel.countDocuments();
 
   if (total > 0) {
     if (seed) {
-      const existing = await coll.findOne({
+      const existing = await UserModel.findOne({
         $or: [{ username: normalizeUsername(seed.username) }, { email: normalizeEmail(seed.email) }],
-      });
+      }).lean();
       if (existing) {
         return {
           status: "exists",
@@ -278,7 +277,7 @@ export async function bootstrapBaseUser(
   const username = normalizeUsername(effective.username);
   const email = normalizeEmail(effective.email);
   const now = new Date();
-  await coll.insertOne({
+  await UserModel.create({
     username,
     email,
     role: "root",
@@ -292,13 +291,15 @@ export async function bootstrapBaseUser(
     : { status: "created", username, email, role: "root" };
 }
 
-export async function verifyUserCredentials(opts: UserSeed, db: Db = getDb()): Promise<VerifyUserResult> {
+export async function verifyUserCredentials(opts: UserSeed): Promise<VerifyUserResult> {
   validateUserSeed(opts);
   const username = normalizeUsername(opts.username);
   const email = normalizeEmail(opts.email);
-  const user = await db.collection(USERS_COLLECTION).findOne({ username, email });
+  await ensureMongoose();
+  // FULL doc (no public projection) so the stored hash/salt/algo can be verified.
+  const user = await UserModel.findOne({ username, email }).lean();
   if (!user) return { ok: false, reason: "user not found for username/email" };
   if (user.disabled === true) return { ok: false, reason: "user is disabled", username, email };
-  if (!verifyPassword(opts.password, user)) return { ok: false, reason: "invalid password", username, email };
+  if (!verifyPassword(opts.password, user as Record<string, unknown>)) return { ok: false, reason: "invalid password", username, email };
   return { ok: true, username, email, role: String(user.role ?? "") };
 }

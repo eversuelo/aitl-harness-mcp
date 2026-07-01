@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import type { Db } from "mongodb";
+import { mock, test } from "node:test";
+import { mongoose } from "../db/mongoose.js";
+import { UserModel } from "../models/user.model.js";
 import { ROLES } from "./rbac.js";
 import {
   bootstrapBaseUser,
@@ -10,33 +11,41 @@ import {
   validateUserSeed,
 } from "./users.js";
 
-/** Minimal in-memory stand-in for the bits of `Db` that bootstrapBaseUser touches. */
-function fakeDb(initial: Record<string, unknown>[] = []): { db: Db; docs: Record<string, unknown>[] } {
+/**
+ * In-memory stand-in for the `UserModel` statics that `bootstrapBaseUser` touches.
+ * Post-Mongoose migration the functions no longer accept an injected `Db`; they call
+ * `UserModel.*` directly, so tests stub those statics (and `ensureMongoose`, so no real
+ * connection is attempted) and back them with a local `docs` array.
+ */
+function stubUserModel(initial: Record<string, unknown>[] = []): { docs: Record<string, unknown>[]; restore: () => void } {
   const docs = [...initial];
-  const db = {
-    collection() {
-      return {
-        async countDocuments() {
-          return docs.length;
-        },
-        async findOne(query: { $or?: { username?: string; email?: string }[] }) {
-          if (!query?.$or) return docs[0] ?? null;
-          return (
-            docs.find((d) =>
-              query.$or!.some(
-                (c) => (c.username && d.username === c.username) || (c.email && d.email === c.email),
-              ),
-            ) ?? null
-          );
-        },
-        async insertOne(doc: Record<string, unknown>) {
-          docs.push(doc);
-          return { insertedId: docs.length };
-        },
-      };
+
+  // Stub the underlying driver connect so `ensureMongoose()` resolves without a real
+  // Atlas connection (the ESM named export cannot be redefined directly).
+  mock.method(mongoose, "connect", (async () => mongoose) as never);
+
+  mock.method(UserModel, "countDocuments", ((query?: { role?: string }) => {
+    const n = query?.role ? docs.filter((d) => d.role === query.role).length : docs.length;
+    return Promise.resolve(n);
+  }) as never);
+
+  mock.method(UserModel, "findOne", ((query: { $or?: { username?: string; email?: string }[] }) => ({
+    lean() {
+      if (!query?.$or) return Promise.resolve(docs[0] ?? null);
+      return Promise.resolve(
+        docs.find((d) =>
+          query.$or!.some((c) => (c.username && d.username === c.username) || (c.email && d.email === c.email)),
+        ) ?? null,
+      );
     },
-  } as unknown as Db;
-  return { db, docs };
+  })) as never);
+
+  mock.method(UserModel, "create", ((doc: Record<string, unknown>) => {
+    docs.push(doc);
+    return Promise.resolve(doc);
+  }) as never);
+
+  return { docs, restore: () => mock.restoreAll() };
 }
 
 test("validateRole accepts every RBAC role", () => {
@@ -84,29 +93,41 @@ test("generateLocalRootSeed produces a valid root seed", () => {
 });
 
 test("bootstrapBaseUser auto-generates a local root when no users and no valid seed", async () => {
-  const { db, docs } = fakeDb();
-  const res = await bootstrapBaseUser(db, null); // no seed at all
-  assert.equal(res.status, "created");
-  assert.equal(res.generated, true);
-  assert.equal(res.role, "root");
-  assert.ok((res.password ?? "").length >= 12);
-  assert.equal(docs.length, 1);
-  assert.equal(docs[0].role, "root");
-  // The plaintext password is never persisted — only the hash.
-  assert.equal(docs[0].password, undefined);
-  assert.equal(typeof docs[0].password_hash, "string");
+  const { docs, restore } = stubUserModel();
+  try {
+    const res = await bootstrapBaseUser(null); // no seed at all
+    assert.equal(res.status, "created");
+    assert.equal(res.generated, true);
+    assert.equal(res.role, "root");
+    assert.ok((res.password ?? "").length >= 12);
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].role, "root");
+    // The plaintext password is never persisted — only the hash.
+    assert.equal(docs[0].password, undefined);
+    assert.equal(typeof docs[0].password_hash, "string");
+  } finally {
+    restore();
+  }
 });
 
 test("bootstrapBaseUser never throws on an invalid seed (falls back to autogen)", async () => {
-  const { db } = fakeDb();
-  const res = await bootstrapBaseUser(db, { username: "x", email: "x@y.co", password: "short" });
-  assert.equal(res.status, "created");
-  assert.equal(res.generated, true);
+  const { restore } = stubUserModel();
+  try {
+    const res = await bootstrapBaseUser({ username: "x", email: "x@y.co", password: "short" });
+    assert.equal(res.status, "created");
+    assert.equal(res.generated, true);
+  } finally {
+    restore();
+  }
 });
 
 test("bootstrapBaseUser is a no-op when users already exist", async () => {
-  const { db, docs } = fakeDb([{ username: "someone", email: "s@e.co", role: "root" }]);
-  const res = await bootstrapBaseUser(db, null);
-  assert.equal(res.status, "skipped");
-  assert.equal(docs.length, 1);
+  const { docs, restore } = stubUserModel([{ username: "someone", email: "s@e.co", role: "root" }]);
+  try {
+    const res = await bootstrapBaseUser(null);
+    assert.equal(res.status, "skipped");
+    assert.equal(docs.length, 1);
+  } finally {
+    restore();
+  }
 });
