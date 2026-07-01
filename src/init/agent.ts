@@ -15,6 +15,7 @@ export interface AgentGuideOpts {
   project: string;
   mcp: string;
   interactive?: boolean;
+  force?: boolean;
 }
 
 function renderGuide(project: string, mcp: string): string {
@@ -77,6 +78,16 @@ export async function writeAgentGuide(opts: AgentGuideOpts): Promise<string> {
       mcp = (await rl.question(`MCP server name [${mcp}]: `)).trim() || mcp;
     } finally {
       rl.close();
+    }
+  }
+
+  // Guard against clobbering an existing AGENTS.md (symmetry with `init claude`).
+  if (!opts.force) {
+    try {
+      await fs.access(out);
+      throw new Error(`${out} already exists. Re-run with --force to overwrite.`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
   }
 

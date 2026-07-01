@@ -1098,6 +1098,7 @@ init
   .option("--out <file>", "Output markdown file.", "AGENTS.md")
   .option("--project <project>", "Project scope the agent should use.", "aitl-js")
   .option("--mcp <name>", "MCP server name to consult.", "aitl-js")
+  .option("--force", "Overwrite an existing AGENTS.md.", false)
   .description("Create an agent guide (AGENTS.md) that reminds the agent to consult the MCP on every decision.")
   .action(async (opts) => {
     const { writeAgentGuide } = await import("./init/agent.js");
@@ -1106,6 +1107,7 @@ init
       project: opts.project,
       mcp: opts.mcp,
       interactive: opts.interactive,
+      force: opts.force,
     });
     console.log(`Wrote agent guide to ${path}.`);
   });
