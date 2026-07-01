@@ -272,19 +272,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const query: Record<string, unknown> = { project };
     const repo = searchParams.get("repo");
     if (repo) query.repo = repo;
-    const rows = await store.db
-      .collection("mcp_context")
-      .find(query, { projection: { messages: 0, context: 0 } })
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { McpContextModel } = await import("../models/mcpContext.model.js");
+    await ensureMongoose();
+    const rows = await McpContextModel.find(query, { messages: 0, context: 0 })
       .sort({ created_at: -1 })
       .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 100)
-      .toArray();
+      .lean();
     return send(res, 200, rows);
   }
 
   const ctx = /^\/api\/context\/([^/]+)$/.exec(pathname);
   if (ctx && method === "GET") {
     const id = decodeURIComponent(ctx[1]);
-    const doc = await store.db.collection("mcp_context").findOne({ context_id: id });
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { McpContextModel } = await import("../models/mcpContext.model.js");
+    await ensureMongoose();
+    const doc = await McpContextModel.findOne({ context_id: id }).lean();
     if (!doc) throw new HttpError(404, `No context '${id}'.`);
     return send(res, 200, doc);
   }
