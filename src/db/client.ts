@@ -58,7 +58,7 @@ export function activeUri(): string {
 }
 
 /** Candidate URIs in priority order: primary first, optional fallback second. */
-function candidateUris(): { label: string; uri: string }[] {
+export function candidateUris(): { label: string; uri: string }[] {
   const list = [{ label: "primary", uri: settings.mongodbUri }];
   const fb = settings.mongodbUriFallback.trim();
   if (fb && fb !== settings.mongodbUri) list.push({ label: "fallback", uri: fb });
@@ -174,5 +174,13 @@ export async function closeClient(): Promise<void> {
     await _client.close();
     _client = null;
     _activeUri = null;
+  }
+  // Migration: also drop the Mongoose connection so CLI processes exit cleanly. No-op
+  // until a model has connected Mongoose; imported lazily to avoid a static import cycle.
+  try {
+    const { disconnectMongoose } = await import("./mongoose.js");
+    await disconnectMongoose();
+  } catch {
+    /* mongoose not loaded/connected — nothing to close */
   }
 }

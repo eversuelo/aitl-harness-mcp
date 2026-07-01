@@ -56,6 +56,7 @@
     "dotenv": "^16.4.5",
     "gray-matter": "^4.0.3",
     "mongodb": "^6.8.0",
+    "mongoose": "^9.7.3",
     "openai": "^4.56.0",
     "zod": "^3.23.8"
   },
