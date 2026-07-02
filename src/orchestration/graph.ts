@@ -275,9 +275,27 @@ export async function runAgent(
       convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
       for (const call of turn.tool_calls) {
         let denyReason: string | null = null;
-        const result = await registry.call(call.name, call.input ?? {}, (reason) => {
-          denyReason = reason;
-        });
+        const result = await registry.call(
+          call.name,
+          call.input ?? {},
+          (reason) => {
+            denyReason = reason;
+          },
+          {
+            // A hook that acts (mutates args/result) leaves a durable trace, so hook
+            // interference is observable in the same event stream as gates/tool calls.
+            onHookEvent: (ev) => {
+              void store.logEvent(
+                makeEvent({
+                  project,
+                  run_id: runId,
+                  type: ev.phase === "pre" ? "tool_pre_hook" : "tool_post_hook",
+                  payload: { name: ev.tool, index: ev.index },
+                }),
+              );
+            },
+          },
+        );
         idx += 1;
         await store.appendMessage(
           makeMessage({

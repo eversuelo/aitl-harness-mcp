@@ -24,6 +24,8 @@ const EVENT_TYPES = [
   "loop_iter",
   "compaction",
   "tool_call",
+  "tool_pre_hook",
+  "tool_post_hook",
   "gate",
   "synthesis",
   "hydrate",
