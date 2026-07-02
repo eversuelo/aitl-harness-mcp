@@ -56,10 +56,38 @@ function narrowTask(v: unknown, n: number): SddTask | null {
   };
 }
 
+/**
+ * Extract the FIRST balanced JSON array from free-form text. A greedy regex
+ * (`/\[[\s\S]*\]/`) over-matches when the model appends prose containing another
+ * `]` after the array — found live with gemma-4 on LM Studio, so we walk brackets
+ * (string- and escape-aware) instead.
+ */
+function extractJsonArray(text: string): string {
+  const start = text.indexOf("[");
+  if (start === -1) throw new Error("no JSON array found in the answer");
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  throw new Error("unbalanced JSON array in the answer");
+}
+
 function parseTasks(text: string, maxTasks: number): SddTask[] {
-  const m = text.match(/\[[\s\S]*\]/);
-  if (!m) throw new Error("no JSON array found in the answer");
-  const arr = JSON.parse(m[0]) as unknown;
+  const arr = JSON.parse(extractJsonArray(text)) as unknown;
   if (!Array.isArray(arr)) throw new Error("the JSON is not an array");
   const tasks = arr.map((v, i) => narrowTask(v, i + 1)).filter((t): t is SddTask => t !== null);
   if (!tasks.length) throw new Error("the array contains no valid task objects");

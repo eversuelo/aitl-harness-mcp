@@ -37,7 +37,11 @@ const messageSchema = new Schema(
     run_id: { type: String, required: true },
     idx: { type: Number, required: true },
     role: { type: String, enum: ROLES, required: true },
-    content: { type: String, required: true },
+    // NOT `required`: Mongoose's required uses truthiness, so it rejects "" — but an
+    // empty string is a VALID turn (an assistant message that goes straight to
+    // tool_calls has no text). Found on the first live run (gemma-4 via LM Studio);
+    // presence is still guaranteed by MessageInput/makeMessage at the type level.
+    content: { type: String, default: "" },
     tool_calls: { type: [toolCallSchema], default: [] },
     tool_call_id: { type: String, default: null }, // links a tool result to its call (resume)
     tokens: { type: Number, default: 0 },

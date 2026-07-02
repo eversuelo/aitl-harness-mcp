@@ -105,6 +105,14 @@ test("the pipeline persists 1 spec + 1 design + N tasks, chained by tags", async
   );
 });
 
+test("trailing prose after the array (with stray brackets) does not break parsing", async () => {
+  // Live failure mode (gemma-4 on LM Studio): valid array, then an explanation that
+  // itself contains "]" — a greedy regex over-matches; the balanced extractor must not.
+  const chatty = `${GOOD_TASKS}\n\nNote: dependsOn uses ids [t1] so t2 runs after t1.`;
+  const { res } = await run(SPEC_PROMPT, new FakeProvider([chatty]));
+  assert.equal(res.tasks.length, 2);
+});
+
 test("malformed tasks JSON is repaired with ONE retry", async () => {
   const provider = new FakeProvider(["this is not json at all", GOOD_TASKS]);
   const { res } = await run(SPEC_PROMPT, provider);

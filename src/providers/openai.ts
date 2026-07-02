@@ -84,6 +84,35 @@ export interface OpenAIProviderOpts {
   maxContext?: number;
 }
 
+/**
+ * Adapt the harness's normalized conversation back to OpenAI wire shape before a
+ * request. The loop persists/re-sends assistant tool calls as `{id, name, input}`
+ * (our ChatTurn shape), but the API expects
+ * `{id, type:"function", function:{name, arguments:<json string>}}`. Without this the
+ * SECOND turn after any tool call is rejected ("Invalid 'messages' in payload") —
+ * i.e. every tool-using run breaks. System/user/plain-assistant/tool messages pass
+ * through unchanged.
+ */
+export function toOpenAiMessages(messages: Record<string, unknown>[]): OpenAI.ChatCompletionMessageParam[] {
+  return messages.map((m) => {
+    const raw = m.tool_calls;
+    if (m.role === "assistant" && Array.isArray(raw) && raw.length) {
+      const tool_calls = raw.map((tc) => {
+        const c = tc as { id?: string; name?: string; input?: unknown };
+        return {
+          id: c.id ?? "",
+          type: "function" as const,
+          function: { name: c.name ?? "", arguments: JSON.stringify(c.input ?? {}) },
+        };
+      });
+      // OpenAI wants content:null (not "") on an assistant message that only calls tools.
+      const content = typeof m.content === "string" && m.content ? m.content : null;
+      return { role: "assistant", content, tool_calls } as OpenAI.ChatCompletionMessageParam;
+    }
+    return m as unknown as OpenAI.ChatCompletionMessageParam;
+  });
+}
+
 export class OpenAIProvider implements Provider {
   readonly name: string;
   private client: OpenAI;
@@ -117,10 +146,10 @@ export class OpenAIProvider implements Provider {
   }
 
   async chat(messages: Record<string, unknown>[], opts: ChatOpts = {}): Promise<ChatTurn> {
-    const msgs = [
-      ...(opts.system ? [{ role: "system", content: opts.system }] : []),
-      ...messages,
-    ] as unknown as OpenAI.ChatCompletionMessageParam[];
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
+      ...toOpenAiMessages(messages),
+    ];
 
     // OpenAI expects tools in {type:"function", function:{...}} shape; callers pass
     // the normalized harness tool schema, adapted here.
@@ -153,10 +182,10 @@ export class OpenAIProvider implements Provider {
     messages: Record<string, unknown>[],
     opts: ChatOpts = {},
   ): AsyncGenerator<StreamDelta, ChatTurn, void> {
-    const msgs = [
-      ...(opts.system ? [{ role: "system", content: opts.system }] : []),
-      ...messages,
-    ] as unknown as OpenAI.ChatCompletionMessageParam[];
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      ...(opts.system ? [{ role: "system" as const, content: opts.system }] : []),
+      ...toOpenAiMessages(messages),
+    ];
     const oaiTools = (opts.tools ?? []).map((t) => ({ type: "function" as const, function: t }));
 
     const stream = await this.client.chat.completions.create({
