@@ -6,7 +6,7 @@
  * passing Red" pattern: a named phase must be satisfied before a tool is allowed.
  */
 
-import { type PermissionGate, type ToolRegistry, defaultRegistry } from "../tools/base.js";
+import { type SyncPermissionGate, type ToolRegistry, defaultRegistry } from "../tools/base.js";
 
 // Lightweight glob match (a single `*` wildcard per segment) to avoid an extra dep.
 function globMatch(value: string, pattern: string): boolean {
@@ -17,7 +17,7 @@ function globMatch(value: string, pattern: string): boolean {
 }
 
 /** Deny filesystem writes to any path matching one of `patterns`. */
-export function denyPathsGate(patterns: string[]): PermissionGate {
+export function denyPathsGate(patterns: string[]): SyncPermissionGate {
   return (name, args) => {
     if (name === "write_file" || name === "shell") {
       const path = String(args.path ?? "");
@@ -40,7 +40,7 @@ export class PhaseGate {
     private check: () => boolean,
   ) {}
 
-  asGate(): PermissionGate {
+  asGate(): SyncPermissionGate {
     return (name) => {
       if (this.guardedTools.has(name) && !this.check()) {
         return [false, `phase '${this.name}' not satisfied yet`];

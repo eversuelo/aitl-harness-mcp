@@ -22,7 +22,7 @@
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { Server } from "node:http";
-import { MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
+import { MEMORY_TYPES, RESERVED_MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import { recordAudit } from "../auth/audit.js";
 import {
@@ -114,7 +114,7 @@ async function upsertMemoryDoc(body: Record<string, unknown>, actor?: Actor): Pr
 
   const rawType = String(body.type ?? "project");
   const type: MemoryType =
-    (MEMORY_TYPES as readonly string[]).includes(rawType) && rawType !== "synthesis"
+    (MEMORY_TYPES as readonly string[]).includes(rawType) && !RESERVED_MEMORY_TYPES.has(rawType)
       ? (rawType as MemoryType)
       : "project";
   const text = String(body.body ?? "");

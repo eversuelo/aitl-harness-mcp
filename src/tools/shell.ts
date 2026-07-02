@@ -9,6 +9,7 @@ const execAsync = promisify(exec);
 export class ShellTool implements Tool {
   readonly name = "shell";
   readonly description = "Run a shell command and return combined stdout/stderr.";
+  readonly requiresApproval = true; // side-effect: subject to --ask (ADR-0040)
   readonly inputSchema = {
     type: "object",
     properties: {

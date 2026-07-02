@@ -27,6 +27,18 @@ spelling — those fragment the history. Verify the hash above matches
 > srv, sin shards; modelos en `src/models/*.model.ts`). 0037: repo-map por rama (campo
 > `branch` en el modelo Symbol, huella constante, respeta `.gitignore`). Ledger ahora
 > contiguo **0001–0037**; next free **0038**.
+> 0038–0042 (2026-07-01, rama `feat/p1-p2-harness-core`): 0038 providers locales
+> lmstudio/openai-compat (maxContext configurable); 0039 hooks pre/post tool en la
+> ToolRegistry; 0040 gates async + aprobación humana in-loop `--ask` (métrica
+> `supervision_minutes` en run-show); 0041 cliente MCP (`--mcp` monta `.mcp.json` como
+> tools `mcp__<server>__<tool>`); 0042 SDD Fase D (`aitl sdd`, memory types
+> spec/design/task + RESERVED_MEMORY_TYPES). Además se implementaron ADR-0005
+> (`chatStream` + `aitl run --stream`) y ADR-0003 (`aitl chat` REPL multi-turno).
+> 0043 (primera corrida viva, gemma-4 vía LM Studio): fixes de round-trip
+> provider↔loop — `toOpenAiMessages` adapta tool_calls al formato OpenAI,
+> `MessageModel.content` acepta `""` (turno solo-tools), extractor de array JSON
+> balanceado en `decomposeTasks`. Loop verificado E2E con tools+stream+`--ask`.
+> Ledger ahora contiguo **0001–0043**; next free **0044**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
@@ -56,5 +68,5 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Context lookups (memory, decisions, conventions, skills) use a robust cascade
   (vector → text → recency) so they work even before the Atlas vector index exists.
 - Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0038). Keep ADR ids contiguous and never reuse one. The number is the
+  currently 0044). Keep ADR ids contiguous and never reuse one. The number is the
   next-free read from the `decisions` collection at BUILD time — never pin it in docs.

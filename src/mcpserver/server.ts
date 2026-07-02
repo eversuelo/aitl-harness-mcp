@@ -28,7 +28,7 @@ import { McpToolCallModel } from "../models/mcpToolCall.model.js";
 import { embedOne } from "../ingest/embedder.js";
 import { extractLinks, parseMarkdownDir } from "../ingest/markdown.js";
 import { Classifier } from "../memory/classifier.js";
-import { MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
+import { MEMORY_TYPES, RESERVED_MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { ADRStore } from "../decisions/adr.js";
@@ -378,7 +378,7 @@ export function buildServer(): McpServer {
     },
     async ({ project, slug, body, description, type, tags, repo }) => {
       return runLogged("write_memory", { project, slug, body, description, type, tags, repo }, async () => {
-        const t: MemoryType = (MEMORY_TYPES as readonly string[]).includes(type) && type !== "synthesis"
+        const t: MemoryType = (MEMORY_TYPES as readonly string[]).includes(type) && !RESERVED_MEMORY_TYPES.has(type)
           ? (type as MemoryType)
           : "project";
         const doc = makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });

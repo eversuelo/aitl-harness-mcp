@@ -1,15 +1,18 @@
 /**
- * Tool interface + registry + permission gate.
+ * Tool interface + registry + permission gates + pre/post tool hooks.
  *
  * A Tool exposes a name, a JSON-schema for its input, and a `run(args)`. The
  * registry renders the provider-agnostic tool schema and dispatches calls. The
- * permission gate is where deterministic policy lives (mirrors PreToolUse hooks).
+ * permission gate is where deterministic policy lives (mirrors PreToolUse hooks);
+ * pre/post hooks are the in-process extensibility seam around `tool.run` (ADR-0039).
  */
 
 export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Record<string, unknown>;
+  /** Side-effect tools set this so `--ask` (ADR-0040) can request human approval. */
+  readonly requiresApproval?: boolean;
   /** Execute the tool and return a string result. */
   run(args: Record<string, unknown>): Promise<string>;
 }
@@ -26,18 +29,71 @@ export function toolSchema(tool: Tool): Record<string, unknown> {
 }
 
 // A gate returns [allowed, reason]. Registered by src/hooks/gates.ts.
-export type PermissionGate = (name: string, args: Record<string, unknown>) => [boolean, string];
+export type GateVerdict = [boolean, string];
+/** Deterministic gates stay sync — factories keep this type so callers may destructure. */
+export type SyncPermissionGate = (name: string, args: Record<string, unknown>) => GateVerdict;
+/** The registry accepts sync AND async gates (ADR-0040): `call()` awaits each verdict,
+ *  which is a no-op for plain tuples — every pre-existing gate works unchanged. */
+export type PermissionGate = (
+  name: string,
+  args: Record<string, unknown>,
+) => GateVerdict | Promise<GateVerdict>;
+
+/**
+ * Pre-tool hook (ADR-0039): observes — and may rewrite — the args before the tool
+ * runs (inject defaults, redact secrets…). A throwing pre-hook ABORTS the call
+ * (the tool never runs), so hooks can also act as policy.
+ */
+export type PreToolHook = (
+  name: string,
+  args: Record<string, unknown>,
+) => void | { args?: Record<string, unknown> } | Promise<void | { args?: Record<string, unknown> }>;
+
+/**
+ * Post-tool hook (ADR-0039): observes — and may transform — the result (truncate,
+ * annotate…). Each post-hook runs in its own try/catch: a broken observer never
+ * loses the tool's output.
+ */
+export type PostToolHook = (
+  name: string,
+  args: Record<string, unknown>,
+  result: string,
+) => void | { result?: string } | Promise<void | { result?: string }>;
+
+/** Telemetry envelope — emitted ONLY when a hook acts (mutates args/result). */
+export interface ToolHookEvent {
+  phase: "pre" | "post";
+  tool: string;
+  /** Position of the acting hook in its chain. */
+  index: number;
+  mutated: true;
+}
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private gates: PermissionGate[] = [];
+  private preHooks: PreToolHook[] = [];
+  private postHooks: PostToolHook[] = [];
 
   register(tool: Tool): void {
     this.tools.set(tool.name, tool);
   }
 
+  /** Look up a registered tool (used by the approval gate to read `requiresApproval`). */
+  get(name: string): Tool | undefined {
+    return this.tools.get(name);
+  }
+
   addGate(gate: PermissionGate): void {
     this.gates.push(gate);
+  }
+
+  addPreHook(hook: PreToolHook): void {
+    this.preHooks.push(hook);
+  }
+
+  addPostHook(hook: PostToolHook): void {
+    this.postHooks.push(hook);
   }
 
   schemas(): Record<string, unknown>[] {
@@ -58,9 +114,11 @@ export class ToolRegistry {
     name: string,
     args: Record<string, unknown>,
     onDeny?: (reason: string) => void,
+    opts: { onHookEvent?: (ev: ToolHookEvent) => void } = {},
   ): Promise<string> {
     for (const gate of this.gates) {
-      const [allowed, reason] = gate(name, args);
+      // `await` on a plain tuple is a no-op, so sync gates are untouched (ADR-0040).
+      const [allowed, reason] = await gate(name, args);
       if (!allowed) {
         onDeny?.(reason);
         return `[denied by gate] ${reason}`;
@@ -69,7 +127,28 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
     if (tool === undefined) return `[error] unknown tool '${name}'`;
     try {
-      return await tool.run(args);
+      // Pre-hooks run AFTER gates (policy first) and may rewrite the args; a throwing
+      // pre-hook falls through to the catch below — the tool never runs.
+      for (const [i, hook] of this.preHooks.entries()) {
+        const r = await hook(name, args);
+        if (r && typeof r === "object" && r.args) {
+          args = r.args;
+          opts.onHookEvent?.({ phase: "pre", tool: name, index: i, mutated: true });
+        }
+      }
+      let result = await tool.run(args);
+      for (const [i, hook] of this.postHooks.entries()) {
+        try {
+          const r = await hook(name, args, result);
+          if (r && typeof r === "object" && typeof r.result === "string") {
+            result = r.result;
+            opts.onHookEvent?.({ phase: "post", tool: name, index: i, mutated: true });
+          }
+        } catch {
+          // A throwing post-hook is skipped; the tool's result is preserved.
+        }
+      }
+      return result;
     } catch (err) {
       // A throwing tool becomes a result the model can react to, never a crashed run.
       return `[tool error] ${err instanceof Error ? err.message : String(err)}`;

@@ -20,10 +20,11 @@ import { RunModel, makeRun } from "../models/run.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { routeSkills } from "../projectctx/router.js";
 import { DefinitionStore } from "../projectctx/store.js";
-import { type Provider, getProvider } from "../providers/base.js";
+import { type Provider, type StreamDelta, getProvider } from "../providers/base.js";
 import { denyPathsGate, installDefaultGates } from "../hooks/gates.js";
 import { type ToolRegistry, defaultRegistry } from "../tools/base.js";
 import { withRetry } from "../util/retry.js";
+import { consumeStream } from "./stream.js";
 
 export interface RunAgentOpts {
   provider?: Provider;
@@ -48,7 +49,19 @@ export interface RunAgentOpts {
   installDefaultTools?: boolean;
   /** Max provider-call retries on transient errors, per turn (default 3). */
   retries?: number;
-  /** Resume an existing run by id: reload its transcript and continue the loop. */
+  /** Human-in-the-loop (ADR-0040): confirm side-effect tools (requiresApproval) before they run. */
+  ask?: boolean;
+  /** Non-interactive fallback for `ask` when stdin is not a TTY: "deny" (default) | "allow". */
+  askPolicy?: "deny" | "allow";
+  /**
+   * Streaming observer (ADR-0005): receives assistant text deltas as they arrive.
+   * Only used when the provider implements `chatStream`; otherwise the loop calls
+   * `chat()` and behaviour is byte-for-byte identical to a non-streaming run.
+   */
+  onDelta?: (delta: StreamDelta) => void;
+  /** Resume an existing run by id: reload its transcript and continue the loop.
+   *  A non-empty `prompt` is appended as a NEW user turn (multi-turn chat, ADR-0003);
+   *  pass "" to just continue an interrupted run from where it stopped. */
   resume?: string;
   /**
    * Termination gate. When the model stops, the run only ends if this returns `true`;
@@ -152,6 +165,16 @@ export async function runAgent(
     convo = rebuildConvo(msgs);
     idx = msgs.length ? Number(msgs[msgs.length - 1].idx ?? msgs.length) : 0;
     promptText = String(msgs.find((m) => m.role === "user")?.content ?? prompt);
+    // Multi-turn (aitl chat): a non-empty prompt on resume is a NEW user turn appended
+    // to the recovered transcript; plain interrupted-run resumes pass "".
+    if (prompt) {
+      convo.push({ role: "user", content: prompt });
+      idx += 1;
+      await store.appendMessage(
+        makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+      );
+      promptText = prompt;
+    }
     await RunModel.updateOne({ _id: runId }, { $set: { status: "running", ended_at: null } });
     await store.logEvent(makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
   } else {
@@ -165,6 +188,27 @@ export async function runAgent(
     await store.appendMessage(
       makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
     );
+  }
+
+  // ── human-in-the-loop (--ask): approval gate for side-effect tools (ADR-0040) ──
+  // Registered after the deterministic gates so a human is never asked about a call
+  // that policy would deny anyway. Idempotent per registry (multi-turn safe).
+  if (opts.ask) {
+    const { installApprovalGate } = await import("../hooks/approval.js");
+    installApprovalGate(registry, {
+      policy: opts.askPolicy,
+      onDecision: (ev) => {
+        // The human's wait time (ms) feeds the supervision metric (H11) in run-show.
+        void store.logEvent(
+          makeEvent({
+            project,
+            run_id: runId,
+            type: "approval",
+            payload: { tool: ev.tool, decision: ev.decision, ms: ev.ms, interactive: ev.interactive },
+          }),
+        );
+      },
+    });
   }
 
   // ── session start: build the system prompt from durable context ──
@@ -209,8 +253,16 @@ export async function runAgent(
       }
 
       // Provider call is retried on transient failures (429/5xx/network) with backoff.
+      // With an observer + a streaming provider the turn streams (ADR-0005); the
+      // resolved ChatTurn is identical either way. A retry mid-stream replays the
+      // whole turn, so deltas may repeat on flaky networks (persistence never does).
+      const onDelta = opts.onDelta;
+      const doTurn = () =>
+        onDelta && provider.chatStream
+          ? consumeStream(provider.chatStream(convo, { tools: registry.schemas(), system }), onDelta)
+          : provider.chat(convo, { tools: registry.schemas(), system });
       const turn = await withRetry(
-        () => provider.chat(convo, { tools: registry.schemas(), system }),
+        doTurn,
         {
           retries: opts.retries ?? 3,
           onRetry: ({ attempt, delayMs, error }) =>
@@ -275,9 +327,27 @@ export async function runAgent(
       convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
       for (const call of turn.tool_calls) {
         let denyReason: string | null = null;
-        const result = await registry.call(call.name, call.input ?? {}, (reason) => {
-          denyReason = reason;
-        });
+        const result = await registry.call(
+          call.name,
+          call.input ?? {},
+          (reason) => {
+            denyReason = reason;
+          },
+          {
+            // A hook that acts (mutates args/result) leaves a durable trace, so hook
+            // interference is observable in the same event stream as gates/tool calls.
+            onHookEvent: (ev) => {
+              void store.logEvent(
+                makeEvent({
+                  project,
+                  run_id: runId,
+                  type: ev.phase === "pre" ? "tool_pre_hook" : "tool_post_hook",
+                  payload: { name: ev.tool, index: ev.index },
+                }),
+              );
+            },
+          },
+        );
         idx += 1;
         await store.appendMessage(
           makeMessage({

@@ -16,11 +16,30 @@
 
 import { z } from "zod";
 
-export const MEMORY_TYPES = ["user", "feedback", "project", "reference", "synthesis"] as const;
+export const MEMORY_TYPES = [
+  "user",
+  "feedback",
+  "project",
+  "reference",
+  "synthesis",
+  // SDD phase-D artifacts (ADR-0042) — written by the `aitl sdd` pipeline.
+  "spec",
+  "design",
+  "task",
+] as const;
 export const ROLES = ["user", "assistant", "tool", "system"] as const;
 
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 export type Role = (typeof ROLES)[number];
+
+/** Types only harness pipelines may write — external writers (web API, MCP
+ *  write_memory) get coerced to "project" instead (see api.ts / mcpserver). */
+export const RESERVED_MEMORY_TYPES: ReadonlySet<string> = new Set([
+  "synthesis",
+  "spec",
+  "design",
+  "task",
+]);
 
 export const ToolCallSchema = z.object({
   id: z.string().optional(),

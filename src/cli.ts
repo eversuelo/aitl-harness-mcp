@@ -155,10 +155,14 @@ program
   .command("run")
   .argument("<task>", "Task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
   .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
   .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
+  .option("--ask", "Human-in-the-loop: confirm side-effect tools (write_file, shell, mcp__*) before they run.")
+  .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
+  .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
+  .option("--stream", "Stream assistant text deltas to stdout as they arrive (ADR-0005).")
   .description("Run the model-agnostic agent loop, persisting the run/transcript to Mongo.")
   .action(async (task, opts) => {
     const { runAgent } = await import("./orchestration/graph.js");
@@ -179,21 +183,153 @@ program
       : undefined;
     // --bare operationalizes condition C0 (memory/specs/gates OFF); default is C2 (all ON).
     const roles = opts.roles ? String(opts.roles).split(",").map((r: string) => r.trim()).filter(Boolean) : undefined;
-    const result = await runAgent(task, opts.project, {
-      provider: await getProvider(opts.model),
-      installDefaultTools: true,
-      ...(verify ? { verify } : {}),
-      ...(roles ? { roles } : {}),
-      ...(opts.bare ? { hydrate: false, skills: false, gates: false } : {}),
-    });
-    console.log(`run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials}`);
-    if (result.decision_brief) {
-      console.log(`\n── Decision brief (H11) ── ${result.decision_brief.summary}`);
-      for (const v of result.decision_brief.verdicts) {
-        console.log(`  [${v.role}/${v.mode}] ${v.stance}${v.findings.length ? `: ${v.findings.join("; ")}` : ""}`);
+    // --mcp mounts external MCP servers' tools (ADR-0041). The CLI owns the lifecycle
+    // (mount here, close in finally) so runAgent stays a pure library.
+    let mcpMount: import("./mcpclient/client.js").McpMount | null = null;
+    if (opts.mcp) {
+      const { mountMcpTools } = await import("./mcpclient/client.js");
+      const { defaultRegistry } = await import("./tools/base.js");
+      mcpMount = await mountMcpTools({
+        registry: defaultRegistry,
+        configPath: typeof opts.mcp === "string" ? opts.mcp : undefined,
+        onEvent: (ev) => {
+          console.error(`[mcp] ${ev.server}: ${ev.ok ? `${ev.tools} tools mounted` : `FAILED — ${ev.error}`}`);
+        },
+      });
+      // Durable trace of what was reachable (project-scoped: no run exists yet).
+      try {
+        const { MemoryStore } = await import("./memory/store.js");
+        const { makeEvent } = await import("./models/event.model.js");
+        const store = new MemoryStore();
+        for (const s of mcpMount.servers) {
+          await store.logEvent(makeEvent({ project: opts.project, type: "mcp_connect", payload: { ...s } }));
+        }
+      } catch {
+        // telemetry is best-effort
       }
     }
-    console.log(`\n${result.final_text}`);
+    try {
+      const result = await runAgent(task, opts.project, {
+        provider: await getProvider(opts.model),
+        installDefaultTools: true,
+        ...(verify ? { verify } : {}),
+        ...(roles ? { roles } : {}),
+        ...(opts.ask ? { ask: true, askPolicy: opts.askFallback === "allow" ? "allow" as const : "deny" as const } : {}),
+        ...(opts.stream ? { onDelta: (d: { text: string }) => process.stdout.write(d.text) } : {}),
+        ...(opts.bare ? { hydrate: false, skills: false, gates: false } : {}),
+      });
+      if (opts.stream) process.stdout.write("\n\n"); // separate the streamed text from the summary line
+      console.log(`run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials}`);
+      if (result.decision_brief) {
+        console.log(`\n── Decision brief (H11) ── ${result.decision_brief.summary}`);
+        for (const v of result.decision_brief.verdicts) {
+          console.log(`  [${v.role}/${v.mode}] ${v.stance}${v.findings.length ? `: ${v.findings.join("; ")}` : ""}`);
+        }
+      }
+      if (!opts.stream) console.log(`\n${result.final_text}`); // already streamed live
+    } finally {
+      await mcpMount?.close();
+      await closeClient();
+    }
+  });
+
+program
+  .command("chat")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--ask", "Confirm side-effect tools before they run (y/n/always).")
+  .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
+  .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
+  .description("Interactive multi-turn chat over the agent loop (minimal REPL per ADR-0003; streams live).")
+  .action(async (opts) => {
+    const { runAgent } = await import("./orchestration/graph.js");
+    const { getProvider } = await import("./providers/base.js");
+    const { createInterface } = await import("node:readline/promises");
+    const provider = await getProvider(opts.model);
+
+    let mcpMount: import("./mcpclient/client.js").McpMount | null = null;
+    if (opts.mcp) {
+      const { mountMcpTools } = await import("./mcpclient/client.js");
+      const { defaultRegistry } = await import("./tools/base.js");
+      mcpMount = await mountMcpTools({
+        registry: defaultRegistry,
+        configPath: typeof opts.mcp === "string" ? opts.mcp : undefined,
+        onEvent: (ev) =>
+          console.error(`[mcp] ${ev.server}: ${ev.ok ? `${ev.tools} tools mounted` : `FAILED — ${ev.error}`}`),
+      });
+    }
+
+    console.log(`aitl chat — project=${opts.project} model=${provider.name}`);
+    console.log("Commands: /exit   /new (fresh run)   /id (show run id)\n");
+
+    // Every turn resumes the SAME durable run (one inspectable transcript per session);
+    // hydration/skills routing runs once, on the first turn.
+    let runId: string | null = null;
+    try {
+      for (;;) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let line: string;
+        try {
+          line = (await rl.question("you> ")).trim();
+        } finally {
+          rl.close(); // free stdin for --ask prompts during the run
+        }
+        if (!line) continue;
+        if (line === "/exit") break;
+        if (line === "/new") {
+          runId = null;
+          console.log("(new run)");
+          continue;
+        }
+        if (line === "/id") {
+          console.log(runId ?? "(no run yet)");
+          continue;
+        }
+        const result = await runAgent(line, opts.project, {
+          provider,
+          installDefaultTools: true,
+          onDelta: (d) => process.stdout.write(d.text), // live text when chatStream exists
+          summarize: false, // a summary per REPL turn would be noise; run-show has the transcript
+          ...(opts.ask
+            ? { ask: true, askPolicy: opts.askFallback === "allow" ? ("allow" as const) : ("deny" as const) }
+            : {}),
+          ...(runId ? { resume: runId, hydrate: false, skills: false } : {}),
+        });
+        runId = result.run_id;
+        // Non-streaming providers resolve silently — print the final text once.
+        if (!provider.chatStream) process.stdout.write(result.final_text);
+        process.stdout.write("\n\n");
+      }
+    } finally {
+      await mcpMount?.close();
+      await closeClient();
+    }
+  });
+
+program
+  .command("sdd")
+  .argument("<prompt>", "Spec or task prompt (auto-classified; ad-hoc tasks get a generated spec).")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--repo <repo>", "Repo sub-scope to tag the artifacts with.")
+  .option("--max-tasks <n>", "Maximum number of tasks to decompose into.", "10")
+  .description("SDD phase D (ADR-0042): spec → design doc → task decomposition, persisted as linked memory artifacts.")
+  .action(async (prompt, opts) => {
+    const { runSddPipeline } = await import("./specs/pipeline.js");
+    const { getProvider } = await import("./providers/base.js");
+    const res = await runSddPipeline(prompt, {
+      project: opts.project,
+      provider: await getProvider(opts.model),
+      repo: opts.repo ?? null,
+      maxTasks: Number(opts.maxTasks) || 10,
+    });
+    console.log(
+      `pipeline_id=${res.pipeline_id} spec=${res.spec_slug}${res.generated_spec ? " (generated)" : " (verbatim)"} design=${res.design_slug}`,
+    );
+    console.log(`tasks (${res.tasks.length}):`);
+    for (const t of res.tasks) {
+      console.log(`  ${t.id}  ${t.title}${t.dependsOn.length ? `  [after: ${t.dependsOn.join(", ")}]` : ""}`);
+    }
     await closeClient();
   });
 
@@ -237,11 +373,13 @@ program
     const byType: Record<string, number> = {};
     let hydrateSections: Record<string, unknown> | null = null;
     let interventionMinutes = 0;
+    let approvalMs = 0;
     for (const e of events) {
       const t = String(e.type);
       byType[t] = (byType[t] ?? 0) + 1;
       if (t === "hydrate") hydrateSections = (e.payload as Record<string, unknown>) ?? null;
       if (t === "human_intervention") interventionMinutes += Number((e.payload as Record<string, unknown>)?.minutes ?? 0);
+      if (t === "approval") approvalMs += Number((e.payload as Record<string, unknown>)?.ms ?? 0);
     }
     const tu = (run.token_usage as { input?: number; output?: number }) ?? {};
     const ms = run.started_at && run.ended_at ? new Date(run.ended_at as string).getTime() - new Date(run.started_at as string).getTime() : null;
@@ -261,6 +399,9 @@ program
       tool_calls: run.tool_calls ?? byType.tool_call ?? 0,
       gate_denials: run.gate_denials ?? byType.gate ?? 0,
       human_interventions: { count: byType.human_intervention ?? 0, minutes: interventionMinutes },
+      // In-loop approvals (--ask, ADR-0040): the human's answer latency is supervision time.
+      approvals: { count: byType.approval ?? 0, ms: approvalMs },
+      supervision_minutes: interventionMinutes + approvalMs / 60000,
       roles: run.roles ?? [],
       decision_blocked: run.decision_blocked ?? false,
       review_events: { review: byType.review ?? 0, role_veto: byType.role_veto ?? 0, deliberation: byType.deliberation ?? 0 },
@@ -306,7 +447,7 @@ program
   .command("orchestrate")
   .argument("<task>", "Master task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .option("--max <n>", "Max parallel sub-agents.", "4")
   .description("Decompose a task, run sub-agents in parallel, and synthesize the result.")
   .action(async (task, opts) => {
@@ -1021,7 +1162,7 @@ program
   .argument("<target>", "Text, or @file to review.")
   .requiredOption("--project <project>", "Project scope.")
   .requiredOption("--roles <list>", "Comma-separated roles to consult.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .description("Have engineering roles review a target → DecisionBrief (assists the engineer).")
   .action(async (target, opts) => {
     const { RoleStore } = await import("./roles/store.js");
@@ -1306,11 +1447,54 @@ Examples:
   aitl run "add a health endpoint" --project demo --bare           # C0 (no memory/skills/gates)
   aitl run "fix the failing test" --project demo --verify-cmd "npm test"
   aitl run "harden the upload" --project demo --roles security,architect
+  aitl run "add a health endpoint" --project demo --model lmstudio # local LM Studio server
+  aitl run "migrate the config file" --project demo --ask          # confirm write_file/shell first
+  aitl run "use the db tools to list repos" --project demo --mcp   # mount ./.mcp.json servers
+  aitl run "..." --project demo --mcp=./configs/tools.mcp.json     # explicit manifest path
+  aitl run "write a haiku about tests" --project demo --stream     # live token deltas
 
 Notes:
   Drives the model-agnostic loop (needs a configured model, e.g. OPENROUTER_API_KEY).
+  --model lmstudio targets a local LM Studio server (default http://localhost:1234/v1;
+  start it with \`lms server start\` and set LMSTUDIO_MODEL). --model openai-compat
+  targets any OpenAI-compatible endpoint via OPENAI_COMPAT_BASE_URL/MODEL.
+  --ask pauses before side-effect tools (y/n/always, prompt on stderr); without a TTY
+  the --ask-fallback policy decides (deny by default). Approvals + answer latency show
+  up in run-show as approvals/supervision_minutes (human supervision metric).
+  --mcp mounts every server in .mcp.json (standard format, same file Claude Code reads)
+  as tools named mcp__<server>__<tool>; non read-only MCP tools respect --ask. Use
+  --mcp=<path> (with =) since the path is optional. A server that fails to start is
+  skipped with a warning — the run continues.
+  --stream prints assistant deltas live (approval prompts go to stderr, so --ask
+  combines cleanly). Servers that omit the stream usage chunk (older LM Studio)
+  report 0 tokens for streamed turns; a mid-stream retry may repeat deltas.
   --verify-cmd makes the run end only when the command exits 0 (quality gate).
   Persists a run+transcript; inspect it with: aitl run-show <runId>.`,
+
+  "chat": `
+Examples:
+  aitl chat --project demo --model lmstudio
+  aitl chat --project demo --ask --mcp
+
+Notes:
+  Multi-turn REPL over ONE durable run: each turn resumes the previous transcript
+  (inspect it later with: aitl run-show <runId>). /new starts a fresh run, /id prints
+  the current run id, /exit quits. Assistant text streams live when the provider
+  implements chatStream (ADR-0005); with --ask, side-effect tools pause for approval.
+  Minimal readline REPL per ADR-0003 — the Ink TUI (ADR-0004) remains a follow-up.`,
+
+  "sdd": `
+Examples:
+  aitl sdd "Como admin quiero exportar reportes CSV. Criterios: ..." --project demo
+  aitl sdd "fix the login button" --project demo --model lmstudio    # spec gets generated
+
+Notes:
+  Phase D of spec-driven development (ADR-0042). A prompt that already reads as a spec
+  is persisted VERBATIM (type "spec"); an ad-hoc task is formalized first. Then the
+  provider derives a design doc (type "design") and decomposes it into tasks (type
+  "task"), all chained by tags run:<id8> / parent:<slug>. The pipeline shows up as a
+  Run (harness_config.sdd=true) in run-show and the web UI Runs tab. Search artifacts
+  with: aitl search "sdd design" --project <p>.`,
 
   "intervene": `
 Examples:

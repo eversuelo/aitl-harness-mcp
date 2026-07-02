@@ -14,7 +14,7 @@
 import { denyPathsGate } from "../hooks/gates.js";
 import { makeEvent } from "../models/event.model.js";
 import type { MemoryStore } from "../memory/store.js";
-import type { PermissionGate } from "../tools/base.js";
+import type { SyncPermissionGate } from "../tools/base.js";
 import type { DecisionBrief, Role, RoleVerdict } from "./schema.js";
 
 /** Structural provider type — engine stays decoupled from a concrete Provider. */
@@ -23,7 +23,7 @@ export interface RoleReviewProvider {
 }
 
 /** A deterministic blocking gate for a `gate`-mode role (its denyGlobs). No model. */
-export function roleGate(role: Role): PermissionGate {
+export function roleGate(role: Role): SyncPermissionGate {
   const base = denyPathsGate(role.denyGlobs);
   return (name, args) => {
     const [allowed, reason] = base(name, args);

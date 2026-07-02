@@ -21,6 +21,7 @@ import { embedOne } from "../ingest/embedder.js";
 import type { Provider } from "../providers/base.js";
 import { makeEvent } from "../models/event.model.js";
 import { type MemoryDoc, makeMemoryDoc } from "../models/memory.model.js";
+import { RESERVED_MEMORY_TYPES } from "./schemas.js";
 import { MemoryStore } from "./store.js";
 
 export class Synthesizer {
@@ -44,7 +45,9 @@ export class Synthesizer {
     const docs = await this.store.iterMemory(project);
     const groups = new Map<string, Record<string, unknown>[]>();
     for (const d of docs) {
-      if (d.type === "synthesis") continue; // don't re-synthesize syntheses
+      // Don't re-synthesize syntheses nor SDD artifacts (spec/design/task, ADR-0042):
+      // pipeline outputs are first-class records, not raw memory to compact.
+      if (RESERVED_MEMORY_TYPES.has(String(d.type))) continue;
       const cat = (d.category as string) ?? "uncategorized";
       (groups.get(cat) ?? groups.set(cat, []).get(cat)!).push(d);
     }

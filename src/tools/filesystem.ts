@@ -21,6 +21,7 @@ export class ReadFileTool implements Tool {
 export class WriteFileTool implements Tool {
   readonly name = "write_file";
   readonly description = "Write (overwrite) a UTF-8 text file.";
+  readonly requiresApproval = true; // side-effect: subject to --ask (ADR-0040)
   readonly inputSchema = {
     type: "object",
     properties: { path: { type: "string" }, content: { type: "string" } },
