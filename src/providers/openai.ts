@@ -16,12 +16,15 @@ export interface OpenAIProviderOpts {
   model?: string;
   baseURL?: string;
   defaultHeaders?: Record<string, string>;
+  /** Context window reported by capabilities() — local models are often smaller. */
+  maxContext?: number;
 }
 
 export class OpenAIProvider implements Provider {
   readonly name: string;
   private client: OpenAI;
   private model: string;
+  private maxContext: number;
 
   constructor(opts: OpenAIProviderOpts = {}) {
     this.name = opts.name ?? "openai-compatible";
@@ -33,6 +36,7 @@ export class OpenAIProvider implements Provider {
       ...(opts.defaultHeaders ? { defaultHeaders: opts.defaultHeaders } : {}),
     });
     this.model = opts.model ?? "openrouter/auto";
+    this.maxContext = opts.maxContext ?? 128_000;
   }
 
   async complete(prompt: string, opts: CompleteOpts = {}): Promise<string> {
@@ -86,6 +90,6 @@ export class OpenAIProvider implements Provider {
   }
 
   capabilities(): ProviderCapabilities {
-    return { toolUse: true, jsonMode: true, maxContext: 128_000, streaming: true, caching: true, hostAdapter: false };
+    return { toolUse: true, jsonMode: true, maxContext: this.maxContext, streaming: true, caching: true, hostAdapter: false };
   }
 }

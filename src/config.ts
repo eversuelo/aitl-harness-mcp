@@ -40,6 +40,17 @@ const SettingsSchema = z.object({
   // OpenRouter: OpenAI-compatible gateway to many models (model ids are namespaced).
   openrouterApiKey: z.string().default(""),
   openrouterModel: z.string().default("openrouter/auto"),
+  // LM Studio: local OpenAI-compatible server (Developer tab → Start server, or
+  // `lms server start`). Free, offline, reproducible — ideal for pilot runs.
+  lmstudioBaseUrl: z.string().default("http://localhost:1234/v1"),
+  lmstudioModel: z.string().default(""),
+  lmstudioApiKey: z.string().default("lm-studio"), // placeholder; LM Studio ignores it
+  lmstudioMaxContext: z.coerce.number().int().default(32_768),
+  // Generic OpenAI-compatible endpoint (Ollama /v1, vLLM, LiteLLM, private gateways).
+  openaiCompatBaseUrl: z.string().default(""),
+  openaiCompatModel: z.string().default(""),
+  openaiCompatApiKey: z.string().default(""),
+  openaiCompatMaxContext: z.coerce.number().int().default(128_000),
 
   // ── Embeddings ───────────────────────────────────────────────────────
   // NOTE: embeddingDims MUST match the vector index (src/db/indexes.ts).
@@ -88,6 +99,14 @@ function loadSettings(): Settings {
     modelHost: env("MODEL_HOST"),
     openrouterApiKey: env("OPENROUTER_API_KEY"),
     openrouterModel: env("OPENROUTER_MODEL"),
+    lmstudioBaseUrl: env("LMSTUDIO_BASE_URL"),
+    lmstudioModel: env("LMSTUDIO_MODEL"),
+    lmstudioApiKey: env("LMSTUDIO_API_KEY"),
+    lmstudioMaxContext: env("LMSTUDIO_MAX_CONTEXT"),
+    openaiCompatBaseUrl: env("OPENAI_COMPAT_BASE_URL"),
+    openaiCompatModel: env("OPENAI_COMPAT_MODEL"),
+    openaiCompatApiKey: env("OPENAI_COMPAT_API_KEY"),
+    openaiCompatMaxContext: env("OPENAI_COMPAT_MAX_CONTEXT"),
     embeddingProvider: env("EMBEDDING_PROVIDER"),
     embeddingModel: env("EMBEDDING_MODEL"),
     embeddingDims: env("EMBEDDING_DIMS"),

@@ -155,7 +155,7 @@ program
   .command("run")
   .argument("<task>", "Task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
   .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
   .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
@@ -306,7 +306,7 @@ program
   .command("orchestrate")
   .argument("<task>", "Master task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .option("--max <n>", "Max parallel sub-agents.", "4")
   .description("Decompose a task, run sub-agents in parallel, and synthesize the result.")
   .action(async (task, opts) => {
@@ -1021,7 +1021,7 @@ program
   .argument("<target>", "Text, or @file to review.")
   .requiredOption("--project <project>", "Project scope.")
   .requiredOption("--roles <list>", "Comma-separated roles to consult.")
-  .option("--model <m>", "primary | secondary | openrouter", "primary")
+  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
   .description("Have engineering roles review a target → DecisionBrief (assists the engineer).")
   .action(async (target, opts) => {
     const { RoleStore } = await import("./roles/store.js");
@@ -1306,9 +1306,13 @@ Examples:
   aitl run "add a health endpoint" --project demo --bare           # C0 (no memory/skills/gates)
   aitl run "fix the failing test" --project demo --verify-cmd "npm test"
   aitl run "harden the upload" --project demo --roles security,architect
+  aitl run "add a health endpoint" --project demo --model lmstudio # local LM Studio server
 
 Notes:
   Drives the model-agnostic loop (needs a configured model, e.g. OPENROUTER_API_KEY).
+  --model lmstudio targets a local LM Studio server (default http://localhost:1234/v1;
+  start it with \`lms server start\` and set LMSTUDIO_MODEL). --model openai-compat
+  targets any OpenAI-compatible endpoint via OPENAI_COMPAT_BASE_URL/MODEL.
   --verify-cmd makes the run end only when the command exits 0 (quality gate).
   Persists a run+transcript; inspect it with: aitl run-show <runId>.`,
 

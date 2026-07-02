@@ -71,7 +71,43 @@ export async function getProvider(which?: string): Promise<Provider> {
       },
     });
   }
+  if (name === "lmstudio") {
+    // LM Studio serves an OpenAI-compatible endpoint (Developer tab → Start server,
+    // or `lms server start`). Local models are free/offline — reproducible pilot runs.
+    if (!settings.lmstudioModel) {
+      throw new Error(
+        "lmstudio: set LMSTUDIO_MODEL to the id of the loaded model (LM Studio Developer tab " +
+          "or `lms ls`), and start the server with `lms server start`.",
+      );
+    }
+    const { OpenAIProvider } = await import("./openai.js");
+    return new OpenAIProvider({
+      name: "lmstudio",
+      apiKey: settings.lmstudioApiKey || "lm-studio", // LM Studio ignores it, ctor requires it
+      model: settings.lmstudioModel,
+      baseURL: settings.lmstudioBaseUrl,
+      maxContext: settings.lmstudioMaxContext,
+    });
+  }
+
+  if (name === "openai-compat") {
+    // Any other OpenAI-compatible endpoint (Ollama /v1, vLLM, LiteLLM, private gateways).
+    if (!settings.openaiCompatBaseUrl || !settings.openaiCompatModel) {
+      throw new Error("openai-compat: set OPENAI_COMPAT_BASE_URL and OPENAI_COMPAT_MODEL.");
+    }
+    const { OpenAIProvider } = await import("./openai.js");
+    return new OpenAIProvider({
+      name: "openai-compat",
+      apiKey: settings.openaiCompatApiKey || "none", // many local servers ignore the key
+      model: settings.openaiCompatModel,
+      baseURL: settings.openaiCompatBaseUrl,
+      maxContext: settings.openaiCompatMaxContext,
+    });
+  }
+
   // Host-based backends (codex / claude-code / antigravity) are served by HostAdapters,
   // not by this raw-model resolver — see src/hosts/ (planned).
-  throw new Error(`Unknown provider '${name}'. The only raw-model provider is 'openrouter'.`);
+  throw new Error(
+    `Unknown provider '${name}'. Raw-model providers: 'openrouter' | 'lmstudio' | 'openai-compat'.`,
+  );
 }

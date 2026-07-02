@@ -25,6 +25,14 @@ export const ENV_KEYS = [
   "MODEL_HOST",
   "OPENROUTER_API_KEY",
   "OPENROUTER_MODEL",
+  "LMSTUDIO_BASE_URL",
+  "LMSTUDIO_MODEL",
+  "LMSTUDIO_API_KEY",
+  "LMSTUDIO_MAX_CONTEXT",
+  "OPENAI_COMPAT_BASE_URL",
+  "OPENAI_COMPAT_MODEL",
+  "OPENAI_COMPAT_API_KEY",
+  "OPENAI_COMPAT_MAX_CONTEXT",
   "EMBEDDING_PROVIDER",
   "EMBEDDING_MODEL",
   "EMBEDDING_DIMS",
@@ -45,6 +53,10 @@ export type ConfigProfile = Partial<Record<EnvKey, string>>;
 /** Keys whose values are secrets and must be masked unless explicitly exported. */
 export const SECRET_KEYS: ReadonlySet<EnvKey> = new Set<EnvKey>([
   "OPENROUTER_API_KEY",
+  // LM Studio ignores the key locally, but the base URL may point at an
+  // authenticated proxy — masking is free and consistent.
+  "LMSTUDIO_API_KEY",
+  "OPENAI_COMPAT_API_KEY",
   "VOYAGE_API_KEY",
   "AITL_BOOTSTRAP_PASSWORD",
 ]);
