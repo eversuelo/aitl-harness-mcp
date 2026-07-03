@@ -8,7 +8,8 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [config.ts](config.ts) | Config efectiva: env, perfil global y defaults. |
 | [config/store.ts](config/store.ts) | Perfil `~/.aitl/config.json`; ver [ADR-0006](../docs/adr/0006-user-level-config-profile.md). |
 | [contracts.ts](contracts.ts) | Tipos/contratos compartidos. |
-| [providers/](providers/) | Puerto LLM agnostico (gateway OpenAI-compatible: OpenRouter). |
+| [providers/](providers/) | Puerto LLM agnostico multi-provider (ADR-0044): `anthropic` directo (SDK oficial) + `openrouter`/`lmstudio`/`openai-compat` via `OpenAIProvider`, con `FallbackProvider` (`--model auto`). |
+| [repl/](repl/) | `aitl chat`: REPL estilo Claude Code sobre el loop (streaming, traza de tools, slash commands). ADR-0003/0044. |
 | [orchestration/](orchestration/) | Loop agente, checkpointing y rollup de telemetria por run. |
 | [memory/](memory/) | Schemas, store, clasificador, sintetizador, versionado (`versioning.ts`/`history.ts`). |
 | [auth/](auth/) | RBAC + usuarios + auditoria (ADR-0024/0026). |
@@ -31,7 +32,7 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [server/](server/) | API HTTP y launcher de UI web (incluye knowledge map). |
 | [interactive/](interactive/) | Panel `aitl -i`; ver [ADR-0008](../docs/adr/0008-interactive-control-panel.md). |
 | [eval/](eval/) | Runner de evaluacion. |
-| [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`). |
+| [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`, `retry.ts`, `quiet.ts` — silencia deprecations del proceso, importado primero en `cli.ts`). |
 
 ## Flujos de lectura
 

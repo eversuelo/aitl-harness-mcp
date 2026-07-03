@@ -59,6 +59,17 @@ export interface RunAgentOpts {
    * `chat()` and behaviour is byte-for-byte identical to a non-streaming run.
    */
   onDelta?: (delta: StreamDelta) => void;
+  /**
+   * Tool observer (chat UI): fires when a tool call starts, finishes, or is denied
+   * by a gate. Purely observational — persistence/audit events are unchanged.
+   */
+  onTool?: (ev: {
+    name: string;
+    args?: Record<string, unknown>;
+    phase: "start" | "done" | "denied";
+    reason?: string;
+    ms?: number;
+  }) => void;
   /** Resume an existing run by id: reload its transcript and continue the loop.
    *  A non-empty `prompt` is appended as a NEW user turn (multi-turn chat, ADR-0003);
    *  pass "" to just continue an interrupted run from where it stopped. */
@@ -85,6 +96,10 @@ export interface RunAgentResult {
   selected_skills?: string[];
   /** Number of tool calls blocked by a permission gate during the run. */
   gate_denials?: number;
+  /** Token rollup for the whole run (also persisted on the run doc). */
+  token_usage?: { input: number; output: number };
+  /** Total tool calls executed during the run. */
+  tool_calls?: number;
   /** Final run status. */
   status?: "done" | "error";
   /** Role review checkpoint output (H11), if roles were attached. */
@@ -327,6 +342,8 @@ export async function runAgent(
       convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
       for (const call of turn.tool_calls) {
         let denyReason: string | null = null;
+        opts.onTool?.({ name: call.name, args: call.input ?? {}, phase: "start" });
+        const toolT0 = Date.now();
         const result = await registry.call(
           call.name,
           call.input ?? {},
@@ -358,6 +375,11 @@ export async function runAgent(
             content: result,
             tool_call_id: call.id ?? null,
           }),
+        );
+        opts.onTool?.(
+          denyReason !== null
+            ? { name: call.name, phase: "denied", reason: denyReason }
+            : { name: call.name, phase: "done", ms: Date.now() - toolT0 },
         );
         // Audit: a denied call emits a `gate` event (it never ran); an allowed call a `tool_call`.
         if (denyReason !== null) {
@@ -439,6 +461,8 @@ export async function runAgent(
     summary_slug: summarySlug,
     selected_skills: selectedSkills,
     gate_denials: gateDenials,
+    token_usage: { input: tokIn, output: tokOut },
+    tool_calls: toolCalls,
     status: "done",
     decision_brief: decisionBrief,
   };

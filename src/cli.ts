@@ -21,6 +21,7 @@
  *   aitl migrate-atlas <uri> --to-db P   copy a DB to another cluster (local → Atlas)
  */
 
+import "./util/quiet.js"; // FIRST: mute deprecation noise before mongoose loads
 import { Command } from "commander";
 import { closeClient } from "./db/client.js";
 
@@ -155,7 +156,7 @@ program
   .command("run")
   .argument("<task>", "Task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
   .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
   .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
@@ -235,82 +236,68 @@ program
 
 program
   .command("chat")
-  .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "auto")
   .option("--ask", "Confirm side-effect tools before they run (y/n/always).")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
   .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
-  .description("Interactive multi-turn chat over the agent loop (minimal REPL per ADR-0003; streams live).")
+  .description("Claude Code–style chat over the agent loop (streams, tool trace, /help; ADR-0003).")
   .action(async (opts) => {
-    const { runAgent } = await import("./orchestration/graph.js");
-    const { getProvider } = await import("./providers/base.js");
-    const { createInterface } = await import("node:readline/promises");
-    const provider = await getProvider(opts.model);
-
-    let mcpMount: import("./mcpclient/client.js").McpMount | null = null;
-    if (opts.mcp) {
-      const { mountMcpTools } = await import("./mcpclient/client.js");
-      const { defaultRegistry } = await import("./tools/base.js");
-      mcpMount = await mountMcpTools({
-        registry: defaultRegistry,
-        configPath: typeof opts.mcp === "string" ? opts.mcp : undefined,
-        onEvent: (ev) =>
-          console.error(`[mcp] ${ev.server}: ${ev.ok ? `${ev.tools} tools mounted` : `FAILED — ${ev.error}`}`),
-      });
-    }
-
-    console.log(`aitl chat — project=${opts.project} model=${provider.name}`);
-    console.log("Commands: /exit   /new (fresh run)   /id (show run id)\n");
-
-    // Every turn resumes the SAME durable run (one inspectable transcript per session);
-    // hydration/skills routing runs once, on the first turn.
-    let runId: string | null = null;
+    const { chatRepl } = await import("./repl/chat.js");
+    const { basename } = await import("node:path");
+    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
     try {
-      for (;;) {
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        let line: string;
-        try {
-          line = (await rl.question("you> ")).trim();
-        } finally {
-          rl.close(); // free stdin for --ask prompts during the run
-        }
-        if (!line) continue;
-        if (line === "/exit") break;
-        if (line === "/new") {
-          runId = null;
-          console.log("(new run)");
-          continue;
-        }
-        if (line === "/id") {
-          console.log(runId ?? "(no run yet)");
-          continue;
-        }
-        const result = await runAgent(line, opts.project, {
-          provider,
-          installDefaultTools: true,
-          onDelta: (d) => process.stdout.write(d.text), // live text when chatStream exists
-          summarize: false, // a summary per REPL turn would be noise; run-show has the transcript
-          ...(opts.ask
-            ? { ask: true, askPolicy: opts.askFallback === "allow" ? ("allow" as const) : ("deny" as const) }
-            : {}),
-          ...(runId ? { resume: runId, hydrate: false, skills: false } : {}),
-        });
-        runId = result.run_id;
-        // Non-streaming providers resolve silently — print the final text once.
-        if (!provider.chatStream) process.stdout.write(result.final_text);
-        process.stdout.write("\n\n");
-      }
+      await chatRepl({
+        project,
+        model: opts.model,
+        ask: Boolean(opts.ask),
+        askPolicy: opts.askFallback === "allow" ? "allow" : "deny",
+        mcp: opts.mcp,
+      });
+    } catch (err) {
+      // Config errors (no LLM set up) deserve a hint, not a stack trace.
+      console.error(String(err instanceof Error ? err.message : err));
+      console.error("\nRevisa qué backends tienes con: aitl models");
+      process.exitCode = 1;
     } finally {
-      await mcpMount?.close();
       await closeClient();
     }
+  });
+
+program
+  .command("models")
+  .option("--json", "Print the raw status object as JSON.")
+  .description("Show which LLM backends are configured, the active one, and the fallback chain.")
+  .action(async (opts) => {
+    const { providerStatus } = await import("./providers/base.js");
+    const st = providerStatus();
+    if (opts.json) {
+      console.log(JSON.stringify(st, null, 2));
+      await closeClient();
+      return;
+    }
+    console.log("LLMs configurados:");
+    for (const p of st.providers) {
+      const mark = p.configured ? "●" : "○";
+      const tag = p.name === st.active ? "  ← activo" : "";
+      console.log(`  ${mark} ${p.name.padEnd(14)} ${p.configured ? p.model : `no configurado (${p.via})`}${tag}`);
+    }
+    if (st.fallbacks.length) console.log(`  fallback: ${st.fallbacks.join(" → ")}`);
+    if (st.aitl_api_key) console.log(`  AITL_API_KEY → ${st.aitl_api_key}`);
+    if (!st.active) {
+      console.log(
+        "\nNingún LLM configurado. Define AITL_API_KEY (sk-ant-*/sk-or-*), ANTHROPIC_API_KEY,\n" +
+          "OPENROUTER_API_KEY, LMSTUDIO_MODEL, o OPENAI_COMPAT_BASE_URL+OPENAI_COMPAT_MODEL.",
+      );
+    }
+    await closeClient();
   });
 
 program
   .command("sdd")
   .argument("<prompt>", "Spec or task prompt (auto-classified; ad-hoc tasks get a generated spec).")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .option("--repo <repo>", "Repo sub-scope to tag the artifacts with.")
   .option("--max-tasks <n>", "Maximum number of tasks to decompose into.", "10")
   .description("SDD phase D (ADR-0042): spec → design doc → task decomposition, persisted as linked memory artifacts.")
@@ -447,7 +434,7 @@ program
   .command("orchestrate")
   .argument("<task>", "Master task prompt.")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .option("--max <n>", "Max parallel sub-agents.", "4")
   .description("Decompose a task, run sub-agents in parallel, and synthesize the result.")
   .action(async (task, opts) => {
@@ -1162,7 +1149,7 @@ program
   .argument("<target>", "Text, or @file to review.")
   .requiredOption("--project <project>", "Project scope.")
   .requiredOption("--roles <list>", "Comma-separated roles to consult.")
-  .option("--model <m>", "primary | secondary | openrouter | lmstudio | openai-compat", "primary")
+  .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .description("Have engineering roles review a target → DecisionBrief (assists the engineer).")
   .action(async (target, opts) => {
     const { RoleStore } = await import("./roles/store.js");
@@ -1473,15 +1460,17 @@ Notes:
 
   "chat": `
 Examples:
+  aitl chat                                  # auto: usa el LLM configurado (+fallback)
   aitl chat --project demo --model lmstudio
   aitl chat --project demo --ask --mcp
 
 Notes:
-  Multi-turn REPL over ONE durable run: each turn resumes the previous transcript
-  (inspect it later with: aitl run-show <runId>). /new starts a fresh run, /id prints
-  the current run id, /exit quits. Assistant text streams live when the provider
-  implements chatStream (ADR-0005); with --ask, side-effect tools pause for approval.
-  Minimal readline REPL per ADR-0003 — the Ink TUI (ADR-0004) remains a follow-up.`,
+  REPL estilo Claude Code sobre UN run durable: cada turno reanuda el transcript
+  (inspección: aitl run-show <runId>). Slash commands: /help /models /model <n>
+  /tools /tokens /new /id /ask /exit. --model auto (default) detecta el primer
+  backend configurado y encadena el resto como fallback; el texto streamea en vivo
+  cuando el provider implementa chatStream (ADR-0005) y las tool calls se muestran
+  con su duración. Sin --project usa $AITL_PROJECT o el nombre de la carpeta.`,
 
   "sdd": `
 Examples:

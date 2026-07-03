@@ -198,7 +198,7 @@ erDiagram
 | Configuration | `src/config.ts`, `src/config/store.ts` | Resolves `process.env`, `.env`, `~/.aitl/config.json`, defaults and Mongo URI normalization. |
 | DB | `src/db/client.ts`, `src/db/mongoose.ts`, `src/db/indexes.ts` | Shared Mongo/Mongoose connection, primary→fallback, collections and indexes. |
 | Data models | `src/models/*.model.ts` | **Mongoose models** — the single source of shape, validation and types for every durable collection. |
-| Providers | `src/providers/*` | Model port; OpenRouter (OpenAI-compatible) is the primary provider, with legacy Gemini/OpenAI/Anthropic paths. |
+| Providers | `src/providers/*` | Model port; four first-class raw backends (ADR-0044): `anthropic` (direct official SDK — prompt caching, structured outputs, native tool blocks), plus `openrouter`, `lmstudio` and `openai-compat` served by the generic `OpenAIProvider`. `--model auto` picks the first configured backend and chains the rest as a `FallbackProvider`. |
 | Orchestration | `src/orchestration/graph.ts` | Loop prompt→model→tools→persistence; LangGraph optional. |
 | Memory | `src/memory/*` | Classification, search, hydration, session summary and synthesis. |
 | Tools | `src/tools/*`, `src/hooks/gates.ts` | FS/shell tools and deterministic gates. |
@@ -235,8 +235,9 @@ The **core** (loop, context, memory) depends **only on ports** (`src/contracts.t
 on a concrete SDK. That is what makes the harness agnostic to the model, the tools and the
 storage:
 
-- **`ProviderPort`** — the chat/completion interface implemented by the OpenRouter-backed
-  provider (and legacy Gemini/OpenAI/Anthropic).
+- **`ProviderPort`** — the chat/completion interface implemented by the Anthropic direct
+  provider and by the OpenAI-compatible backends (`openrouter`, `lmstudio`, `openai-compat`),
+  optionally wrapped in a `FallbackProvider` chain (`--model auto`, ADR-0044).
 - **`ToolPort` / `ToolRegistry`** — filesystem, shell and other tools exposed to the model
   as provider-agnostic schemas.
 - **`MemoryPort` / `MemoryStore`** — durable memory read/write, backed by the Mongoose

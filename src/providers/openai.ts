@@ -141,8 +141,30 @@ export class OpenAIProvider implements Provider {
       model: this.model,
       messages: msgs,
       max_tokens: opts.maxTokens ?? 1024,
+      // Constrained decoding (grammar-backed on llama.cpp/LM Studio): the server
+      // guarantees the reply parses against the schema — the model *cannot* emit
+      // trailing prose or unbalanced JSON. Best-effort: callers keep their repair path.
+      ...(opts.jsonSchema
+        ? {
+            response_format: {
+              type: "json_schema" as const,
+              json_schema: { name: opts.jsonSchema.name, strict: true, schema: opts.jsonSchema.schema },
+            },
+          }
+        : {}),
     });
-    return resp.choices[0].message.content ?? "";
+    const choice = resp.choices[0];
+    const text = choice.message.content ?? "";
+    // Reasoning models (R1 distills…) can burn the whole budget in `reasoning_content`
+    // and return an EMPTY answer — surface that as an actionable error instead of
+    // letting callers fail later with "empty doc".
+    if (!text.trim() && choice.finish_reason === "length") {
+      throw new Error(
+        `${this.name}: completion vacía — el modelo gastó todo max_tokens (¿modelo razonador ` +
+          "quemando el presupuesto en 'thinking'?). Sube maxTokens o usa un modelo no-razonador.",
+      );
+    }
+    return text;
   }
 
   async chat(messages: Record<string, unknown>[], opts: ChatOpts = {}): Promise<ChatTurn> {
@@ -162,11 +184,15 @@ export class OpenAIProvider implements Provider {
       max_tokens: opts.maxTokens ?? 4096,
     });
     const choice = resp.choices[0].message;
-    const tool_calls = (choice.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      input: JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>,
-    }));
+    // openai v6: tool_calls is a union (function | custom) — only function calls
+    // carry {name, arguments}; custom tool calls don't apply to this provider.
+    const tool_calls = (choice.tool_calls ?? [])
+      .filter((tc): tc is OpenAI.ChatCompletionMessageFunctionToolCall => tc.type === "function")
+      .map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>,
+      }));
     return {
       text: choice.content ?? "",
       tool_calls,

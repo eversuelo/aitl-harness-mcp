@@ -17,8 +17,9 @@ Las firmas son las reales del código; las descripciones, en español.
 | `buildGraph` | `(opts?) => Promise<CompiledGraph>` | Cablea el mismo loop como `StateGraph` de LangGraph con checkpointer Mongo (resumible/replayable). | — |
 | `getCheckpointer` | `() => Promise<unknown>` | Checkpointer LangGraph respaldado en Mongo (import perezoso). | — |
 
-`RunAgentOpts`: `provider, registry, store, system, maxIters, hydrate, skills, summarize, gates, denyPaths, installDefaultTools, retries, resume, verify`.
-`RunAgentResult`: `run_id, final_text, iters, summary_slug?, selected_skills?, gate_denials?, status?`.
+`RunAgentOpts`: `provider, registry, store, system, maxIters, hydrate, skills, summarize, gates, denyPaths, roles, installDefaultTools, retries, ask, askPolicy, onDelta, onTool, resume, verify`.
+(`onTool` — observador de tool calls para UIs de chat: dispara en `start`/`done`/`denied`; ADR-0044.)
+`RunAgentResult`: `run_id, final_text, iters, summary_slug?, selected_skills?, gate_denials?, token_usage?, tool_calls?, status?, decision_brief?`.
 
 ---
 
@@ -112,12 +113,20 @@ Tools built-in: `ReadFileTool`, `WriteFileTool`, `ShellTool`.
 
 | Función | Firma | Qué hace |
 |---|---|---|
-| `getProvider` | `(which?) => Promise<Provider>` | Resuelve el provider de modelo. **Unico provider: `openrouter`** (gateway OpenAI-compatible para todos los modelos). `OpenAIProvider` es el cliente generico que lo respalda via `baseURL`. |
+| `getProvider` | `(which?) => Promise<Provider>` | Resuelve el provider de modelo. **Providers crudos (ADR-0044): `anthropic` \| `openrouter` \| `lmstudio` \| `openai-compat`**. `anthropic` usa el SDK oficial (`src/providers/anthropic.ts`: prompt caching, structured outputs, tool blocks nativos); los otros tres los respalda `OpenAIProvider` via `baseURL`. `--model auto` detecta el primero configurado y encadena el resto como fallback. |
+| `providerStatus` | `() => ProviderStatus` | Qué backends están configurados, cuál es el activo y la cadena de fallback (respalda `aitl models`). |
+| `detectConfiguredProvider` | `() => string \| null` | Primer provider configurado por prioridad (base de `--model auto`). |
+| `getProviderWithFallback` | `(onFallback?) => Promise<Provider>` | Cadena "auto": el provider activo primero, luego cada backend configurado como fallback (`FallbackProvider`); con un solo backend devuelve ese provider. |
 | `estimateTokens` | `(text) => number` | Estimación ~4 chars/token compartida. |
 | `getEmbedder` | `() => Embedder` | Backend de embeddings (local MiniLM-384 por defecto, Voyage opt-in). |
 | `embedOne` | `(text) => Promise<number[]>` | Embebe un texto en un vector. |
 
-`Provider` (interfaz): `complete(prompt, opts?)` · `chat(messages, opts?)` · `countTokens(text)` · `capabilities()`.
+`Provider` (interfaz): `complete(prompt, opts?)` · `chat(messages, opts?)` · `chatStream?(messages, opts?)` (streaming opcional, ADR-0005) · `countTokens(text)` · `capabilities()`.
+`CompleteOpts.jsonSchema` (ADR-0044): constrained decoding opt-in — `response_format: json_schema` en `OpenAIProvider` (grammar en LM Studio) y `output_config.format` en `AnthropicProvider`; lo usa `decomposeTasks` con fallback a texto libre.
+
+### Clase `FallbackProvider`
+Encadena N providers: si una llamada falla duro (conexión rechazada, auth, 5xx…), la repite en el siguiente backend configurado. Complementa el `withRetry` del loop (reintento transitorio en el MISMO provider) — esto cambia de BACKEND. En streaming solo hace fallback si el fallo ocurre antes del primer delta.
+Keys: `AITL_API_KEY` única clasificada por prefijo (`sk-ant-*` → anthropic, `sk-or-*` → openrouter); las keys explícitas por provider ganan.
 
 ### Hosts — el harness corriendo SOBRE otro agente (Cara B)
 
@@ -192,9 +201,18 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 ## 12. Comandos del CLI (`aitl <cmd>`)
 
 `interactive` · `check-db` · `init-db` · `ingest [--repo]` · `search` · **`run [--bare] [--verify-cmd] [--roles]`** ·
+**`chat [--model auto] [--ask] [--mcp]`** · **`models [--json]`** · **`sdd`** ·
 **`run-host`** · **`orchestrate`** · `run-show <runId>` · `intervene <runId>` · `synthesize` · `repomap [--repo]` ·
 `index-repo` · `adr-sync` · `adr history` · `memory history` · `export` · `eval` · `mcp` ·
-`config {…}` · `ui` · `prompt {add,list,search}` · `init agent` · `migrate-atlas`.
+`config {…}` · `ui` · `prompt {add,list,search}` · `hydrate` · `capture-session` ·
+`init {agent,claude}` · `migrate-atlas`.
+
+> **Chat y providers (ADR-0044):** `aitl chat` = REPL estilo Claude Code sobre el loop
+> (`src/repl/chat.ts`): streaming, traza viva de tool calls (hook `onTool`), slash commands
+> `/help /models /model /tools /tokens /new /id /ask /exit`; `--project` opcional (default
+> `$AITL_PROJECT` o el basename del cwd), `--model` default `auto`. `aitl models` muestra los
+> backends configurados, el activo y la cadena de fallback. `aitl sdd` (ADR-0042) corre la
+> Fase D: spec → design → descomposición de tareas persistidas como memoria ligada.
 
 **Ciclo 0024–0033 (plataforma + tesis):**
 `software {add,list,get,rm}` · `repo {add,list,get,rm}` · `branch {sync,list,rm}` ·

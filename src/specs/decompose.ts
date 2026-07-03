@@ -41,6 +41,35 @@ const TASKS_INSTRUCTIONS = (maxTasks: number) =>
     "each task independently verifiable; titles in the spec's language.",
   ].join("\n");
 
+/**
+ * JSON Schema for the tasks reply, used for constrained decoding when the provider
+ * supports it (LM Studio grammar / Anthropic output_config). Root must be an object
+ * (OpenAI-compat requirement), so tasks live under a "tasks" key — `extractJsonArray`
+ * still finds the array, keeping `parseTasks` shape-agnostic.
+ */
+const TASKS_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    tasks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          dependsOn: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "string" } },
+        },
+        required: ["id", "title", "description", "dependsOn", "files"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["tasks"],
+  additionalProperties: false,
+};
+
 /** Defensive narrow of one parsed task (mirrors roles/engine's manual parsing). */
 function narrowTask(v: unknown, n: number): SddTask | null {
   if (typeof v !== "object" || v === null) return null;
@@ -102,7 +131,19 @@ export async function decomposeTasks(args: DecomposeArgs): Promise<{ tasks: SddT
   const prompt = `# Spec\n${args.spec}\n\n# Design\n${args.design}`;
 
   let tasks: SddTask[];
-  const first = await args.provider.complete(prompt, { system: TASKS_INSTRUCTIONS(maxTasks), maxTokens: 2000 });
+  // Prefer constrained decoding (the backend guarantees parseable JSON — found live
+  // with gemma-4 that free-form JSON needs the bracket walker below). Backends that
+  // reject response_format/output_config fall back to the plain prompt.
+  let first: string;
+  try {
+    first = await args.provider.complete(prompt, {
+      system: TASKS_INSTRUCTIONS(maxTasks),
+      maxTokens: 4000,
+      jsonSchema: { name: "sdd_tasks", schema: TASKS_JSON_SCHEMA },
+    });
+  } catch {
+    first = await args.provider.complete(prompt, { system: TASKS_INSTRUCTIONS(maxTasks), maxTokens: 4000 });
+  }
   try {
     tasks = parseTasks(first, maxTasks);
   } catch (err) {
@@ -110,7 +151,7 @@ export async function decomposeTasks(args: DecomposeArgs): Promise<{ tasks: SddT
     const reason = err instanceof Error ? err.message : String(err);
     const retry = await args.provider.complete(
       `${prompt}\n\nYour previous answer could not be parsed (${reason}):\n${first.slice(0, 1000)}\n\nAnswer again with STRICT JSON only.`,
-      { system: TASKS_INSTRUCTIONS(maxTasks), maxTokens: 2000 },
+      { system: TASKS_INSTRUCTIONS(maxTasks), maxTokens: 4000 },
     );
     try {
       tasks = parseTasks(retry, maxTasks);

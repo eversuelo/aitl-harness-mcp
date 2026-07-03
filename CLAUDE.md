@@ -38,7 +38,13 @@ spelling — those fragment the history. Verify the hash above matches
 > provider↔loop — `toOpenAiMessages` adapta tool_calls al formato OpenAI,
 > `MessageModel.content` acepta `""` (turno solo-tools), extractor de array JSON
 > balanceado en `decomposeTasks`. Loop verificado E2E con tools+stream+`--ask`.
-> Ledger ahora contiguo **0001–0043**; next free **0044**.
+> 0044 (2026-07-02, enmienda a 0020): provider `anthropic` directo (SDK oficial,
+> caching + structured outputs + tool blocks nativos; `src/providers/anthropic.ts`);
+> constrained decoding opt-in (`CompleteOpts.jsonSchema` → response_format/output_config,
+> usado por `decomposeTasks`); `AITL_API_KEY` único clasificado por prefijo;
+> `aitl models` (providerStatus) + `FallbackProvider` (`--model auto` con cadena de
+> fallback); chat estilo Claude Code (`src/repl/chat.ts`, hook `onTool`, slash commands)
+> + submenu Chat en el TUI. Ledger ahora contiguo **0001–0044**; next free **0045**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
@@ -68,5 +74,5 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Context lookups (memory, decisions, conventions, skills) use a robust cascade
   (vector → text → recency) so they work even before the Atlas vector index exists.
 - Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0044). Keep ADR ids contiguous and never reuse one. The number is the
+  currently 0045). Keep ADR ids contiguous and never reuse one. The number is the
   next-free read from the `decisions` collection at BUILD time — never pin it in docs.

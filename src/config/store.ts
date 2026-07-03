@@ -23,8 +23,12 @@ export const ENV_KEYS = [
   "MODEL_PRIMARY",
   "MODEL_SECONDARY",
   "MODEL_HOST",
+  "AITL_API_KEY",
   "OPENROUTER_API_KEY",
   "OPENROUTER_MODEL",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_MAX_CONTEXT",
   "LMSTUDIO_BASE_URL",
   "LMSTUDIO_MODEL",
   "LMSTUDIO_API_KEY",
@@ -53,6 +57,8 @@ export type ConfigProfile = Partial<Record<EnvKey, string>>;
 /** Keys whose values are secrets and must be masked unless explicitly exported. */
 export const SECRET_KEYS: ReadonlySet<EnvKey> = new Set<EnvKey>([
   "OPENROUTER_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "AITL_API_KEY",
   // LM Studio ignores the key locally, but the base URL may point at an
   // authenticated proxy — masking is free and consistent.
   "LMSTUDIO_API_KEY",

@@ -227,6 +227,15 @@ export async function runInteractive(): Promise<void> {
       label: svc.child ? `Stop ${svc.label}` : `Start ${svc.label}`,
       run: () => (svc.child ? stopService(svc) : startService(svc)),
     }));
+  const chatMenu = (): MenuItem[] => [
+    { label: "Chat (auto provider + fallback)", run: () => runAttached(["chat", "--project", project]) },
+    { label: "Chat con --ask (aprobar tools)", run: () => runAttached(["chat", "--project", project, "--ask"]) },
+    { label: "Chat con MCP tools (.mcp.json)", run: () => runAttached(["chat", "--project", project, "--mcp"]) },
+    { label: "Chat: anthropic", run: () => runAttached(["chat", "--project", project, "--model", "anthropic"]) },
+    { label: "Chat: openrouter", run: () => runAttached(["chat", "--project", project, "--model", "openrouter"]) },
+    { label: "Chat: lmstudio (local)", run: () => runAttached(["chat", "--project", project, "--model", "lmstudio"]) },
+    { label: "Modelos configurados", run: () => runAttached(["models"]) },
+  ];
   const memoryMenu = (): MenuItem[] => [
     { label: "Search memory", run: () => commandMode(`search --project ${project} `) },
     { label: "Run task", run: () => commandMode(`run --project ${project} "`) },
@@ -245,6 +254,7 @@ export async function runInteractive(): Promise<void> {
   const rootLevel: MenuLevel = {
     title: "interactive",
     items: () => [
+      { label: "Chat (c) ▸", submenu: chatMenu },
       { label: "Services ▸", submenu: servicesMenu },
       { label: "Memory ▸", submenu: memoryMenu },
       { label: "Database ▸", submenu: databaseMenu },
@@ -307,7 +317,7 @@ export async function runInteractive(): Promise<void> {
     }
     lines.push(
       "",
-      `${DIM}  ↑↓ navigate · Enter select · 1-9 jump${stack.length > 1 ? " · Esc/← back" : ""} · p project · : command · q quit${RESET}`,
+      `${DIM}  ↑↓ navigate · Enter select · 1-9 jump${stack.length > 1 ? " · Esc/← back" : ""} · c chat · p project · : command · q quit${RESET}`,
     );
     stdout.write(CLEAR + lines.join("\n") + "\n");
   }
@@ -338,6 +348,7 @@ export async function runInteractive(): Promise<void> {
     }
     if (key.sequence === ":") return void commandMode();
     if (key.sequence === "p") return void setProject();
+    if (key.sequence === "c") return void runAttached(["chat", "--project", project]);
     if (key.sequence && /^[1-9]$/.test(key.sequence)) {
       const idx = Number(key.sequence) - 1;
       if (idx < items.length) {

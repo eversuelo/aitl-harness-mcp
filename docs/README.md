@@ -14,7 +14,7 @@ Reading index for exploring AITL-Harness-JS.
 ## ADRs
 
 The **ADR ledger lives in MongoDB** (the `decisions` collection), currently spanning
-**0001–0037**. Only a subset is exported as files under [adr/](adr/); the rest are
+**0001–0044**. Only a subset is exported as files under [adr/](adr/); the rest are
 retrievable through the durable store (`aitl adr history`, the `list_decisions` MCP tool,
 or the web UI). Exported files:
 
@@ -37,6 +37,11 @@ or the web UI). Exported files:
 | [0031](adr/0031-branch-classification-graph.md) | Branch classification and branch graph. |
 | [0036](adr/0036-mongoose-data-layer.md) | Data layer migrated from the raw driver + Zod to Mongoose. |
 | [0037](adr/0037-branch-aware-repomap.md) | Branch-aware repo map with a constant storage footprint. |
+| [0038](adr/0038-local-openai-compatible-providers.md) | Local OpenAI-compatible providers (lmstudio, openai-compat). |
+| [0039](adr/0039-pre-post-tool-hooks.md) | In-process pre/post tool hooks in the ToolRegistry. |
+| [0040](adr/0040-async-gates-human-approval.md) | Async permission gates + in-loop human approval (`--ask`). |
+| [0041](adr/0041-mcp-client-tool-mounting.md) | MCP client: mount remote servers as namespaced tools. |
+| [0042](adr/0042-sdd-phase-d-pipeline.md) | SDD phase D: pipeline with first-class memory types (spec/design/task). |
 
 ## Contracts and parity
 

@@ -18,6 +18,10 @@ export function isTransientError(err: unknown): boolean {
     s.includes("enotfound") ||
     s.includes("fetch failed") ||
     s.includes("socket hang up") ||
+    // Mid-stream connection drops (seen live: LM Studio closing an SSE early).
+    s.includes("premature close") ||
+    s.includes("other side closed") ||
+    s.includes("terminated") ||
     s.includes("rate limit") ||
     s.includes("overloaded") ||
     s.includes("temporarily unavailable")

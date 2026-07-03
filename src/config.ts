@@ -37,9 +37,17 @@ const SettingsSchema = z.object({
   modelPrimary: z.string().default("openrouter"),
   modelSecondary: z.string().default("openrouter"),
   modelHost: z.string().default(""), // agent host the harness runs over (codex|claude-code|antigravity)
+  // Single-key convenience: AITL_API_KEY is classified by prefix (sk-ant-* → Anthropic,
+  // sk-or-* → OpenRouter) and fills the matching provider key when that one is unset.
+  aitlApiKey: z.string().default(""),
   // OpenRouter: OpenAI-compatible gateway to many models (model ids are namespaced).
   openrouterApiKey: z.string().default(""),
   openrouterModel: z.string().default("openrouter/auto"),
+  // Anthropic direct (first-party API): unlocks prompt caching + structured outputs
+  // that don't survive an OpenAI-compatible gateway. Amends ADR-0020.
+  anthropicApiKey: z.string().default(""),
+  anthropicModel: z.string().default("claude-opus-4-8"),
+  anthropicMaxContext: z.coerce.number().int().default(1_000_000),
   // LM Studio: local OpenAI-compatible server (Developer tab → Start server, or
   // `lms server start`). Free, offline, reproducible — ideal for pilot runs.
   lmstudioBaseUrl: z.string().default("http://localhost:1234/v1"),
@@ -97,8 +105,12 @@ function loadSettings(): Settings {
     modelPrimary: env("MODEL_PRIMARY"),
     modelSecondary: env("MODEL_SECONDARY"),
     modelHost: env("MODEL_HOST"),
+    aitlApiKey: env("AITL_API_KEY"),
     openrouterApiKey: env("OPENROUTER_API_KEY"),
     openrouterModel: env("OPENROUTER_MODEL"),
+    anthropicApiKey: env("ANTHROPIC_API_KEY"),
+    anthropicModel: env("ANTHROPIC_MODEL"),
+    anthropicMaxContext: env("ANTHROPIC_MAX_CONTEXT"),
     lmstudioBaseUrl: env("LMSTUDIO_BASE_URL"),
     lmstudioModel: env("LMSTUDIO_MODEL"),
     lmstudioApiKey: env("LMSTUDIO_API_KEY"),
@@ -120,6 +132,17 @@ function loadSettings(): Settings {
     bootstrapRole: env("AITL_BOOTSTRAP_ROLE"),
     bootstrapAutogen: env("AITL_BOOTSTRAP_AUTOGEN"),
   });
+  // Single-key classification: AITL_API_KEY fills the matching provider key by prefix
+  // (only when that provider key is not already set explicitly).
+  if (parsed.aitlApiKey) {
+    if (parsed.aitlApiKey.startsWith("sk-ant-") && !parsed.anthropicApiKey) {
+      parsed.anthropicApiKey = parsed.aitlApiKey;
+    } else if (parsed.aitlApiKey.startsWith("sk-or-") && !parsed.openrouterApiKey) {
+      parsed.openrouterApiKey = parsed.aitlApiKey;
+    }
+    // Unknown prefixes are left alone — `aitl models` reports them as unclassified.
+  }
+
   return {
     ...parsed,
     get adapters() {

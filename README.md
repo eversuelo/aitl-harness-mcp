@@ -126,11 +126,23 @@ profile with `aitl config {set,unset,show,export,import,path}`.
 | `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | Embedding model id. |
 | `EMBEDDING_DIMS` | `384` | Embedding dimension — **must match the vector index**. |
 | `VOYAGE_API_KEY` | *(empty)* | API key when `EMBEDDING_PROVIDER=voyage`. |
-| `MODEL_PRIMARY` | `openrouter` | Primary model provider. |
+| `MODEL_PRIMARY` | `openrouter` | Primary model provider (`anthropic` \| `openrouter` \| `lmstudio` \| `openai-compat`). |
 | `MODEL_SECONDARY` | `openrouter` | Secondary/fallback model provider. |
 | `MODEL_HOST` | *(empty)* | Agent host the harness runs over (`codex` \| `claude-code` \| `antigravity`). |
+| `AITL_API_KEY` | *(empty)* | Single-key convenience: classified by prefix (`sk-ant-*` → Anthropic, `sk-or-*` → OpenRouter). Explicit provider keys win. |
+| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic first-party API key (prompt caching + structured outputs + native tool blocks). |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Anthropic model id. |
+| `ANTHROPIC_MAX_CONTEXT` | `1000000` | Context-window budget assumed for the Anthropic provider. |
 | `OPENROUTER_API_KEY` | *(empty)* | OpenRouter API key (OpenAI-compatible gateway). |
 | `OPENROUTER_MODEL` | `openrouter/auto` | Default OpenRouter model id (namespaced, e.g. `anthropic/claude-3.5-sonnet`). |
+| `LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio local OpenAI-compatible server URL. |
+| `LMSTUDIO_MODEL` | *(empty)* | Id of the model loaded in LM Studio (setting it marks the backend as configured). |
+| `LMSTUDIO_API_KEY` | `lm-studio` | Placeholder API key (LM Studio ignores it). |
+| `LMSTUDIO_MAX_CONTEXT` | `32768` | Context-window budget assumed for the LM Studio model. |
+| `OPENAI_COMPAT_BASE_URL` | *(empty)* | Generic OpenAI-compatible endpoint (Ollama `/v1`, vLLM, LiteLLM, …). |
+| `OPENAI_COMPAT_MODEL` | *(empty)* | Model id for the generic endpoint (required together with the base URL). |
+| `OPENAI_COMPAT_API_KEY` | *(empty)* | API key for the generic endpoint, if it needs one. |
+| `OPENAI_COMPAT_MAX_CONTEXT` | `128000` | Context-window budget assumed for the generic endpoint. |
 | `MEMORY_MAX_DOCS` | `500` | Per-project doc count that triggers memory synthesis. |
 | `MEMORY_MAX_TOKENS` | `200000` | Per-project token budget that triggers memory synthesis. |
 | `ENABLED_ADAPTERS` | `agents_md` | Comma-separated list of enabled cross-tool adapters. |
@@ -161,12 +173,15 @@ Run `aitl --help` (or `aitl <group> --help`) for full options. Top-level command
 
 | Command | Purpose |
 |---|---|
-| `aitl` / `aitl interactive` | Launch the interactive control panel (supervise MCP/UI, run commands). |
+| `aitl` / `aitl interactive` | Launch the interactive control panel (supervise MCP/UI, run commands; the "Chat ▸" submenu — shortcut `c` — opens `aitl chat` per provider/mode). |
 | `aitl check-db` | Validate MongoDB connectivity/auth (primary then fallback) and RBAC readiness. |
 | `aitl init-db` | Create collections, scalar/text indexes and Atlas vector indexes. |
 | `aitl ingest` | Parse → classify → embed → upsert markdown memory. |
 | `aitl search` | Semantic search via `$vectorSearch` (falls back to text search). |
 | `aitl run` | Run the model-agnostic agent loop, persisting the run/transcript to Mongo. |
+| `aitl chat` | Claude Code–style REPL over the agent loop (streams, live tool trace, `/help`; `--model auto` picks the configured backend + fallback chain). |
+| `aitl models` | Show which LLM backends are configured, the active one, and the fallback chain (`--json`). |
+| `aitl sdd` | SDD phase D: spec → design doc → task decomposition, persisted as linked memory artifacts. |
 | `aitl intervene` | Record a human intervention on a run (human-supervision metric). |
 | `aitl run-show` | Show a run's measurable totals: tokens, iterations, tool calls, gate denials, hydrate. |
 | `aitl run-host` | Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry. |

@@ -35,7 +35,8 @@ Ejemplo de salida:
 ```
 ## Invariantes de src/providers (NO romper sin nueva ADR)
 - [ADR-0019] Todo gateway OpenAI-compatible reusa OpenAIProvider — no crear clientes nuevos.
-- [ADR-0020] Único provider de modelo = OpenRouter; Gemini/OpenAI/Anthropic crudos eliminados.
+- [ADR-0020, enmendada por ADR-0044] Providers crudos = anthropic|openrouter|lmstudio|openai-compat
+  detrás de getProvider (+ FallbackProvider); no crear clientes ad-hoc fuera de src/providers.
 - [ADR-0005] chatStream() es opcional y aditivo — no romper el fallback a chat().
 ```
 

@@ -33,11 +33,18 @@ some ADRs live only in the ledger (rows marked "ledger only" below).
 | 0035 | Per-session graph (`capture-session` links artifacts to a run) | Accepted | ledger only |
 | 0036 | Data layer migrated from the raw mongodb driver + Zod to Mongoose | Accepted | [md](0036-mongoose-data-layer.md) |
 | 0037 | Branch-aware repo map with a constant storage footprint | Accepted | [md](0037-branch-aware-repomap.md) |
+| 0038 | Local OpenAI-compatible providers (lmstudio, openai-compat) | Accepted | [md](0038-local-openai-compatible-providers.md) |
+| 0039 | In-process pre/post tool hooks in the ToolRegistry | Accepted | [md](0039-pre-post-tool-hooks.md) |
+| 0040 | Async permission gates + in-loop human approval (`--ask`) | Accepted | [md](0040-async-gates-human-approval.md) |
+| 0041 | MCP client: mount remote servers as namespaced tools | Accepted | [md](0041-mcp-client-tool-mounting.md) |
+| 0042 | SDD phase D: pipeline with first-class memory types (spec/design/task) | Accepted | [md](0042-sdd-phase-d-pipeline.md) |
+| 0043 | Provider↔loop round-trip fixes from the first live run (gemma-4 via LM Studio) | Accepted | ledger only |
+| 0044 | Direct Anthropic provider + single `AITL_API_KEY` + cross-backend fallback + Claude Code–style chat (amends ADR-0020) | Accepted | ledger only |
 
-> **Reconciliation note.** The ledger is contiguous **0001–0037** (next free **0038**),
-> verified against the `decisions` collection. ADRs **0010–0025** and **0032–0035** exist in
-> the ledger but are not exported as `.md` files here — inspect them with
-> `aitl` / `list_decisions` or the web UI. `aitl adr-sync` operates file → ledger; the reverse
+> **Reconciliation note.** The ledger is contiguous **0001–0044** (next free **0045**),
+> verified against the `decisions` collection. ADRs **0010–0025**, **0032–0035** and
+> **0043–0044** exist in the ledger but are not exported as `.md` files here — inspect them
+> with `aitl` / `list_decisions` or the web UI. `aitl adr-sync` operates file → ledger; the reverse
 > (ledger → file) is done selectively. This index is reconciled *toward* the ledger, never the reverse.
 
 [ADR-0001]: 0001-record-architecture-decisions.md

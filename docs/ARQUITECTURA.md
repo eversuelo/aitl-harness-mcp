@@ -49,7 +49,7 @@ flowchart TB
 
     subgraph ADAPTERS["ADAPTADORES (implementaciones concretas)"]
         direction TB
-        OAI["OpenAIProvider → OpenRouter<br/>providers/openai.ts"]
+        OAI["OpenAIProvider → openrouter · lmstudio · openai-compat<br/>providers/openai.ts<br/>AnthropicProvider → API directa<br/>providers/anthropic.ts"]
         HOST["HostAdapter: claude-code / codex / antigravity<br/>hosts/base.ts"]
         TOOLS["ReadFile · WriteFile · Shell<br/>tools/*.ts"]
         STORE["MemoryStore → MongoDB<br/>memory/store.ts"]
@@ -73,10 +73,15 @@ flowchart TB
 | `MemoryPort` | `contracts.ts:92` | `upsertMemory`, `appendMessage`, `logEvent`, `vectorSearch`, `textSearch` |
 | `LoopStrategy` | `contracts.ts:101` | `run(prompt, project, opts)` — cómo se conduce una tarea |
 
-> **Invariantes** (ADR-0019/0020): un único gateway de modelo = **OpenRouter** (endpoint
-> OpenAI-compatible). No se crean clientes nuevos por proveedor; los modelos se acceden por id
-> namespaced (`anthropic/claude-3.5-sonnet`). Los *hosts* externos (Claude Code, Codex, Antigravity)
-> corren su **propio loop** y se manejan vía `HostAdapter`, no vía `getProvider`.
+> **Invariantes** (ADR-0019/0020, **SUPERSEDED en parte por ADR-0044**): el invariante original
+> "un único gateway de modelo = OpenRouter" fue enmendado el 2026-07-02. Hoy `getProvider` resuelve
+> **cuatro backends crudos**: `anthropic` (SDK oficial directo, `providers/anthropic.ts`: prompt
+> caching, structured outputs, tool blocks nativos) · `openrouter` · `lmstudio` · `openai-compat`
+> (estos tres vía el cliente genérico `OpenAIProvider` + `baseURL`, que sigue siendo el único
+> cliente OpenAI-compatible — esa parte de ADR-0019 se mantiene). `--model auto` detecta el primer
+> backend configurado y encadena el resto como `FallbackProvider`; `AITL_API_KEY` única se
+> clasifica por prefijo (`sk-ant-*`/`sk-or-*`). Sigue vigente: los *hosts* externos (Claude Code,
+> Codex, Antigravity) corren su **propio loop** y se manejan vía `HostAdapter`, no vía `getProvider`.
 
 ---
 
@@ -251,7 +256,7 @@ la misma MongoDB, así el sintetizador ve todos los resultados.
 ```mermaid
 flowchart LR
     subgraph A["host = model (el harness conduce)"]
-        RA["runAgent<br/>graph.ts:89"] --> PRV["Provider (OpenRouter)"]
+        RA["runAgent<br/>graph.ts:89"] --> PRV["Provider (anthropic / openrouter /<br/>lmstudio / openai-compat + fallback)"]
         RA --> TLS["tools + gates"]
         RA --> EV["eventos detallados:<br/>loop_iter, tool_call, gate…"]
     end
@@ -262,7 +267,9 @@ flowchart LR
     end
 ```
 
-- **`host: model`** → el harness conduce el loop con `model` vía OpenRouter; queda el modelo exacto en el run.
+- **`host: model`** → el harness conduce el loop con `model` vía uno de los providers crudos
+  (`anthropic`/`openrouter`/`lmstudio`/`openai-compat`, con fallback entre ellos — ADR-0044);
+  queda el modelo exacto en el run.
 - **`host: claude-code|codex|antigravity`** → `CliHostAdapter` (`hosts/base.ts:50`) lanza el CLI
   (`HOST_SPECS`, `hosts/base.ts:43`; override por env `AITL_HOST_CMD_<NAME>`). El harness aporta la
   capa durable alrededor (hidratación de contexto, evento `spawn`, captura de la transcripción).
@@ -561,7 +568,10 @@ antes de decidir** y **persistir después** (record_decision / write_memory / re
 ## 14. Invariantes de diseño (resumen)
 
 1. **Puertos y adaptadores** — el núcleo solo conoce `ProviderPort/ToolPort/MemoryPort/LoopStrategy`.
-2. **Un único gateway de modelo** — OpenRouter (OpenAI-compatible); hosts externos vía `HostAdapter`.
+2. **Providers detrás de un único puerto** — *(enmendado por ADR-0044; el enunciado original
+   "un único gateway = OpenRouter" quedó SUPERSEDED)*: cuatro backends crudos
+   (`anthropic` directo + `openrouter`/`lmstudio`/`openai-compat` sobre `OpenAIProvider`)
+   resueltos por `getProvider`, con cadena de fallback (`--model auto`); hosts externos vía `HostAdapter`.
 3. **Un único punto de escritura** — toda persistencia pasa por los *stores* → MongoDB.
 4. **Dos grafos complementarios** — *conocimiento* (`graphify`: memoria/símbolos) y *procedencia*
    (eventos/`runs`). La tesis necesita ambos.

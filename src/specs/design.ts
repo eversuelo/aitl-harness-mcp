@@ -37,7 +37,7 @@ export async function generateDesign(args: DesignArgs): Promise<{ slug: string; 
   const store = args.store ?? new MemoryStore();
   const id8 = args.pipelineId.slice(0, 8);
 
-  const body = (await args.provider.complete(args.spec, { system: DESIGN_INSTRUCTIONS, maxTokens: 2000 })).trim();
+  const body = (await args.provider.complete(args.spec, { system: DESIGN_INSTRUCTIONS, maxTokens: 4000 })).trim();
   if (!body) throw new Error("sdd: the provider returned an empty design doc.");
 
   const slug = `sdd-design-${id8}`;

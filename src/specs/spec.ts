@@ -47,7 +47,7 @@ export async function ensureSpec(
     body = args.prompt.trim();
     generated = false;
   } else {
-    body = (await args.provider.complete(args.prompt, { system: SPEC_INSTRUCTIONS, maxTokens: 1500 })).trim();
+    body = (await args.provider.complete(args.prompt, { system: SPEC_INSTRUCTIONS, maxTokens: 3000 })).trim();
     if (!body) throw new Error("sdd: the provider returned an empty spec.");
     generated = true;
   }

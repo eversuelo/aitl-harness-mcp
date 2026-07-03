@@ -31,11 +31,11 @@ tool, and the same contract tests. `prompt_insights` is the only exception: a
 | memory.store | `aitl/memory/store.py` | `src/memory/store.ts` | `search` | `search_memory`,`write_memory` | memory, messages, events | none | partial |
 | memory.classifier | `aitl/memory/classifier.py` | `src/memory/classifier.ts` | — | — | categories | none | partial |
 | memory.synthesizer | `aitl/memory/synthesizer.py` | `src/memory/synthesizer.ts` | `synthesize` | — | memory(synthesis), events | none | partial |
-| providers.base (ProviderPort) | `aitl/providers/base.py` | `src/providers/base.ts` | — | — | — | none | partial |
-| providers.openai (OpenRouter) | `aitl/providers/openai.py` | `src/providers/openai.ts` | `run --model openrouter` | — | — | none | partial |
-| providers.gemini (legacy) | `aitl/providers/gemini.py` | `src/providers/gemini.ts` | `run --model gemini` | — | — | none | partial |
-| providers.anthropic (legacy) | `aitl/providers/anthropic.py` | `src/providers/anthropic.ts` | `run --model anthropic` | — | — | none | partial |
-| **providers.antigravity** | `aitl/providers/antigravity.py` | `src/providers/antigravity.ts` | `run --model antigravity` | — | — | none | **missing** |
+| providers.base (ProviderPort + FallbackProvider) | `aitl/providers/base.py` | `src/providers/base.ts` | `run --model auto` · `models` | — | — | smoke | partial |
+| providers.openai (OpenRouter) | `aitl/providers/openai.py` | `src/providers/openai.ts` | `run --model openrouter` | — | — | smoke | partial |
+| providers.anthropic (first-party direct, ADR-0044) | `aitl/providers/anthropic.py` | `src/providers/anthropic.ts` | `run --model anthropic` | — | — | smoke | partial |
+| providers.lmstudio (local, via `openai.ts`) | — | `src/providers/openai.ts` | `run --model lmstudio` | — | — | none | partial |
+| providers.openai-compat (generic, via `openai.ts`) | — | `src/providers/openai.ts` | `run --model openai-compat` | — | — | none | partial |
 | orchestration.graph (loop) | `aitl/orchestration/graph.py` | `src/orchestration/graph.ts` | `run` | — | runs, messages, events | none | partial |
 | orchestration.checkpointer | `aitl/orchestration/checkpointer.py` | `src/orchestration/checkpointer.ts` | — | — | checkpoints | none | partial |
 | context.manager | `aitl/context/manager.py` | `src/context/manager.ts` | — | — | events(compaction) | none | partial |
@@ -71,9 +71,13 @@ types** (`ProviderPort`, `ToolPort`, `MemoryPort`, `LoopStrategy`, `ToolCall`, `
   `SymbolDoc=Symbol`, `LoopEvent=Event`).
 - **Phase 2 (ProviderPort)** ✅ — `count_tokens()` + `capabilities()` in the base and in
   every provider of both projects.
-- **Phases 3–4 (providers)** ✅ plumbing — the model backend resolves behind the port. The
-  primary provider is now OpenRouter (OpenAI-compatible gateway); Gemini/OpenAI/Anthropic
-  are kept as legacy paths. Pending: contract tests with fakes + verification against the
+- **Phases 3–4 (providers)** ✅ plumbing — the model backend resolves behind the port. At the
+  time, the primary provider was OpenRouter (OpenAI-compatible gateway) with Gemini/OpenAI/
+  Anthropic as legacy paths. *Amended by ADR-0044 (2026-07-02):* the TS side now has four
+  first-class raw backends — `anthropic` (direct SDK, `src/providers/anthropic.ts`) plus
+  `openrouter`/`lmstudio`/`openai-compat` over `src/providers/openai.ts` — chained by a
+  `FallbackProvider` (`--model auto`); the legacy `gemini.ts`/`antigravity.ts` provider files
+  no longer exist in TS. Pending: contract tests with fakes + verification against the
   real API.
 - **Phase 7 (module parity)** ✅ — completed the TS modules that were missing
   (`repomap/store`, `decisions/adr`, `conventions/loader`, `adapters/*`, `eval/runner`,

@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/fix-bin-perms.mjs",
     "build:watch": "tsc -p tsconfig.build.json --watch",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepare": "npm run build",
@@ -70,7 +70,7 @@
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.0",
+    "@anthropic-ai/sdk": "^0.109.1",
     "@google/genai": "^0.7.0",
     "@modelcontextprotocol/sdk": "^1.2.0",
     "commander": "^12.1.0",
@@ -79,7 +79,7 @@
     "ignore": "^7.0.5",
     "mongodb": "^6.8.0",
     "mongoose": "^9.7.3",
-    "openai": "^4.56.0",
+    "openai": "^6.45.0",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
