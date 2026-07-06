@@ -29,6 +29,10 @@ program
   .name("aitl")
   .description("AITL-Harness — Agent In The Loop.")
   .version("0.1.0")
+  // Positional options (here + on `init`) keep the parent `aitl init` options
+  // (--project/--force/…) from swallowing the SAME-named options of its subcommands
+  // (`init agent|claude --project …`). Program-level flags (-i) go before the command.
+  .enablePositionalOptions()
   .option("-i, --interactive", "Launch the interactive control panel (supervise MCP/UI, run commands).");
 
 // Commands that never touch MongoDB — skip the connection probe so they stay instant
@@ -171,6 +175,21 @@ program
   .action(async (task, opts) => {
     const { runAgent } = await import("./orchestration/graph.js");
     const { getProvider } = await import("./providers/base.js");
+    // Resolve the provider FIRST (F9): `--model auto` builds the same fallback chain as
+    // `aitl chat` (getProvider('auto') → getProviderWithFallback). A missing backend is a
+    // config problem → actionable message, no stack trace.
+    let provider: import("./providers/base.js").Provider;
+    try {
+      provider = await getProvider(opts.model);
+    } catch (err) {
+      const { NO_BACKEND_MESSAGE, providerStatus } = await import("./providers/base.js");
+      // With ZERO backends configured the root cause is global, not the chosen name:
+      // show the actionable options (memory mode / run-host) instead of a terse key error.
+      console.error(!providerStatus().active ? NO_BACKEND_MESSAGE : String(err instanceof Error ? err.message : err));
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
     // --verify-cmd turns the quality gate into the loop's termination condition: the run
     // only finishes when the command exits 0, so "I'm done" before green can't end it.
     const verify = opts.verifyCmd
@@ -214,7 +233,7 @@ program
     }
     try {
       const result = await runAgent(task, opts.project, {
-        provider: await getProvider(opts.model),
+        provider,
         installDefaultTools: true,
         ...(verify ? { verify } : {}),
         ...(roles ? { roles } : {}),
@@ -473,8 +492,19 @@ program
       }
       commitSha = sha;
     }
+    // Degradación sin LLM (F9): with a configured backend the synthesis is model-made
+    // (fallback chain, like chat); without one it degrades to the extractive summary
+    // WITH an explicit notice — it never fails for lack of a provider.
+    const { getProviderWithFallback, providerStatus } = await import("./providers/base.js");
+    let llm: import("./providers/base.js").Provider | null = null;
+    if (providerStatus().active) {
+      llm = await getProviderWithFallback();
+    } else {
+      console.error("[aitl synthesize] sin modelo configurado: síntesis extractiva (primer renglón por fuente).");
+    }
     const { Synthesizer } = await import("./memory/synthesizer.js");
-    const written = await new Synthesizer().synthesize(opts.project, {
+    const { MemoryStore } = await import("./memory/store.js");
+    const written = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
       force: opts.force,
       ...(commitSha !== undefined ? { commitSha } : {}),
     });
@@ -1363,8 +1393,71 @@ build
     await closeClient();
   });
 
-// ── init agent (write an AGENTS.md that enforces consulting the AITL MCP) ─────────
-const init = program.command("init").description("Scaffold agent/project artifacts.");
+// ── init (orchestrator) + init agent/claude (guide-only scaffolds) ────────────────
+// `aitl init` (no subcommand) onboards THIS repo end-to-end: DB, identity, index,
+// seeds, guides, .mcp.json, host hooks, git post-merge (P5/F1). The parent action
+// needs Mongo, but `init` stays in NO_DB_COMMANDS so `init agent|claude` keep working
+// offline — the parent action opens the connection itself (same fail-fast contract).
+const init = program
+  .command("init")
+  .description("Onboard a repo into the harness (aitl init), or scaffold single guides (init agent|claude).")
+  // Options after `agent`/`claude` belong to the subcommand (see enablePositionalOptions
+  // on the program): `aitl init claude --project x` keeps working unchanged.
+  .enablePositionalOptions()
+  .option("--root <path>", "Target repo root.", ".")
+  .option("--project <p>", "Project scope (default: basename of --root).")
+  .option("--software <s>", "Owning software name (default: the project).")
+  .option("--repo <r>", "Repo name / data sub-scope (default: basename of --root).")
+  .option("--host <list>", "Comma-separated hosts to wire hooks for: claude-code,codex.")
+  .option("--memory-only", "Skip provider validation: memory mode (hydrate/search/sync/capture).", false)
+  .option("--force", "Re-apply steps that would skip; overwrite guides and the post-merge hook.", false)
+  .action(async (opts) => {
+    // Fail fast on Mongo exactly like the global preAction does for DB commands.
+    const { connectWithFallback } = await import("./db/client.js");
+    try {
+      const result = await connectWithFallback();
+      if (result.label === "fallback") {
+        console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      console.error("\n[aitl] No hay MongoDB accesible. Revisa MONGODB_URI/MONGODB_URI_FALLBACK o corre `aitl check-db`.");
+      process.exit(1);
+    }
+    try {
+      const { initRepo } = await import("./init/initRepo.js");
+      const hosts = opts.host
+        ? String(opts.host).split(",").map((h: string) => h.trim()).filter(Boolean)
+        : [];
+      const bad = hosts.filter((h: string) => h !== "claude-code" && h !== "codex");
+      if (bad.length) {
+        console.error(`--host inválido: ${bad.join(", ")} (soportados: claude-code, codex)`);
+        process.exitCode = 1;
+        return;
+      }
+      const report = await initRepo({
+        root: opts.root,
+        project: opts.project,
+        software: opts.software,
+        repo: opts.repo,
+        host: hosts as ("claude-code" | "codex")[],
+        memoryOnly: Boolean(opts.memoryOnly),
+        force: Boolean(opts.force),
+      });
+      console.log(
+        `aitl init — proyecto '${report.project}' · software '${report.software}' · repo '${report.repo}'` +
+          `${report.branch ? ` @${report.branch}` : ""} (${report.root})`,
+      );
+      for (const s of report.steps) console.log(`  [${s.status}] ${s.step}: ${s.detail}`);
+      console.log("\nPróximos pasos:");
+      for (const n of report.next) console.log(`  ${n}`);
+    } catch (err) {
+      console.error(`[aitl init] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await closeClient();
+    }
+  });
 
 init
   .command("agent")
@@ -1820,8 +1913,22 @@ Example:  aitl role list --project demo`,
 Subcommands: skill | agent | seed
 Example:  aitl build skill code-review --project demo`,
   "init": `
-Subcommands: agent | claude
-Example:  aitl init claude --project demo`,
+Examples:
+  aitl init                                          # onboard the cwd repo end-to-end
+  aitl init --root ../mi-app --project mi-app --host claude-code
+  aitl init --memory-only --host claude-code          # sin LLM: hydrate/search/sync/capture
+  aitl init --force                                   # re-aplica pasos y sobrescribe guías
+
+Notes:
+  Idempotente: cada paso reporta [ok|skip|done|warn]; una segunda corrida es todo skip.
+  Pasos: DB (colecciones/índices/root) → identidad (software/repo/branches) → índice
+  maestro (símbolos+memoria+ADRs) → seeds (skills/roles) → guías CLAUDE.md/AGENTS.md →
+  .mcp.json → hooks del host → hook git post-merge (branch sync --reindex).
+  No pisa archivos existentes sin --force (merge conservador: añade solo lo que falta).
+  --memory-only omite la validación de provider (run/chat requieren backend o host).
+
+Subcommands (solo guías, sin DB): agent | claude
+  aitl init claude --project demo`,
 
   // ── user subcommands ──
   "user bootstrap": `

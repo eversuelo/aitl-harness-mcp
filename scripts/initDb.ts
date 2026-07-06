@@ -3,26 +3,32 @@
  *
  * Usage: npm run init-db   (or: tsx scripts/initDb.ts)
  *
- * Idempotent. Requires a running MongoDB with Vector Search (the
+ * Thin wrapper over `src/db/init.ts` (P5) so `aitl init` shares the same logic.
+ * Idempotent. Requires a running MongoDB; vector indexes need Vector Search (the
  * `mongodb/mongodb-atlas-local` container, or cloud Atlas). See README.md.
  */
 
 import { settings } from "../src/config.js";
-import { bootstrapBaseUser } from "../src/auth/users.js";
 import { closeClient } from "../src/db/client.js";
-import { initIndexes } from "../src/db/indexes.js";
+import { initDb } from "../src/db/init.js";
 
 async function main(): Promise<void> {
   console.log(`Connecting to ${settings.mongodbUri} (db=${settings.mongodbDb}) ...`);
-  const db = await initIndexes();
-  const user = await bootstrapBaseUser();
-  const names = (await db.listCollections().toArray()).map((c) => c.name).sort();
-  console.log(`OK. Collections: ${names.join(", ")}`);
-  console.log(`Bootstrap user: ${user.status}${user.username ? ` (${user.username}, ${user.email})` : ""}`);
+  const report = await initDb();
+  console.log(`OK. Collections: ${report.collections.join(", ")}`);
+  console.log(
+    `Bootstrap user: ${report.bootstrap.status}` +
+      (report.bootstrap.username ? ` (${report.bootstrap.username}, ${report.bootstrap.email})` : ""),
+  );
   console.log(
     `Vector index dims = ${settings.embeddingDims} ` +
       `(embedder=${settings.embeddingProvider}:${settings.embeddingModel})`,
   );
+  if (!report.vector.ok) {
+    // Preserve the script's historical hard failure on missing Vector Search.
+    console.error(report.vector.error);
+    process.exitCode = 1;
+  }
   await closeClient();
 }
 
