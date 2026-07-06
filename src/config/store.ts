@@ -14,6 +14,7 @@
 import { promises as fs, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { updateEnvFile } from "./envfile.js";
 
 /** Canonical ENV keys the harness understands (kept in sync with `.env.example`). */
 export const ENV_KEYS = [
@@ -49,6 +50,10 @@ export const ENV_KEYS = [
   "AITL_BOOTSTRAP_PASSWORD",
   "AITL_BOOTSTRAP_ROLE",
   "AITL_BOOTSTRAP_AUTOGEN",
+  // Web UI (P3.5): CORS allowlist, editable from the Config tab. Note the API server
+  // reads it from process.env, so a profile-only change applies on the next start
+  // (the .env mirror covers repo-local runs).
+  "AITL_WEB_ORIGINS",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
@@ -125,6 +130,49 @@ export function maskSecret(value: string): string {
 /** Hide credentials in a MongoDB URI (mirrors db/client.redactMongoUri without importing it). */
 export function redactUri(uri: string): string {
   return uri.replace(/^(mongodb(?:\+srv)?:\/\/)(?:[^@/?#]+@)/i, "$1<credentials>@");
+}
+
+export interface ApplyConfigResult {
+  /** Path of the user-level profile written (~/.aitl/config.json). */
+  profilePath: string;
+  /** Path of the mirrored dotenv file (created when missing). */
+  envPath: string;
+  /** Keys touched — safe to log/audit (values never are). */
+  keys: string[];
+}
+
+/**
+ * Double persistence for config updates (P3.5, used by `PUT /api/config`):
+ * write the user-level profile (`~/.aitl/config.json`, same machinery as
+ * `aitl config set`) AND mirror the change into the project's `.env` so a
+ * repo-local run picks it up too. `null`/empty values unset the key in the
+ * profile and comment it out in the `.env`. Only `ENV_KEYS` are accepted;
+ * values are never logged (several are secrets).
+ */
+export async function applyConfigUpdates(
+  updates: Record<string, string | null>,
+  opts: { envPath?: string } = {},
+): Promise<ApplyConfigResult> {
+  const unknown = Object.keys(updates).filter((k) => !ENV_KEY_SET.has(k));
+  if (unknown.length) {
+    throw new Error(`Unknown config key(s): ${unknown.join(", ")}. Known: ${ENV_KEYS.join(", ")}`);
+  }
+
+  // Normalize: empty string means "unset", like `aitl config unset`.
+  const normalized: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(updates)) normalized[k] = v == null || v === "" ? null : String(v);
+
+  const profile = readConfigFile();
+  for (const [k, v] of Object.entries(normalized)) {
+    if (v === null) delete profile[k as EnvKey];
+    else profile[k as EnvKey] = v;
+  }
+  const profilePath = await writeConfigFile(profile, { merge: false });
+
+  const envPath = opts.envPath ?? join(process.cwd(), ".env");
+  await updateEnvFile(envPath, normalized);
+
+  return { profilePath, envPath, keys: Object.keys(normalized) };
 }
 
 /**

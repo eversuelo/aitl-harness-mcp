@@ -654,6 +654,29 @@ user
   });
 
 user
+  .command("register")
+  .requiredOption("--username <username>", "New username.")
+  .requiredOption("--email <email>", "New email.")
+  .requiredOption("--password <password>", "Password (min 12 chars).")
+  .description("Self-service registration (no root needed). First real user becomes admin; audited.")
+  .action(async (opts) => {
+    const { connectWithFallback } = await import("./db/client.js");
+    const { registerUser } = await import("./auth/users.js");
+    await connectWithFallback();
+    try {
+      const created = await registerUser(
+        { username: opts.username, email: opts.email, password: opts.password },
+        { source: "cli" },
+      );
+      console.log(`Registered user: ${created.username} (${created.email}, role=${created.role})`);
+    } catch (err) {
+      console.error(`Register failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+user
   .command("set-role")
   .requiredOption("--username <username>", "Target username.")
   .requiredOption("--role <role>", "root | admin | user | agent | auditor")
@@ -763,14 +786,22 @@ config
   .command("set")
   .argument("<key>", "ENV-style key (e.g. GEMINI_API_KEY).")
   .argument("<value>", "Value.")
+  .option("--env", "Also mirror the key into ./.env (created when missing; preserves other lines).", false)
   .description("Set a single key in the user-level config profile.")
-  .action(async (key, value) => {
+  .action(async (key, value, opts) => {
     const { ENV_KEYS, writeConfigFile } = await import("./config/store.js");
     if (!(ENV_KEYS as readonly string[]).includes(key)) {
       throw new Error(`Unknown key '${key}'. Known: ${ENV_KEYS.join(", ")}`);
     }
     const path = await writeConfigFile({ [key]: value }, { merge: true });
     console.log(`Set ${key} in ${path}.`);
+    if (opts.env) {
+      const { updateEnvFile } = await import("./config/envfile.js");
+      const { join } = await import("node:path");
+      const envPath = join(process.cwd(), ".env");
+      await updateEnvFile(envPath, { [key]: value });
+      console.log(`Mirrored ${key} into ${envPath}.`);
+    }
   });
 
 config
@@ -1694,7 +1725,7 @@ Notes:
 
   // ── parents (overview + pointer to subcommands) ──
   "user": `
-Subcommands: bootstrap | verify | list | create | set-role | disable
+Subcommands: bootstrap | verify | list | create | register | set-role | disable
 Example:  aitl user list`,
   "config": `
 Subcommands: path | show | export | import | set | unset
@@ -1749,6 +1780,14 @@ Examples:
 
 Notes:
   Root-only; audited. Roles: root | admin | user | agent | auditor.`,
+  "user register": `
+Examples:
+  aitl user register --username alice --email alice@x.com --password "<12+ chars>"
+
+Notes:
+  Self-service (no root needed) — same flow as the web signup. The first real user
+  (excluding the local-root bootstrap) becomes admin; later ones are plain users.
+  Username and email must be unique; audited (action "register").`,
   "user set-role": `
 Examples:
   aitl user set-role --username alice --role auditor
@@ -1784,9 +1823,11 @@ Examples:
   aitl config set MONGODB_URI "mongodb+srv://user:pass@cluster.mongodb.net/aitl?appName=app"
   aitl config set MONGODB_DB aitl
   aitl config set OPENROUTER_API_KEY "<key>"
+  aitl config set MODEL_PRIMARY lmstudio --env    # also mirror into ./.env
 
 Notes:
-  URL-encode special chars in passwords (e.g. * → %2A). Stored in plain text locally; never commit it.`,
+  URL-encode special chars in passwords (e.g. * → %2A). Stored in plain text locally; never commit it.
+  --env mirrors the key into the project's .env (uncomments "# KEY=..." lines, preserves the rest).`,
   "config unset": `
 Examples:
   aitl config unset OPENROUTER_API_KEY`,

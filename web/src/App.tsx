@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Settings2,
   Share2,
   Trash2,
   X,
@@ -17,6 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { AuthBadge, LoginDialog } from "@/components/LoginView";
+import { ConfigView } from "@/components/ConfigView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -53,7 +55,7 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge";
+type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge" | "config";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -97,6 +99,13 @@ export function App() {
     void api.logout().then(refreshMe);
   }, [refreshMe]);
 
+  // Config is root/admin only — the server enforces it (RBAC config_secrets); the tab
+  // simply hides for everyone else, and falls back when the role drops (logout).
+  const canConfig = me?.role === "root" || me?.role === "admin";
+  useEffect(() => {
+    if (tab === "config" && !canConfig) setTab("memory");
+  }, [tab, canConfig]);
+
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       <header className="flex items-center justify-between gap-4 border-b px-5 py-3">
@@ -128,6 +137,11 @@ export function App() {
               <TabsTrigger value="knowledge">
                 <Share2 /> Knowledge Map
               </TabsTrigger>
+              {canConfig && (
+                <TabsTrigger value="config">
+                  <Settings2 /> Config
+                </TabsTrigger>
+              )}
             </TabsList>
           </Tabs>
         </div>
@@ -155,6 +169,7 @@ export function App() {
       <LoginDialog
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
+        signupEnabled={me?.signup !== false}
         onLoggedIn={() => {
           refreshMe();
           setError(null);
@@ -177,6 +192,7 @@ export function App() {
         {tab === "runs" && <RunsView project={project} onError={reportError} />}
         {tab === "graph" && <GraphView project={project} onError={reportError} />}
         {tab === "knowledge" && <KnowledgeMapView project={project} onError={reportError} />}
+        {tab === "config" && canConfig && <ConfigView onError={reportError} />}
       </div>
     </div>
   );

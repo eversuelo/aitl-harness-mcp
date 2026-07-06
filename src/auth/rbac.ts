@@ -98,9 +98,13 @@ const MATRIX: Record<string, Partial<Record<Action, Partial<Record<Role, Perm>>>
     update: { root: "allow", admin: "delegated", agent: "allow" },
     delete: { root: "allow", admin: "delegated", agent: "allow" },
   },
+  // P3.5: admin gained "delegated" on config so the first-registered-user→admin flow
+  // can configure the harness through the web API (the server mediates and stamps the
+  // identity, same trust model as memory/decisions). Direct admin access stays denied;
+  // root keeps full direct access.
   config_secrets: {
-    read: { root: "allow" },
-    update: { root: "allow" },
+    read: { root: "allow", admin: "delegated" },
+    update: { root: "allow", admin: "delegated" },
   },
   indexes: {
     execute: { root: "allow" },

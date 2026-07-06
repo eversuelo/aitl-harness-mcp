@@ -9,9 +9,12 @@
  * Routes (all JSON):
  *   GET    /api/health
  *   POST   /api/auth/login                   {username,password} → {token,id,role,expires_at}
+ *   POST   /api/auth/register                {username,email,password} → session (gated by AITL_WEB_ALLOW_SIGNUP)
  *   POST   /api/auth/logout                  (Bearer) revoke session → 204
- *   GET    /api/auth/me                      resolved actor identity
+ *   GET    /api/auth/me                      resolved actor identity (+ signup flag)
  *   GET    /api/config                      effective profile (secrets masked)
+ *   GET    /api/config/status               profile + provider status + signup flag
+ *   PUT    /api/config                       {updates:{KEY: value|null}} → profile + .env mirror
  *   GET    /api/projects
  *   GET    /api/memory?project=&category=&type=&limit=
  *   GET    /api/memory/search?project=&q=&limit=
@@ -50,8 +53,17 @@ export interface ApiDeps {
   createSession: (userId: string, role: string, ttlMs?: number) => Promise<{ token: string; expiresAt: Date }>;
   revokeSession: (token: string) => Promise<boolean>;
   verifyCredentials: (username: string, password: string) => Promise<VerifyUserResult>;
+  /** Self-service signup (P3.5). Throws RegistrationConflictError on duplicates. */
+  registerUser: (seed: { username: string; email: string; password: string }) => Promise<{ username: string; role: string }>;
+  /** Double persistence: ~/.aitl/config.json + project .env mirror (P3.5). */
+  applyConfigUpdates: (updates: Record<string, string | null>) => Promise<{ profilePath: string; envPath: string; keys: string[] }>;
   audit: typeof recordAudit;
   upsertMemory: (body: Record<string, unknown>, actor?: Actor) => Promise<Record<string, unknown>>;
+}
+
+/** Self-service signup gate: on by default; AITL_WEB_ALLOW_SIGNUP="false"/"0" turns it off. */
+function signupEnabled(): boolean {
+  return !/^(false|0)$/i.test((process.env.AITL_WEB_ALLOW_SIGNUP ?? "").trim());
 }
 
 /**
@@ -267,6 +279,48 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
     });
   }
 
+  if (pathname === "/api/auth/register" && method === "POST") {
+    if (!signupEnabled()) {
+      await deps.audit({
+        actor_id: "web:anonymous",
+        actor_role: "user",
+        source: "web",
+        action: "register",
+        resource: "users",
+        ok: false,
+        reason: "signup disabled (AITL_WEB_ALLOW_SIGNUP)",
+      });
+      throw new HttpError(403, "signup is disabled on this server", { error: "signup_disabled" });
+    }
+    const body = await readJson(req);
+    let created: { username: string; role: string };
+    try {
+      created = await deps.registerUser({
+        username: String(body.username ?? ""),
+        email: String(body.email ?? ""),
+        password: String(body.password ?? ""),
+      });
+    } catch (err) {
+      // RegistrationConflictError carries the offending field; detected structurally so
+      // injected fakes don't need the exact class instance.
+      const conflict = (err as { conflict?: string }).conflict;
+      if (conflict === "username" || conflict === "email") {
+        throw new HttpError(409, `${conflict} taken`, { error: `${conflict}_taken` });
+      }
+      throw new HttpError(400, err instanceof Error ? err.message : String(err), { error: "invalid_registration" });
+    }
+    if (!isRole(created.role)) throw new HttpError(500, "registered user has an invalid role");
+    // Same shape as login: the fresh account is signed in right away.
+    const userId = `user:${created.username}`;
+    const session = await deps.createSession(userId, created.role);
+    return send(req, res, 200, {
+      token: session.token,
+      id: userId,
+      role: created.role,
+      expires_at: session.expiresAt.toISOString(),
+    });
+  }
+
   if (pathname === "/api/auth/logout" && method === "POST") {
     const token = bearerToken(req);
     if (!token) throw new HttpError(401, "bearer token required", { error: "login_required", hint: "POST /api/auth/login" });
@@ -276,13 +330,62 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
 
   const actor = await resolveActor(req, deps);
   if (pathname === "/api/auth/me" && method === "GET") {
-    return send(req, res, 200, { id: actor.id, role: actor.role, source: actor.source });
+    // `signup` lets the login dialog hide the "create account" mode when disabled.
+    return send(req, res, 200, { id: actor.id, role: actor.role, source: actor.source, signup: signupEnabled() });
   }
 
   if (pathname === "/api/config" && method === "GET") {
-    // Secrets are masked by resolveProfile; only root may read effective config.
+    // Secrets are masked by resolveProfile; root (or admin via web, delegated) only.
     await guard(deps, actor, "config_secrets", "read");
     const { resolveProfile } = await import("../config/store.js");
+    return send(req, res, 200, resolveProfile());
+  }
+
+  // Config panel snapshot: masked profile + which LLM backends are usable + signup flag.
+  if (pathname === "/api/config/status" && method === "GET") {
+    await guard(deps, actor, "config_secrets", "read");
+    const { resolveProfile } = await import("../config/store.js");
+    const { providerStatus } = await import("../providers/base.js");
+    return send(req, res, 200, {
+      profile: resolveProfile(),
+      providers: providerStatus(),
+      signup_enabled: signupEnabled(),
+    });
+  }
+
+  if (pathname === "/api/config" && method === "PUT") {
+    await guard(deps, actor, "config_secrets", "update");
+    const body = await readJson(req);
+    const raw = body.updates;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpError(400, "`updates` object is required: { KEY: value | null }.");
+    }
+    const { ENV_KEYS, resolveProfile } = await import("../config/store.js");
+    const updates: Record<string, string | null> = {};
+    const unknown: string[] = [];
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!(ENV_KEYS as readonly string[]).includes(k)) unknown.push(k);
+      else updates[k] = v == null ? null : String(v);
+    }
+    if (unknown.length) {
+      throw new HttpError(400, `Unknown config key(s): ${unknown.join(", ")}`, {
+        error: "unknown_keys",
+        unknown,
+        known: [...ENV_KEYS],
+      });
+    }
+    if (!Object.keys(updates).length) throw new HttpError(400, "`updates` is empty.");
+    await deps.applyConfigUpdates(updates);
+    // Audit which keys were touched — never the values (several are secrets).
+    await deps.audit({
+      actor_id: actor.id,
+      actor_role: actor.role,
+      source: "web",
+      action: "config.update",
+      resource: "config_secrets",
+      ok: true,
+      reason: `keys=${Object.keys(updates).join(",")}`,
+    });
     return send(req, res, 200, resolveProfile());
   }
 
@@ -545,6 +648,14 @@ const DEFAULT_DEPS: ApiDeps = {
   createSession,
   revokeSession,
   verifyCredentials: verifyWebCredentials,
+  registerUser: async (seed) => {
+    const { registerUser } = await import("../auth/users.js");
+    return registerUser(seed, { source: "web" });
+  },
+  applyConfigUpdates: async (updates) => {
+    const { applyConfigUpdates } = await import("../config/store.js");
+    return applyConfigUpdates(updates);
+  },
   audit: recordAudit,
   upsertMemory: upsertMemoryDoc,
 };

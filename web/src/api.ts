@@ -123,6 +123,27 @@ export interface Me {
   id: string;
   role: string;
   source?: string;
+  /** Whether self-service signup is enabled on the server (AITL_WEB_ALLOW_SIGNUP). */
+  signup?: boolean;
+}
+
+export interface ProviderStatusEntry {
+  name: string;
+  configured: boolean;
+  model: string;
+  via: string;
+}
+
+export interface ConfigStatus {
+  /** Effective config profile with secrets masked. */
+  profile: Record<string, string>;
+  providers: {
+    providers: ProviderStatusEntry[];
+    active: string | null;
+    fallbacks: string[];
+    aitl_api_key?: string;
+  };
+  signup_enabled: boolean;
 }
 
 const TOKEN_KEY = "aitl.session";
@@ -174,6 +195,17 @@ export const api = {
     return session;
   },
 
+  register: async (username: string, email: string, password: string): Promise<Session> => {
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, email, password }),
+    });
+    const session = await json<Session>(res);
+    setToken(session.token);
+    return session;
+  },
+
   logout: async (): Promise<void> => {
     const token = getToken();
     setToken(null);
@@ -188,6 +220,16 @@ export const api = {
   me: () => fetch("/api/auth/me", { headers: authHeaders() }).then(json<Me>),
 
   config: () => fetch("/api/config", { headers: authHeaders() }).then(json<Record<string, string>>),
+
+  configStatus: () => fetch("/api/config/status", { headers: authHeaders() }).then(json<ConfigStatus>),
+
+  updateConfig: (updates: Record<string, string | null>) =>
+    fetch("/api/config", {
+      method: "PUT",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ updates }),
+    }).then(json<Record<string, string>>),
+
   projects: () => fetch("/api/projects", { headers: authHeaders() }).then(json<string[]>),
 
   list: (project: string) =>

@@ -4,8 +4,10 @@ import { mongoose } from "../db/mongoose.js";
 import { UserModel } from "../models/user.model.js";
 import { ROLES } from "./rbac.js";
 import {
+  RegistrationConflictError,
   bootstrapBaseUser,
   generateLocalRootSeed,
+  registerUser,
   seedIsValid,
   validateRole,
   validateUserSeed,
@@ -24,19 +26,36 @@ function stubUserModel(initial: Record<string, unknown>[] = []): { docs: Record<
   // Atlas connection (the ESM named export cannot be redefined directly).
   mock.method(mongoose, "connect", (async () => mongoose) as never);
 
-  mock.method(UserModel, "countDocuments", ((query?: { role?: string }) => {
-    const n = query?.role ? docs.filter((d) => d.role === query.role).length : docs.length;
-    return Promise.resolve(n);
+  mock.method(UserModel, "countDocuments", ((query?: { role?: string; username?: { $ne?: string } }) => {
+    if (query?.role) return Promise.resolve(docs.filter((d) => d.role === query.role).length);
+    // `registerUser` counts real users excluding the local-root bootstrap.
+    if (query?.username && typeof query.username === "object" && "$ne" in query.username) {
+      return Promise.resolve(docs.filter((d) => d.username !== query.username?.$ne).length);
+    }
+    return Promise.resolve(docs.length);
   }) as never);
 
-  mock.method(UserModel, "findOne", ((query: { $or?: { username?: string; email?: string }[] }) => ({
+  mock.method(UserModel, "findOne", ((query: {
+    $or?: { username?: string; email?: string }[];
+    username?: unknown;
+    email?: unknown;
+  }) => ({
     lean() {
-      if (!query?.$or) return Promise.resolve(docs[0] ?? null);
-      return Promise.resolve(
-        docs.find((d) =>
-          query.$or!.some((c) => (c.username && d.username === c.username) || (c.email && d.email === c.email)),
-        ) ?? null,
-      );
+      if (query?.$or) {
+        return Promise.resolve(
+          docs.find((d) =>
+            query.$or!.some((c) => (c.username && d.username === c.username) || (c.email && d.email === c.email)),
+          ) ?? null,
+        );
+      }
+      // Direct lookups used by `registerUser`'s per-field uniqueness checks.
+      if (typeof query?.username === "string") {
+        return Promise.resolve(docs.find((d) => d.username === query.username) ?? null);
+      }
+      if (typeof query?.email === "string") {
+        return Promise.resolve(docs.find((d) => d.email === query.email) ?? null);
+      }
+      return Promise.resolve(docs[0] ?? null);
     },
   })) as never);
 
@@ -127,6 +146,94 @@ test("bootstrapBaseUser is a no-op when users already exist", async () => {
     const res = await bootstrapBaseUser(null);
     assert.equal(res.status, "skipped");
     assert.equal(docs.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+/* ── registerUser (P3.5 self-service signup) ─────────────────────────────── */
+
+type AuditEv = { action?: string; ok?: boolean; reason?: string | null };
+
+/** Collecting fake for the injectable audit (the real one needs Mongo). */
+function fakeAudit(): { events: AuditEv[]; audit: (ev: AuditEv) => Promise<void> } {
+  const events: AuditEv[] = [];
+  return { events, audit: async (ev) => void events.push(ev) };
+}
+
+test("registerUser: the first real user becomes admin (local-root excluded), later ones user", async () => {
+  const { docs, restore } = stubUserModel([
+    { username: "local-root", email: "local-root@aitl.local", role: "root" },
+  ]);
+  const { events, audit } = fakeAudit();
+  try {
+    const first = await registerUser(
+      { username: "Alice", email: "Alice@Example.com", password: "longenoughpw12" },
+      { audit: audit as never },
+    );
+    assert.equal(first.role, "admin");
+    assert.equal(first.username, "alice"); // normalized lowercase
+    assert.equal(first.email, "alice@example.com");
+
+    const second = await registerUser(
+      { username: "bob", email: "bob@example.com", password: "longenoughpw12" },
+      { audit: audit as never },
+    );
+    assert.equal(second.role, "user");
+
+    assert.equal(docs.length, 3);
+    // Only hashes are persisted, never the plaintext.
+    const alice = docs.find((d) => d.username === "alice");
+    assert.equal(alice?.password, undefined);
+    assert.equal(typeof alice?.password_hash, "string");
+
+    const registers = events.filter((e) => e.action === "register");
+    assert.equal(registers.length, 2);
+    assert.ok(registers.every((e) => e.ok === true));
+    assert.match(registers[0].reason ?? "", /role=admin/);
+    assert.match(registers[1].reason ?? "", /role=user/);
+  } finally {
+    restore();
+  }
+});
+
+test("registerUser rejects a duplicate username with a distinguishable error", async () => {
+  const { restore } = stubUserModel([{ username: "alice", email: "alice@example.com", role: "user" }]);
+  const { events, audit } = fakeAudit();
+  try {
+    await assert.rejects(
+      registerUser({ username: "alice", email: "new@example.com", password: "longenoughpw12" }, { audit: audit as never }),
+      (err: unknown) => err instanceof RegistrationConflictError && err.conflict === "username" && /username taken/.test(String((err as Error).message)),
+    );
+    const failed = events.find((e) => e.action === "register" && e.ok === false);
+    assert.match(failed?.reason ?? "", /username taken/);
+  } finally {
+    restore();
+  }
+});
+
+test("registerUser rejects a duplicate email with a distinguishable error", async () => {
+  const { restore } = stubUserModel([{ username: "alice", email: "alice@example.com", role: "user" }]);
+  const { audit } = fakeAudit();
+  try {
+    await assert.rejects(
+      registerUser({ username: "brand-new", email: "ALICE@example.com", password: "longenoughpw12" }, { audit: audit as never }),
+      (err: unknown) => err instanceof RegistrationConflictError && err.conflict === "email",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("registerUser validates the seed like `user create` (password >= 12)", async () => {
+  const { docs, restore } = stubUserModel();
+  const { audit } = fakeAudit();
+  try {
+    await assert.rejects(
+      registerUser({ username: "alice", email: "alice@example.com", password: "short" }, { audit: audit as never }),
+      /at least 12 characters/,
+    );
+    assert.equal(docs.length, 0);
   } finally {
     restore();
   }
