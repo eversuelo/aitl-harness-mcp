@@ -48,8 +48,14 @@ spelling — those fragment the history. Verify the hash above matches
 > del TUI al chat hijo ("pulsar dos veces la tecla"; suspend() pausa stdin), spinner
 > idempotente, teardown en SIGINT, deadline de streaming (`AITL_STREAM_IDLE_MS`),
 > ToolRegistry por sub-agente en orchestrate, preAction fail-fast, tree-kill POSIX,
-> ShellTool maxBuffer+clip, parseLimit en la API. Ledger ahora contiguo **0001–0045**;
-> next free **0046**.
+> ShellTool maxBuffer+clip, parseLimit en la API.
+> 0046 (2026-07-05, rama `feat/harness-v2`): auth web de sesión — colección `sessions`
+> (solo sha256 del token, índice TTL), `POST /api/auth/login|logout`, cascada
+> sesión→AITL_WEB_TOKENS→anónimo, split 401 login_required / 403, escrituras web
+> autenticadas como delegated (mismo modelo que guardTool del MCP), CORS por allowlist
+> `AITL_WEB_ORIGINS`, cliente web con Authorization + diálogo de login. Cierra el
+> hallazgo Alto de la auditoría 2026-07-05. Ledger ahora contiguo **0001–0046**;
+> next free **0047**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
