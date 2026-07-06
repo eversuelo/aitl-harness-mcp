@@ -38,6 +38,7 @@ const historyEntrySchema = new Schema(
     actor_id: { type: String, default: "system" },
     actor_role: { type: String, default: "system" },
     branch: { type: String, default: null }, // git branch the archived version was authored on
+    commit_sha: { type: String, default: null }, // git commit the archived version was authored at (F2)
     snapshot: { type: Schema.Types.Mixed, required: true }, // the prior doc, without its embedding
     archived_at: { type: Date, default: now },
   },

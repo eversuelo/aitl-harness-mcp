@@ -30,6 +30,16 @@ export function branchHeadSha(name: string, cwd: string = process.cwd()): string
   return git(["rev-parse", "--short", name], cwd);
 }
 
+/** Full SHA of HEAD for `cwd` (or null outside a repo / before the first commit / git missing). */
+export function headSha(cwd: string = process.cwd()): string | null {
+  return git(["rev-parse", "HEAD"], cwd);
+}
+
+/** Resolve any git ref (branch, tag, sha, HEAD~2, …) to its full SHA, or null if unknown. */
+export function resolveRef(ref: string, cwd: string = process.cwd()): string | null {
+  return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd);
+}
+
 /** Commits `branch` has that `base` does not (`base..branch`), or null on error. */
 export function aheadCount(base: string, branch: string, cwd: string = process.cwd()): number | null {
   const out = git(["rev-list", "--count", `${base}..${branch}`], cwd);

@@ -31,6 +31,11 @@ export interface DecisionDoc {
   context: string;
   decision: string;
   consequences: string;
+  /** Lifecycle (F4): why it was deprecated, its replacement and its soft-TTL review date. */
+  deprecation_reason?: string | null;
+  superseded_by?: string | null;
+  review_after?: string | null;
+  components?: string[];
   created_at?: string;
 }
 

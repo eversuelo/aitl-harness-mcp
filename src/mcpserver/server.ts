@@ -29,6 +29,7 @@ import { embedOne } from "../ingest/embedder.js";
 import { extractLinks, parseMarkdownDir } from "../ingest/markdown.js";
 import { Classifier } from "../memory/classifier.js";
 import { MEMORY_TYPES, RESERVED_MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
+import { ADR_STATUSES } from "../models/decision.model.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { ADRStore } from "../decisions/adr.js";
@@ -241,6 +242,7 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   ingest_path: { resource: "memory", action: "create" },
   graphify: { resource: "memory", action: "update" },
   record_decision: { resource: "decisions", action: "create" },
+  deprecate_decision: { resource: "decisions", action: "update" },
   record_prompt: { resource: "prompts", action: "create" },
   write_software: { resource: "softwares", action: "create" },
   delete_software: { resource: "softwares", action: "delete" },
@@ -644,7 +646,7 @@ export function buildServer(): McpServer {
 
   server.tool(
     "record_decision",
-    'Record a versioned ADR (embedded for $vectorSearch). `id` e.g. "0007".',
+    'Record a versioned ADR (embedded for $vectorSearch). `id` e.g. "0007". Optional lifecycle fields: `review_after` (ISO date, soft TTL) and `components` (dirs/modules it constrains).',
     {
       project: z.string(),
       id: z.string(),
@@ -652,15 +654,54 @@ export function buildServer(): McpServer {
       context: z.string(),
       decision: z.string(),
       consequences: z.string().default(""),
-      status: z.enum(["proposed", "accepted", "superseded"]).default("accepted"),
+      status: z.enum(ADR_STATUSES).default("accepted"),
+      review_after: z.string().optional(),
+      components: z.array(z.string()).optional(),
     },
-    async ({ project, id, title, context, decision, consequences, status }) => {
-      return runLogged("record_decision", { project, id, title, context, decision, consequences, status }, async () => {
+    async ({ project, id, title, context, decision, consequences, status, review_after, components }) => {
+      return runLogged("record_decision", { project, id, title, context, decision, consequences, status, review_after, components }, async () => {
         const { makeADR } = await import("../models/decision.model.js");
-        const adr = await makeADR({ project, id, title, context, decision, consequences, status });
+        let reviewAfter: Date | null = null;
+        if (review_after) {
+          reviewAfter = new Date(review_after);
+          if (Number.isNaN(reviewAfter.getTime())) throw new Error(`invalid review_after date '${review_after}' (use ISO, e.g. 2027-01-31)`);
+        }
+        const adr = await makeADR({ project, id, title, context, decision, consequences, status, review_after: reviewAfter, components: components ?? [] });
         const a = mcpActor();
         await new ADRStore().upsert(adr, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
         return text({ id: adr.id, title: adr.title, status: adr.status, version: adr.version });
+      });
+    },
+  );
+
+  server.tool(
+    "deprecate_decision",
+    "Mark an ADR as deprecated with a reason (append-only: version bump + history snapshot; the doc is NEVER deleted). Optional superseded_by and review_after (ISO date, soft TTL).",
+    {
+      project: z.string(),
+      id: z.string(),
+      reason: z.string(),
+      superseded_by: z.string().optional(),
+      review_after: z.string().optional(),
+    },
+    async ({ project, id, reason, superseded_by, review_after }) => {
+      return runLogged("deprecate_decision", { project, id, reason, superseded_by, review_after }, async () => {
+        const { deprecateDecision } = await import("../decisions/lifecycle.js");
+        let reviewAfter: Date | null = null;
+        if (review_after) {
+          reviewAfter = new Date(review_after);
+          if (Number.isNaN(reviewAfter.getTime())) throw new Error(`invalid review_after date '${review_after}' (use ISO, e.g. 2027-01-31)`);
+        }
+        const a = mcpActor();
+        const res = await deprecateDecision({
+          project,
+          id,
+          reason,
+          supersededBy: superseded_by ?? null,
+          reviewAfter,
+          actor: { id: a.id, role: a.role },
+        });
+        return text(res);
       });
     },
   );

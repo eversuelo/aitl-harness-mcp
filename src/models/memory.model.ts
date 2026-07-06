@@ -40,6 +40,7 @@ const memoryDocSchema = new Schema(
     actor_id: { type: String, default: null }, // who authored the current version (provenance)
     actor_role: { type: String, default: null },
     branch: { type: String, default: null }, // git branch this version was authored on (ADR-0028)
+    commit_sha: { type: String, default: null }, // git commit this version was authored at (F2)
     embedding: { type: [Number], default: null },
   },
   { ...BASE_SCHEMA_OPTS, collection: MEMORY_COLLECTION },

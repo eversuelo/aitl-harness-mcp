@@ -12,6 +12,7 @@
  * Everything is best-effort: a failure here never breaks the run, only skips the hook.
  */
 
+import { INACTIVE_ADR_STATUSES, isReviewOverdue } from "../decisions/lifecycle.js";
 import { embedOne } from "../ingest/embedder.js";
 import type { Provider } from "../providers/base.js";
 import { Classifier } from "./classifier.js";
@@ -108,6 +109,39 @@ function renderMemory(hits: Record<string, unknown>[], cap: number): Section {
   };
 }
 
+/** An ADR whose soft TTL (`review_after`) lapsed: flagged for review, never injected. */
+export interface NeedsReviewEntry {
+  id: string;
+  title: string;
+  review_after: Date | string | null;
+}
+
+/**
+ * Lifecycle filter for hydration (F4): split retrieved ADRs into the ones still safe
+ * to inject (active, not past their soft TTL) and the lapsed ones (`needs_review`).
+ * Deprecated/superseded ADRs are dropped from the preamble entirely.
+ */
+export function partitionDecisions(
+  hits: Record<string, unknown>[],
+  now: Date = new Date(),
+): { active: Record<string, unknown>[]; needsReview: NeedsReviewEntry[] } {
+  const active: Record<string, unknown>[] = [];
+  const needsReview: NeedsReviewEntry[] = [];
+  for (const d of hits) {
+    if (INACTIVE_ADR_STATUSES.has(String(d.status ?? ""))) continue;
+    if (isReviewOverdue(d.review_after, now)) {
+      needsReview.push({
+        id: String(d.id ?? ""),
+        title: String(d.title ?? ""),
+        review_after: (d.review_after as Date | string | null) ?? null,
+      });
+      continue;
+    }
+    active.push(d);
+  }
+  return { active, needsReview };
+}
+
 /** Render Architecture Decision Records as a budgeted bullet list. */
 function renderDecisions(hits: Record<string, unknown>[], cap: number): Section {
   const lines: string[] = [];
@@ -165,6 +199,11 @@ export interface HydrateResult {
   count: number;
   /** Per-source breakdown of what was injected. */
   sections: { memory: number; decisions: number; conventions: number; repomap: number };
+  /**
+   * ADRs whose `review_after` soft TTL lapsed (F4): excluded from the preamble but NOT
+   * silent — the preamble carries a one-line pointer and the host gets the list here.
+   */
+  needs_review: NeedsReviewEntry[];
 }
 
 export interface HydrateOpts {
@@ -196,6 +235,7 @@ export async function hydrate(
   const useVector = opts.vector !== false;
   const parts: string[] = [];
   const sections = { memory: 0, decisions: 0, conventions: 0, repomap: 0 };
+  let needsReview: NeedsReviewEntry[] = [];
 
   if (opts.memory !== false) {
     const sec = renderMemory(await relevant(store, "memory", project, prompt, opts.limit ?? 6, useVector, opts.repo), opts.maxChars ?? 4000);
@@ -203,9 +243,36 @@ export async function hydrate(
     sections.memory = sec.count;
   }
   if (opts.decisions !== false) {
-    const sec = renderDecisions(await relevant(store, "decisions", project, prompt, 4, useVector), 1800);
+    // Over-fetch, then drop deprecated/superseded and soft-TTL-lapsed ADRs (F4).
+    const hits = await relevant(store, "decisions", project, prompt, 8, useVector);
+    const split = partitionDecisions(hits);
+    needsReview = split.needsReview;
+    // Best-effort: lapsed ADRs are surfaced even when retrieval didn't rank them.
+    try {
+      const lapsed = await store.db
+        .collection("decisions")
+        .find(
+          { project, review_after: { $ne: null, $lt: new Date() }, status: { $nin: [...INACTIVE_ADR_STATUSES] } },
+          { projection: { id: 1, title: 1, review_after: 1 } },
+        )
+        .limit(20)
+        .toArray();
+      const seen = new Set(needsReview.map((e) => e.id));
+      for (const d of lapsed) {
+        const id = String(d.id ?? "");
+        if (!id || seen.has(id)) continue;
+        needsReview.push({ id, title: String(d.title ?? ""), review_after: (d.review_after as Date | null) ?? null });
+      }
+    } catch {
+      // The retrieved-hits partition already covers the common case.
+    }
+    const sec = renderDecisions(split.active.slice(0, 4), 1800);
     if (sec.text) parts.push(sec.text);
     sections.decisions = sec.count;
+    if (needsReview.length) {
+      // One short pointer line — the host sees it without injecting full (stale) content.
+      parts.push(`ADRs pendientes de revisión (review_after vencido): ${needsReview.map((e) => e.id).join(", ")}`);
+    }
   }
   if (opts.conventions !== false) {
     let rows: Record<string, unknown>[] = [];
@@ -224,7 +291,7 @@ export async function hydrate(
     sections.repomap = sec.count;
   }
 
-  return { preamble: parts.join("\n\n"), count: sections.memory, sections };
+  return { preamble: parts.join("\n\n"), count: sections.memory, sections, needs_review: needsReview };
 }
 
 export interface SessionSummary {

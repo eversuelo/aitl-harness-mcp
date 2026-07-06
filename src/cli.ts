@@ -457,11 +457,34 @@ program
   .command("synthesize")
   .requiredOption("--project <project>", "Project scope.")
   .option("--force", "Synthesize even if under the limit.", false)
+  .option("--at <ref>", "Stamp the synthesis docs with this git ref's commit (provenance only, no historical rebuild).")
   .description("Compact a project's memory when it exceeds the configured limit.")
   .action(async (opts) => {
+    let commitSha: string | undefined;
+    if (opts.at) {
+      const { resolveRef } = await import("./util/git.js");
+      const sha = resolveRef(opts.at);
+      if (!sha) {
+        console.error(`[aitl synthesize] cannot resolve git ref '${opts.at}' (not a repo, or unknown ref).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+      commitSha = sha;
+    }
     const { Synthesizer } = await import("./memory/synthesizer.js");
-    const written = await new Synthesizer().synthesize(opts.project, { force: opts.force });
+    const written = await new Synthesizer().synthesize(opts.project, {
+      force: opts.force,
+      ...(commitSha !== undefined ? { commitSha } : {}),
+    });
     console.log(`Synthesis docs written: ${written.length ? written.join(", ") : "(none — under limit)"}`);
+    // Curation (F4): PROPOSE stale-ADR deprecations — never applied automatically.
+    const { proposeDeprecations } = await import("./decisions/lifecycle.js");
+    const proposals = await proposeDeprecations(opts.project);
+    if (proposals.length) {
+      console.log(`ADR deprecation proposals (${proposals.length}) — apply manually with \`aitl adr deprecate\`:`);
+      for (const p of proposals) console.log(`  - ${p.id} ${p.title}: ${p.reason}`);
+    }
     await closeClient();
   });
 
@@ -891,9 +914,11 @@ async function showHistory(
   }
 }
 
-program
+const adr = program
   .command("adr")
-  .description("Inspect ADR revision history.")
+  .description("Inspect ADR revision history and curate the ADR lifecycle.");
+
+adr
   .command("history")
   .argument("<id>", "ADR id, e.g. 0026.")
   .requiredOption("--project <project>", "Project scope.")
@@ -903,6 +928,43 @@ program
   .action(async (id, opts) => {
     const { ADR_CONTENT_FIELDS } = await import("./memory/versioning.js");
     await showHistory("decision", id, { project: opts.project, diff: opts.diff, from: opts.from, to: opts.to, fields: ["title", ...ADR_CONTENT_FIELDS] });
+    await closeClient();
+  });
+
+adr
+  .command("deprecate")
+  .argument("<id>", "ADR id, e.g. 0026.")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--reason <text>", "Why this ADR no longer applies.")
+  .option("--superseded-by <id>", "Id of the ADR that replaces it.")
+  .option("--review-after <date>", "Soft-TTL review date (ISO, e.g. 2027-01-31).")
+  .description("Mark an ADR as deprecated with a reason (append-only: bumps the version, keeps history).")
+  .action(async (id, opts) => {
+    let reviewAfter: Date | undefined;
+    if (opts.reviewAfter) {
+      reviewAfter = new Date(opts.reviewAfter);
+      if (Number.isNaN(reviewAfter.getTime())) {
+        console.error(`[aitl adr deprecate] invalid --review-after date '${opts.reviewAfter}' (use ISO, e.g. 2027-01-31).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+    }
+    const { deprecateDecision } = await import("./decisions/lifecycle.js");
+    try {
+      const res = await deprecateDecision({
+        project: opts.project,
+        id,
+        reason: opts.reason,
+        supersededBy: opts.supersededBy ?? null,
+        reviewAfter: reviewAfter ?? null,
+        actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role },
+      });
+      console.log(`ADR ${res.id} → status '${res.status}' (v${res.version}).`);
+    } catch (err) {
+      console.error(`[aitl adr deprecate] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
     await closeClient();
   });
 
@@ -1035,10 +1097,17 @@ branch
   .requiredOption("--repo <repo>", "Repo name this branch set belongs to.")
   .option("--root <dir>", "Git repo root.", ".")
   .option("--remote <url>", "Remote URL to record.")
+  .option("--reindex", "Run the master indexer when the base trunk's head advanced since the last sync.", false)
   .description("Read the repo's git branches, classify them and upsert into the catalog.")
   .action(async (opts) => {
-    const { syncBranches } = await import("./branches/sync.js");
-    const recs = await syncBranches({ project: opts.project, repo: opts.repo, root: opts.root, remote: opts.remote });
+    const { syncBranchesWithReindex } = await import("./branches/reindex.js");
+    const { records: recs, reindex } = await syncBranchesWithReindex({
+      project: opts.project,
+      repo: opts.repo,
+      root: opts.root,
+      remote: opts.remote,
+      reindex: opts.reindex,
+    });
     console.log(`Synced ${recs.length} branch(es) for ${opts.project}/${opts.repo}:`);
     for (const r of recs) {
       const env = r.environment !== "none" ? ` [${r.environment}]` : "";
@@ -1046,6 +1115,17 @@ branch
       console.log(`  ${r.name}  (${r.kind})${env}${from}`);
     }
     if (!recs.length) console.log("  (no local branches found — is --root a git repo?)");
+    if (reindex) {
+      if (!reindex.base) {
+        console.log("reindex: no base trunk (main/master/develop) found — skipped.");
+      } else if (!reindex.changed) {
+        console.log(`reindex: base ${reindex.base} sin cambios (${reindex.liveSha ?? "?"}).`);
+      } else {
+        const prev = reindex.storedSha ? `antes ${reindex.storedSha.slice(0, 7)}` : "primer registro";
+        console.log(`reindex: base ${reindex.base} avanzó a ${reindex.liveSha?.slice(0, 7)} (${prev}), reindexando…`);
+        for (const s of reindex.result?.steps ?? []) console.log(`  - ${s}`);
+      }
+    }
     await closeClient();
   });
 
@@ -1515,10 +1595,14 @@ Notes:
 Examples:
   aitl synthesize --project demo
   aitl synthesize --project demo --force
+  aitl synthesize --project demo --force --at v1.2.0   # stamp docs with that ref's commit
 
 Notes:
   Compacts the memory bank by category when it exceeds the configured limit (--force
-  ignores the limit). Never touches ADRs.`,
+  ignores the limit). Never touches ADRs. --at resolves any git ref and stamps its
+  commit_sha on the synthesis docs (provenance only — no historical reconstruction).
+  Afterwards it PROPOSES stale-ADR deprecations (superseded_by set, review_after
+  lapsed, near-duplicate titles); apply them manually with \`aitl adr deprecate\`.`,
 
   "repomap": `
 Examples:
@@ -1619,7 +1703,7 @@ Example:  aitl config show`,
 Subcommands: add | list | search
 Example:  aitl prompt list --project demo`,
   "adr": `
-Subcommands: history
+Subcommands: history | deprecate
 Example:  aitl adr history 0026 --project demo --diff`,
   "memory": `
 Subcommands: history
@@ -1725,6 +1809,16 @@ Examples:
   aitl adr history 0026 --project demo
   aitl adr history 0026 --project demo --diff
   aitl adr history 0026 --project demo --from 1 --to 3`,
+  "adr deprecate": `
+Examples:
+  aitl adr deprecate 0026 --project demo --reason "replaced by the event-driven design"
+  aitl adr deprecate 0026 --project demo --reason "obsolete" --superseded-by 0031
+  aitl adr deprecate 0026 --project demo --reason "revisit quarterly" --review-after 2027-01-31
+
+Notes:
+  Append-only: the prior version is archived in decisions_history and the live doc gets
+  status "deprecated" + deprecation_reason (never deleted). Deprecated ADRs are excluded
+  from \`aitl hydrate\`; review_after is a SOFT TTL that flags the ADR "needs review".`,
   "memory history": `
 Examples:
   aitl memory history project-identity --project demo --diff`,
@@ -1763,10 +1857,13 @@ Examples:
   "branch sync": `
 Examples:
   aitl branch sync --project demo --repo backend --root .
+  aitl branch sync --project demo --repo backend --root . --reindex
 
 Notes:
   Reads local git branches, classifies them (main/develop/release/feature/…) and detects
-  the real base by fork-point. Falls back to gitflow conventions without git.`,
+  the real base by fork-point. Falls back to gitflow conventions without git.
+  --reindex compares the base trunk's stored head vs the live one and, if it advanced
+  (e.g. a merge landed), re-runs the master indexer (repo map + memory + ADRs).`,
   "branch list": `
 Examples:
   aitl branch list --project demo

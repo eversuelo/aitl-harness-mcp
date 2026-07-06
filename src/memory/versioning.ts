@@ -64,6 +64,8 @@ export interface ArchiveOpts {
   actor?: VersioningActor;
   /** Git branch this write happens on; stamped on the live doc for provenance. */
   branch?: string | null;
+  /** Git commit this write happens at; stamped on the live doc for provenance (F2). */
+  commit_sha?: string | null;
 }
 
 export interface ArchiveResult {
@@ -81,13 +83,14 @@ export interface ArchiveResult {
  * - existing, changed      → archive prior @ its version, version = prior + 1
  */
 export async function archiveAndBumpVersion(opts: ArchiveOpts): Promise<ArchiveResult> {
-  const { kind, query, nextDoc, contentFields, ref, actor, branch } = opts;
+  const { kind, query, nextDoc, contentFields, ref, actor, branch, commit_sha } = opts;
   const liveModel = liveModelFor(kind);
   const historyModel = historyModelFor(kind);
-  // Stamp authorship + branch of the version about to be written (provenance).
+  // Stamp authorship + branch + commit of the version about to be written (provenance).
   nextDoc.actor_id = actor?.id ?? null;
   nextDoc.actor_role = actor?.role ?? null;
   nextDoc.branch = branch ?? null;
+  nextDoc.commit_sha = commit_sha ?? null;
 
   const existing = (await liveModel.findOne(query).lean()) as Record<string, unknown> | null;
 
@@ -99,15 +102,16 @@ export async function archiveAndBumpVersion(opts: ArchiveOpts): Promise<ArchiveR
   const priorVersion = typeof existing.version === "number" ? existing.version : 1;
 
   if (!contentChanged(existing, nextDoc, contentFields)) {
-    // Idempotent re-write: preserve the version and its original authorship/branch.
+    // Idempotent re-write: preserve the version and its original authorship/branch/commit.
     nextDoc.version = priorVersion;
     nextDoc.actor_id = (existing.actor_id as string | null) ?? nextDoc.actor_id;
     nextDoc.actor_role = (existing.actor_role as string | null) ?? nextDoc.actor_role;
     nextDoc.branch = (existing.branch as string | null) ?? nextDoc.branch;
+    nextDoc.commit_sha = (existing.commit_sha as string | null) ?? nextDoc.commit_sha;
     return { changed: false, version: priorVersion };
   }
 
-  // Attribute the archived snapshot to ITS author/branch (the prior version's),
+  // Attribute the archived snapshot to ITS author/branch/commit (the prior version's),
   // not to whoever is superseding it now.
   await historyModel.create(
     await makeHistoryEntry({
@@ -118,6 +122,7 @@ export async function archiveAndBumpVersion(opts: ArchiveOpts): Promise<ArchiveR
       actor_id: (existing.actor_id as string | null) ?? "system",
       actor_role: (existing.actor_role as string | null) ?? "system",
       branch: (existing.branch as string | null) ?? null,
+      commit_sha: (existing.commit_sha as string | null) ?? null,
       snapshot: stripForSnapshot(existing),
     }),
   );

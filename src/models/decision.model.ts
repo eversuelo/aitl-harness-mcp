@@ -18,6 +18,10 @@ import { BASE_SCHEMA_OPTS } from "../db/mongoose.js";
 
 export const DECISIONS_COLLECTION = "decisions";
 
+/** ADR lifecycle states (F4): `deprecated` keeps the doc (append-only trazability) but hides it from hydrate. */
+export const ADR_STATUSES = ["proposed", "accepted", "superseded", "deprecated"] as const;
+export type AdrStatus = (typeof ADR_STATUSES)[number];
+
 const now = () => new Date();
 
 const adrSchema = new Schema(
@@ -30,7 +34,15 @@ const adrSchema = new Schema(
     context: { type: String, required: true },
     decision: { type: String, required: true },
     consequences: { type: String, required: true },
-    status: { type: String, enum: ["proposed", "accepted", "superseded"], default: "accepted" },
+    status: { type: String, enum: ADR_STATUSES, default: "accepted" },
+    /** Why this ADR was deprecated (lifecycle F4; null while active). */
+    deprecation_reason: { type: String, default: null },
+    /** Id of the ADR that replaces this one (e.g. "0031"). */
+    superseded_by: { type: String, default: null },
+    /** Soft TTL: past this date the ADR is flagged "needs review" and excluded from hydrate. NEVER deleted. */
+    review_after: { type: Date, default: null },
+    /** Dirs/modules this ADR constrains (consumed by module-brief, P6). */
+    components: { type: [String], default: [] },
     model: { type: String, default: null },
     trigger: { type: String, default: null },
     git_ref: { type: String, default: null },
@@ -38,6 +50,7 @@ const adrSchema = new Schema(
     actor_id: { type: String, default: null }, // who authored the current version (provenance)
     actor_role: { type: String, default: null },
     branch: { type: String, default: null }, // git branch this version was authored on (ADR-0028)
+    commit_sha: { type: String, default: null }, // git commit this version was authored at (F2)
     embedding: { type: [Number], default: null },
   },
   { ...BASE_SCHEMA_OPTS, collection: DECISIONS_COLLECTION },

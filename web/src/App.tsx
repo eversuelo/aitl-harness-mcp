@@ -436,6 +436,47 @@ function MemoryEditor({
 }
 
 /* ── decisions / ADRs ──────────────────────────────────────────────────────── */
+/** Soft-TTL check (F4): the ADR is still active but its review_after date lapsed. */
+function isReviewOverdue(d: DecisionDoc): boolean {
+  if (!d.review_after || d.status === "deprecated" || d.status === "superseded") return false;
+  const t = new Date(d.review_after).getTime();
+  return !Number.isNaN(t) && t < Date.now();
+}
+
+/** Lifecycle-aware status badge: gray for deprecated/superseded (reason in the tooltip), amber when the soft TTL lapsed. */
+function DecisionStatusBadge({ d, className }: { d: DecisionDoc; className?: string }) {
+  if (d.status === "deprecated") {
+    return (
+      <Badge variant="secondary" className={`text-muted-foreground ${className ?? ""}`} title={d.deprecation_reason || "deprecated"}>
+        deprecated{d.superseded_by ? ` → ${d.superseded_by}` : ""}
+      </Badge>
+    );
+  }
+  if (d.status === "superseded") {
+    return (
+      <Badge variant="secondary" className={`text-muted-foreground ${className ?? ""}`} title={d.superseded_by ? `superseded by ${d.superseded_by}` : undefined}>
+        superseded
+      </Badge>
+    );
+  }
+  if (isReviewOverdue(d)) {
+    return (
+      <Badge
+        variant="outline"
+        className={`border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400 ${className ?? ""}`}
+        title={`review_after vencido: ${new Date(d.review_after as string).toLocaleDateString()}`}
+      >
+        a revisión
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant={d.status === "accepted" ? "default" : "secondary"} className={className}>
+      {d.status}
+    </Badge>
+  );
+}
+
 function DecisionsView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [items, setItems] = useState<DecisionDoc[]>([]);
   const [selected, setSelected] = useState<DecisionDoc | null>(null);
@@ -475,9 +516,7 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: unk
               >
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs text-muted-foreground">ADR-{d.id}</span>
-                  <Badge variant={d.status === "accepted" ? "default" : "secondary"} className="ml-auto">
-                    {d.status}
-                  </Badge>
+                  <DecisionStatusBadge d={d} className="ml-auto" />
                 </div>
                 <p className="mt-1 text-sm font-medium leading-snug">{d.title}</p>
               </Card>
@@ -495,8 +534,11 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: unk
           <article className="mx-auto max-w-3xl p-6">
             <div className="mb-1 flex items-center gap-2">
               <span className="font-mono text-sm text-muted-foreground">ADR-{selected.id}</span>
-              <Badge variant={selected.status === "accepted" ? "default" : "secondary"}>{selected.status}</Badge>
+              <DecisionStatusBadge d={selected} />
             </div>
+            {selected.status === "deprecated" && selected.deprecation_reason && (
+              <p className="mb-2 text-xs text-muted-foreground">Motivo: {selected.deprecation_reason}</p>
+            )}
             <h2 className="mb-4 text-xl font-semibold">{selected.title}</h2>
             <Separator className="mb-4" />
             <Markdown>{md(selected)}</Markdown>

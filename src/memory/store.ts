@@ -26,6 +26,7 @@ import { MessageModel } from "../models/message.model.js";
 import type { Event } from "../models/event.model.js";
 import type { MemoryDoc } from "../models/memory.model.js";
 import type { Message } from "../models/message.model.js";
+import { currentBranch, headSha } from "../util/git.js";
 import { MEMORY_CONTENT_FIELDS, type VersioningActor, archiveAndBumpVersion } from "./versioning.js";
 
 /**
@@ -64,10 +65,21 @@ export class MemoryStore {
   }
 
   // ── writes ───────────────────────────────────────────────────────────
-  /** Insert/update a memory doc, keyed by (project, slug). */
-  async upsertMemory(doc: MemoryDoc, opts: { actor?: VersioningActor; branch?: string | null } = {}): Promise<string> {
+  /**
+   * Insert/update a memory doc, keyed by (project, slug).
+   *
+   * Git provenance (F2) is resolved HERE so every surface (CLI, MCP, API) gets it for
+   * free: when the caller does not pass `branch`/`commit_sha`, the current branch and
+   * HEAD sha of the process cwd are stamped. Explicit values (including null) win.
+   */
+  async upsertMemory(
+    doc: MemoryDoc,
+    opts: { actor?: VersioningActor; branch?: string | null; commit_sha?: string | null } = {},
+  ): Promise<string> {
     await ensureMongoose();
     doc.updated_at = new Date();
+    const branch = opts.branch !== undefined ? opts.branch : currentBranch();
+    const commitSha = opts.commit_sha !== undefined ? opts.commit_sha : headSha();
     // Archive the prior version (if content changed) and set doc.version BEFORE overwrite.
     await archiveAndBumpVersion({
       kind: "memory",
@@ -76,7 +88,8 @@ export class MemoryStore {
       contentFields: MEMORY_CONTENT_FIELDS,
       ref: doc.slug,
       actor: opts.actor,
-      branch: opts.branch,
+      branch,
+      commit_sha: commitSha,
     });
     await MemoryModel.updateOne({ project: doc.project, slug: doc.slug }, { $set: doc }, { upsert: true });
     return doc.slug;

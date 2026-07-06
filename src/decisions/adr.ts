@@ -11,6 +11,7 @@ import { basename, extname, join } from "node:path";
 import { ensureMongoose } from "../db/mongoose.js";
 import { embedOne } from "../ingest/embedder.js";
 import { type ADR, DecisionModel, makeADR } from "../models/decision.model.js";
+import { currentBranch, headSha } from "../util/git.js";
 import { ADR_CONTENT_FIELDS, type VersioningActor, archiveAndBumpVersion } from "../memory/versioning.js";
 
 const ID_RE = /ADR-?(\d+)/i;
@@ -43,11 +44,23 @@ export async function parseAdrMarkdown(path: string, project: string): Promise<A
 }
 
 export class ADRStore {
-  async upsert(adr: ADR, opts: { embed?: boolean; actor?: VersioningActor; branch?: string | null } = {}): Promise<string> {
+  /**
+   * Insert/update ONE ADR, keyed by (project, id).
+   *
+   * Git provenance (F2) is resolved HERE so every surface (CLI, MCP, API) gets it for
+   * free: when the caller does not pass `branch`/`commit_sha`, the current branch and
+   * HEAD sha of the process cwd are stamped. Explicit values (including null) win.
+   */
+  async upsert(
+    adr: ADR,
+    opts: { embed?: boolean; actor?: VersioningActor; branch?: string | null; commit_sha?: string | null } = {},
+  ): Promise<string> {
     await ensureMongoose();
     if (opts.embed !== false) {
       adr.embedding = await embedOne(`${adr.title}\n${adr.context}\n${adr.decision}`);
     }
+    const branch = opts.branch !== undefined ? opts.branch : currentBranch();
+    const commitSha = opts.commit_sha !== undefined ? opts.commit_sha : headSha();
     // Archive the prior version (if content changed) and set adr.version BEFORE overwrite.
     await archiveAndBumpVersion({
       kind: "decision",
@@ -56,14 +69,15 @@ export class ADRStore {
       contentFields: ADR_CONTENT_FIELDS,
       ref: adr.id,
       actor: opts.actor,
-      branch: opts.branch,
+      branch,
+      commit_sha: commitSha,
     });
     await DecisionModel.updateOne({ project: adr.project, id: adr.id }, { $set: adr }, { upsert: true });
     return adr.id;
   }
 
   /** Mirror all docs/adr/NNNN-*.md into Mongo. Returns ADR ids written. */
-  async syncDir(directory: string, project: string, opts: { actor?: VersioningActor; branch?: string | null } = {}): Promise<string[]> {
+  async syncDir(directory: string, project: string, opts: { actor?: VersioningActor; branch?: string | null; commit_sha?: string | null } = {}): Promise<string[]> {
     const entries = await fs.readdir(directory, { withFileTypes: true });
     const mdFiles = entries
       // Only numbered ADR files (e.g. 0001-*.md); skip README/index and other notes.
@@ -71,7 +85,7 @@ export class ADRStore {
       .map((e) => join(directory, e.name))
       .sort();
     const ids: string[] = [];
-    for (const p of mdFiles) ids.push(await this.upsert(await parseAdrMarkdown(p, project), { actor: opts.actor, branch: opts.branch }));
+    for (const p of mdFiles) ids.push(await this.upsert(await parseAdrMarkdown(p, project), { actor: opts.actor, branch: opts.branch, commit_sha: opts.commit_sha }));
     return ids;
   }
 }
