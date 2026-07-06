@@ -60,7 +60,14 @@ spelling — those fragment the history. Verify the hash above matches
 > deduplicado) y conexión Mongo única con Mongoose dueño (db/client.ts = capa compat,
 > getDb() ya no autoconecta) + factories makeX() async con `await doc.validate()`
 > (validateSync deprecado; util/quiet.ts borrado) + retiro de `aitl eval` (C0 =
-> `run --bare`, C2 = default). Ledger ahora contiguo **0001–0048**; next free **0049**.
+> `run --bare`, C2 = default).
+> 0049 (2026-07-06): memoria/ADRs anclados a commit (`commit_sha` estampado en stores y
+> síntesis; `synthesize --at <ref>`) + ciclo de vida de ADRs (`deprecated` + motivo +
+> `superseded_by` + `review_after` TTL suave que excluye de hydrate sin borrar +
+> `components[]`; tool `deprecate_decision`, CLI `aitl adr deprecate`,
+> `proposeDeprecations` solo propone) + `aitl branch sync --reindex` (head de la base
+> avanzó → indexador maestro). `consequences` ya no es required (Mongoose rechaza "" en
+> String required). Ledger ahora contiguo **0001–0049**; next free **0050**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
