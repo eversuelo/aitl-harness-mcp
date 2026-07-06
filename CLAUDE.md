@@ -54,8 +54,13 @@ spelling — those fragment the history. Verify the hash above matches
 > sesión→AITL_WEB_TOKENS→anónimo, split 401 login_required / 403, escrituras web
 > autenticadas como delegated (mismo modelo que guardTool del MCP), CORS por allowlist
 > `AITL_WEB_ORIGINS`, cliente web con Authorization + diálogo de login. Cierra el
-> hallazgo Alto de la auditoría 2026-07-05. Ledger ahora contiguo **0001–0046**;
-> next free **0047**.
+> hallazgo Alto de la auditoría 2026-07-05.
+> 0047–0048 (2026-07-06): retiro de LangGraph (runAgent loop único, resumible desde el
+> transcript durable; fuera buildGraph/checkpointer/deps, un solo driver mongodb@7
+> deduplicado) y conexión Mongo única con Mongoose dueño (db/client.ts = capa compat,
+> getDb() ya no autoconecta) + factories makeX() async con `await doc.validate()`
+> (validateSync deprecado; util/quiet.ts borrado) + retiro de `aitl eval` (C0 =
+> `run --bare`, C2 = default). Ledger ahora contiguo **0001–0048**; next free **0049**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
