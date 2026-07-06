@@ -67,7 +67,13 @@ spelling — those fragment the history. Verify the hash above matches
 > `components[]`; tool `deprecate_decision`, CLI `aitl adr deprecate`,
 > `proposeDeprecations` solo propone) + `aitl branch sync --reindex` (head de la base
 > avanzó → indexador maestro). `consequences` ya no es required (Mongoose rechaza "" en
-> String required). Ledger ahora contiguo **0001–0049**; next free **0050**.
+> String required).
+> 0050 (2026-07-06): signup self-service (email/username únicos con 409 distinguible,
+> `AITL_WEB_ALLOW_SIGNUP`, primer usuario real→admin; `aitl user register`) + config
+> del harness desde la web UI (`GET /api/config/status`, `PUT /api/config`, pestaña
+> Config root/admin) con espejo automático al `.env` (`src/config/envfile.ts`;
+> `aitl config set --env`); matriz RBAC: `config_secrets` gana admin:delegated.
+> Ledger ahora contiguo **0001–0050**; next free **0051**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
