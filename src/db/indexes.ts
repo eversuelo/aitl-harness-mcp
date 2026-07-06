@@ -46,6 +46,9 @@ export async function ensureScalarIndexes(db: Db): Promise<void> {
   await db.collection("users").createIndex({ email: 1 }, { unique: true });
   await db.collection("users").createIndex({ created_at: -1 });
   await db.collection("users").createIndex({ role: 1 });
+  // Web sessions (P1 auth): Mongo reaps expired docs via the TTL monitor; lookups are by token hash.
+  await db.collection("sessions").createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
+  await db.collection("sessions").createIndex({ token_hash: 1 }, { unique: true });
   await db.collection("audit").createIndex({ ts: -1 });
   await db.collection("audit").createIndex({ actor_id: 1, ts: -1 });
   await db.collection("audit").createIndex({ resource: 1, action: 1, ts: -1 });

@@ -26,6 +26,7 @@ export const COLLECTIONS = [
   "mcp_context",
   "mcp_tool_calls",
   "users",
+  "sessions",
   "audit",
   "symbols",
   "conventions",
