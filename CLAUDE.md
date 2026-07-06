@@ -83,8 +83,12 @@ spelling — those fragment the history. Verify the hash above matches
 > .mcp.json/.claude/settings.json con merges conservadores, post-merge hook,
 > `--memory-only`) + degradación sin backend (auto = cadena de fallback también en
 > run; NO_BACKEND_MESSAGE accionable; synthesize extractivo con aviso). Ledger ahora
-> contiguo **0001–0052**; next free **0053**. El espejo docs/adr lo mantiene
-> `aitl sync` (ADR-0051).
+> contiguo **0001–0052**. El espejo docs/adr lo mantiene `aitl sync` (ADR-0051).
+> 0053 (2026-07-06): mapa de módulos (`repomap --modules`, view/back/mixed/infra por
+> extensión+segmentos con override `.aitl/modules.json`, descenso de un nivel en dirs
+> dominantes >80%) + `module-brief <dir>` (bloque del módulo + ADRs por `components[]`
+> + memorias `component:<dir>`) + tools MCP `get_module_map`/`get_module_brief`.
+> Ledger ahora contiguo **0001–0053**; next free **0054**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
