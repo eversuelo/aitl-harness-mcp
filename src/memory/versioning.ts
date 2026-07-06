@@ -110,7 +110,7 @@ export async function archiveAndBumpVersion(opts: ArchiveOpts): Promise<ArchiveR
   // Attribute the archived snapshot to ITS author/branch (the prior version's),
   // not to whoever is superseding it now.
   await historyModel.create(
-    makeHistoryEntry({
+    await makeHistoryEntry({
       project: String(existing.project ?? nextDoc.project ?? ""),
       kind,
       ref,

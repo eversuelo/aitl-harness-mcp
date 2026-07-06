@@ -205,7 +205,7 @@ program
         const { makeEvent } = await import("./models/event.model.js");
         const store = new MemoryStore();
         for (const s of mcpMount.servers) {
-          await store.logEvent(makeEvent({ project: opts.project, type: "mcp_connect", payload: { ...s } }));
+          await store.logEvent(await makeEvent({ project: opts.project, type: "mcp_connect", payload: { ...s } }));
         }
       } catch {
         // telemetry is best-effort
@@ -336,7 +336,7 @@ program
     await ensureMongoose();
     const run = await RunModel.findOne({ _id: runId }).lean();
     const project = (run?.project as string) ?? "unknown";
-    await new MemoryStore().logEvent(makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
+    await new MemoryStore().logEvent(await makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
     console.log(`Recorded human intervention on ${runId} (${opts.minutes} min): ${opts.reason}`);
     await closeClient();
   });

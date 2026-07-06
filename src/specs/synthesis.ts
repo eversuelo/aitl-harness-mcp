@@ -55,7 +55,7 @@ export async function synthesizeSpecRun(args: SpecSynthesisArgs): Promise<{ slug
     .join("\n");
 
   const slug = `spec-synthesis-${args.runId.slice(0, 8)}`;
-  const doc: MemoryDoc = makeMemoryDoc({
+  const doc: MemoryDoc = await makeMemoryDoc({
     project: args.project,
     slug,
     type: "synthesis",

@@ -57,7 +57,7 @@ export class Synthesizer {
       if (items.length < 2) continue; // nothing to compact
       const summary = await this.summarize(category, items);
       const slug = `synthesis-${project}-${category}`;
-      const doc: MemoryDoc = makeMemoryDoc({
+      const doc: MemoryDoc = await makeMemoryDoc({
         project,
         slug,
         type: "synthesis",
@@ -73,7 +73,7 @@ export class Synthesizer {
     }
 
     await this.store.logEvent(
-      makeEvent({ project, type: "synthesis", payload: { groups: [...groups.keys()], written } }),
+      await makeEvent({ project, type: "synthesis", payload: { groups: [...groups.keys()], written } }),
     );
     return written;
   }

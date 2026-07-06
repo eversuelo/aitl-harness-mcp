@@ -191,7 +191,6 @@ Run `aitl --help` (or `aitl <group> --help`) for full options. Top-level command
 | `aitl index-repo` | Master indexer: build repo map + ingest memory + sync ADRs in one pass. |
 | `aitl adr-sync` | Mirror Nygard-format ADRs from a directory into the `decisions` collection. |
 | `aitl export` | Project the canonical artifacts into a tool's native format (incremental). |
-| `aitl eval` | Run a benchmark with/without the harness (concrete benchmarks TODO). |
 | `aitl mcp` | Run the MCP server (stdio by default; `--http` for remote clients). |
 | `aitl ui` | Launch the memory-admin UI (HTTP API + SPA). |
 | `aitl hydrate` | Print a durable-context preamble to inject into an external agent host. |
@@ -214,6 +213,13 @@ Sub-command groups:
 | `aitl review <target>` | — | Have engineering roles review a target → DecisionBrief. |
 | `aitl build` | `skill`, `agent`, `seed` | Construct skills/agents and seed the master skills. |
 | `aitl init` | `agent`, `claude` | Scaffold `AGENTS.md` / `CLAUDE.md` that wire an agent to this MCP. |
+
+### Experimental comparison (thesis conditions)
+
+There is no separate eval command. The harness-vs-bare comparison runs the same task
+under two conditions of `aitl run`: **C0** — `aitl run --bare` (no memory hydrate, no
+skills, no gates) — vs **C2** — the default full harness. Compare the measurable totals
+(tokens, iterations, tool calls, gate denials, supervision) with `aitl run-show <runId>`.
 
 ## MCP tools
 

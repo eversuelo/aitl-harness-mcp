@@ -74,8 +74,10 @@ spelling — those fragment the history. Verify the hash above matches
 
 ## Stack
 
-Model-agnostic agent harness. TypeScript (ESM, Node ≥ 20) · LangGraph orchestration ·
-MongoDB + Atlas Vector Search as the single durable store · local embeddings
+Model-agnostic agent harness. TypeScript (ESM, Node ≥ 20) · loop propio `runAgent`
+(`src/orchestration/graph.ts`: prompt→modelo→tools→repeat, resumible desde el transcript
+durable; sin framework de grafos) · MongoDB + Atlas Vector Search as the single durable
+store (conexión única, dueño Mongoose: `src/db/mongoose.ts`) · local embeddings
 (`Xenova/all-MiniLM-L6-v2`, 384 dims) by default. Connects to Atlas by seedlist with a
 local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 

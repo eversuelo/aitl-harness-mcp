@@ -54,7 +54,7 @@ export async function ensureSpec(
 
   const firstLine = args.prompt.trim().split("\n")[0].slice(0, 120);
   const slug = `sdd-spec-${id8}`;
-  const doc: MemoryDoc = makeMemoryDoc({
+  const doc: MemoryDoc = await makeMemoryDoc({
     project: args.project,
     slug,
     repo: args.repo ?? null,

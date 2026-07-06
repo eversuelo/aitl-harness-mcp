@@ -283,7 +283,7 @@ export async function summarizeSession(
   ];
   const slug = `session-${runId.slice(0, 8)}`;
 
-  const doc: MemoryDoc = makeMemoryDoc({
+  const doc: MemoryDoc = await makeMemoryDoc({
     project,
     slug,
     type,

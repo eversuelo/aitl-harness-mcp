@@ -28,7 +28,7 @@ export async function parseJsonl(path: string, project: string, runId: string): 
     if (!trimmed) continue;
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
     msgs.push(
-      makeMessage({
+      await makeMessage({
         project,
         run_id: runId,
         idx: idx++,
@@ -54,7 +54,7 @@ export async function parseMarkdownTranscript(
   for (let i = 1; i < parts.length; i += 2) {
     const role = coerceRole(parts[i].toLowerCase());
     const body = (parts[i + 1] ?? "").trim();
-    msgs.push(makeMessage({ project, run_id: runId, idx: idx++, role, content: body }));
+    msgs.push(await makeMessage({ project, run_id: runId, idx: idx++, role, content: body }));
   }
   return msgs;
 }

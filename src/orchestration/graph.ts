@@ -184,22 +184,22 @@ export async function runAgent(
       convo.push({ role: "user", content: prompt });
       idx += 1;
       await store.appendMessage(
-        makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+        await makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
       );
       promptText = prompt;
     }
     await RunModel.updateOne({ _id: runId }, { $set: { status: "running", ended_at: null } });
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
   } else {
     runId = randomUUID();
-    const run = makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
+    const run = await makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
     await ensureMongoose();
     await RunModel.create({ ...run, _id: runId });
     convo = [{ role: "user", content: prompt }];
     idx = 0;
     promptText = prompt;
     await store.appendMessage(
-      makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+      await makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
     );
   }
 
@@ -210,10 +210,10 @@ export async function runAgent(
     const { installApprovalGate } = await import("../hooks/approval.js");
     installApprovalGate(registry, {
       policy: opts.askPolicy,
-      onDecision: (ev) => {
+      onDecision: async (ev) => {
         // The human's wait time (ms) feeds the supervision metric (H11) in run-show.
         void store.logEvent(
-          makeEvent({
+          await makeEvent({
             project,
             run_id: runId,
             type: "approval",
@@ -232,7 +232,7 @@ export async function runAgent(
     try {
       const { preamble, sections } = await hydrate(project, promptText, { store });
       if (preamble) preambles.push(preamble);
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "hydrate", payload: { ...sections } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "hydrate", payload: { ...sections } }));
     } catch {
       // Hydration is best-effort; never block the run.
     }
@@ -244,7 +244,7 @@ export async function runAgent(
       });
       selectedSkills = selected;
       if (preamble) preambles.push(preamble);
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected } }));
     } catch {
       // Skill routing is best-effort; never block the run.
     }
@@ -262,7 +262,7 @@ export async function runAgent(
     for (; it < maxIters; it++) {
       if (ctx.overBudget(convo)) {
         convo = await ctx.compact(convo);
-        await store.logEvent(makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
+        await store.logEvent(await makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
       }
 
       // Provider call is retried on transient failures (429/5xx/network) with backoff.
@@ -278,9 +278,9 @@ export async function runAgent(
         doTurn,
         {
           retries: opts.retries ?? 3,
-          onRetry: ({ attempt, delayMs, error }) =>
+          onRetry: async ({ attempt, delayMs, error }) =>
             store.logEvent(
-              makeEvent({
+              await makeEvent({
                 project,
                 run_id: runId,
                 type: "retry",
@@ -291,7 +291,7 @@ export async function runAgent(
       );
       idx += 1;
       await store.appendMessage(
-        makeMessage({
+        await makeMessage({
           project,
           run_id: runId,
           idx,
@@ -304,7 +304,7 @@ export async function runAgent(
       tokIn += turn.usage.input ?? 0;
       tokOut += turn.usage.output ?? 0;
       toolCalls += turn.tool_calls.length;
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
       finalText = turn.text || finalText;
 
       if (turn.tool_calls.length === 0) {
@@ -314,7 +314,7 @@ export async function runAgent(
           const v = await opts.verify({ finalText, convo, project });
           const ok = v === true;
           await store.logEvent(
-            makeEvent({
+            await makeEvent({
               project,
               run_id: runId,
               type: "verify",
@@ -329,7 +329,7 @@ export async function runAgent(
             convo.push({ role: "user", content: feedback });
             idx += 1;
             await store.appendMessage(
-              makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
+              await makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
             );
             continue;
           }
@@ -351,9 +351,9 @@ export async function runAgent(
           {
             // A hook that acts (mutates args/result) leaves a durable trace, so hook
             // interference is observable in the same event stream as gates/tool calls.
-            onHookEvent: (ev) => {
+            onHookEvent: async (ev) => {
               void store.logEvent(
-                makeEvent({
+                await makeEvent({
                   project,
                   run_id: runId,
                   type: ev.phase === "pre" ? "tool_pre_hook" : "tool_post_hook",
@@ -365,7 +365,7 @@ export async function runAgent(
         );
         idx += 1;
         await store.appendMessage(
-          makeMessage({
+          await makeMessage({
             project,
             run_id: runId,
             idx,
@@ -383,7 +383,7 @@ export async function runAgent(
         if (denyReason !== null) {
           gateDenials += 1;
           await store.logEvent(
-            makeEvent({
+            await makeEvent({
               project,
               run_id: runId,
               type: "gate",
@@ -392,7 +392,7 @@ export async function runAgent(
           );
         } else {
           await store.logEvent(
-            makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
+            await makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
           );
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: result });
@@ -403,7 +403,7 @@ export async function runAgent(
     const message = String(err instanceof Error ? err.message : err).slice(0, 500);
     await ensureMongoose();
     await RunModel.updateOne({ _id: runId }, { $set: { status: "error", ended_at: new Date(), error: message } });
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "error", payload: { iter: it, message } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId, type: "error", payload: { iter: it, message } }));
     throw err;
   }
 
@@ -415,7 +415,7 @@ export async function runAgent(
       if (res) {
         summarySlug = res.slug;
         await store.logEvent(
-          makeEvent({ project, run_id: runId, type: "session_summary", payload: { slug: res.slug, category: res.category } }),
+          await makeEvent({ project, run_id: runId, type: "session_summary", payload: { slug: res.slug, category: res.category } }),
         );
       }
     } catch {

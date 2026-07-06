@@ -73,7 +73,7 @@ export async function orchestrate(
   const max = opts.maxSubagents ?? 4;
 
   const runId = randomUUID();
-  const run = makeRun({ project, model: provider.name, harness_config: { role: "orchestrator" } });
+  const run = await makeRun({ project, model: provider.name, harness_config: { role: "orchestrator" } });
   await ensureMongoose();
   await RunModel.create({ ...run, _id: runId });
 
@@ -85,9 +85,9 @@ export async function orchestrate(
 
   // 2. Fan out: one sub-agent per subtask, in parallel, each with a fresh ContextManager.
   await Promise.all(
-    tasks.map((task, i) =>
+    tasks.map(async (task, i) =>
       store.logEvent(
-        makeEvent({ project, run_id: runId, type: "spawn", payload: { index: i, task: task.slice(0, 200) } }),
+        await makeEvent({ project, run_id: runId, type: "spawn", payload: { index: i, task: task.slice(0, 200) } }),
       ),
     ),
   );
@@ -129,7 +129,7 @@ export async function orchestrate(
   ].join("\n");
   const final = (await provider.complete(synthInput, { system: opts.system })).trim();
   await store.logEvent(
-    makeEvent({
+    await makeEvent({
       project,
       run_id: runId,
       type: "synthesis",

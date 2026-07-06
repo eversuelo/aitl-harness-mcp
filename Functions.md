@@ -14,8 +14,6 @@ Las firmas son las reales del código; las descripciones, en español.
 |---|---|---|---|
 | `runAgent` | `(prompt, project, opts?) => Promise<RunAgentResult>` | Loop agnóstico prompt→modelo→tools→repeat, persistido a Mongo. Hidrata contexto al inicio, enforces gates, reintenta fallos transitorios, audita denegaciones, resume sesión, soporta `resume`/`verify`. | A·B·H1·H2·H3 |
 | `orchestrate` | `(master, project, opts?) => Promise<OrchestrateResult>` | Orquestador flaco: descompone la tarea (plan o `tasks`), lanza N `runAgent` en paralelo (`ContextManager` fresco c/u) y sintetiza. | C |
-| `buildGraph` | `(opts?) => Promise<CompiledGraph>` | Cablea el mismo loop como `StateGraph` de LangGraph con checkpointer Mongo (resumible/replayable). | — |
-| `getCheckpointer` | `() => Promise<unknown>` | Checkpointer LangGraph respaldado en Mongo (import perezoso). | — |
 
 `RunAgentOpts`: `provider, registry, store, system, maxIters, hydrate, skills, summarize, gates, denyPaths, roles, installDefaultTools, retries, ask, askPolicy, onDelta, onTool, resume, verify`.
 (`onTool` — observador de tool calls para UIs de chat: dispara en `start`/`done`/`denied`; ADR-0044.)
@@ -193,8 +191,9 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 | `migrateToAtlas` | `(opts) => Promise<MigrateResult[]>` | Migra la base entre clusters vía el driver. |
 | `loadCanon` / `renderRules` / `getAdapter` | — | Canon AGENTS.md y adapters cross-tool (cursor/copilot/antigravity/…). |
 
-### Clase `EvalRunner`
-`run(...)` — corre un benchmark (`tasks()` + `verify(task, workdir)`) contra el harness.
+> **Comparación experimental (tesis):** no hay comando `eval`. Las condiciones se corren
+> con `aitl run`: **C0** = `aitl run --bare` (sin hydrate/skills/gates) vs **C2** = default
+> (harness completo); los totales medibles salen de `aitl run-show <runId>`.
 
 ---
 
@@ -203,7 +202,7 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 `interactive` · `check-db` · `init-db` · `ingest [--repo]` · `search` · **`run [--bare] [--verify-cmd] [--roles]`** ·
 **`chat [--model auto] [--ask] [--mcp]`** · **`models [--json]`** · **`sdd`** ·
 **`run-host`** · **`orchestrate`** · `run-show <runId>` · `intervene <runId>` · `synthesize` · `repomap [--repo]` ·
-`index-repo` · `adr-sync` · `adr history` · `memory history` · `export` · `eval` · `mcp` ·
+`index-repo` · `adr-sync` · `adr history` · `memory history` · `export` · `mcp` ·
 `config {…}` · `ui` · `prompt {add,list,search}` · `hydrate` · `capture-session` ·
 `init {agent,claude}` · `migrate-atlas`.
 

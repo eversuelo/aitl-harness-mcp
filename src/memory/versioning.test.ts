@@ -27,7 +27,7 @@ function stubModels(initialLive: Record<string, unknown>[] = []): {
     },
   })) as never);
 
-  // `makeHistoryEntry` (which builds via `new DecisionHistoryModel` + validateSync) still
+  // `makeHistoryEntry` (which builds via `new DecisionHistoryModel` + async validate()) still
   // runs for real; only the persistence `create` is captured into the local array.
   mock.method(DecisionHistoryModel, "create", ((doc: Record<string, unknown>) => {
     history.push(doc);

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeMessage } from "./message.model.js";
 
-test("an assistant turn with empty text (pure tool_call) validates", () => {
+test("an assistant turn with empty text (pure tool_call) validates", async () => {
   // Regression: `content: required` rejected "" (Mongoose truthiness) and crashed the
   // FIRST live loop turn that answered with tool_calls only (gemma-4 via LM Studio).
-  const msg = makeMessage({
+  const msg = await makeMessage({
     project: "demo",
     run_id: "r1",
     idx: 1,
@@ -17,7 +17,7 @@ test("an assistant turn with empty text (pure tool_call) validates", () => {
   assert.equal(msg.tool_calls.length, 1);
 });
 
-test("a normal user turn still validates and keeps its content", () => {
-  const msg = makeMessage({ project: "demo", run_id: "r1", idx: 0, role: "user", content: "hola" });
+test("a normal user turn still validates and keeps its content", async () => {
+  const msg = await makeMessage({ project: "demo", run_id: "r1", idx: 0, role: "user", content: "hola" });
   assert.equal(msg.content, "hola");
 });

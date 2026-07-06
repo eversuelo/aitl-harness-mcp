@@ -191,7 +191,7 @@ async function upsertMemoryDoc(body: Record<string, unknown>, actor?: Actor): Pr
       ? (rawType as MemoryType)
       : "project";
   const text = String(body.body ?? "");
-  const doc = makeMemoryDoc({
+  const doc = await makeMemoryDoc({
     project,
     slug,
     type,

@@ -51,7 +51,7 @@ export async function runSddPipeline(prompt: string, opts: SddPipelineOpts): Pro
   const logPhase = async (kind: string, slug: string): Promise<void> => {
     try {
       await store.logEvent(
-        makeEvent({
+        await makeEvent({
           project: opts.project,
           run_id: persist ? pipelineId : null,
           type: "synthesis",

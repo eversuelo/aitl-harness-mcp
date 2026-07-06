@@ -62,14 +62,14 @@ export async function runOnHost(
   const spec = classifySpec(prompt);
 
   const runId = randomUUID();
-  const run = makeRun({
+  const run = await makeRun({
     project,
     model: `host:${host.name}`,
     harness_config: { role: "host", host: host.name, spec: spec.isSpec },
   });
   await ensureMongoose();
   await RunModel.create({ ...run, _id: runId });
-  await store.appendMessage(makeMessage({ project, run_id: runId, idx: 0, role: "user", content: prompt }));
+  await store.appendMessage(await makeMessage({ project, run_id: runId, idx: 0, role: "user", content: prompt }));
 
   // Hydrate the host's prompt with the project's durable context (the harness's value-add).
   let fullPrompt = prompt;
@@ -77,12 +77,12 @@ export async function runOnHost(
     try {
       const { preamble, sections } = await hydrate(project, prompt, { store });
       if (preamble) fullPrompt = `${preamble}\n\n---\n\n${prompt}`;
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "hydrate", payload: { host: host.name, ...sections } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "hydrate", payload: { host: host.name, ...sections } }));
     } catch {
       // hydration is best-effort
     }
   }
-  await store.logEvent(makeEvent({ project, run_id: runId, type: "spawn", payload: { host: host.name, spec: spec.isSpec } }));
+  await store.logEvent(await makeEvent({ project, run_id: runId, type: "spawn", payload: { host: host.name, spec: spec.isSpec } }));
 
   // Persist the prompt to the durable history with the run linkage; spec-classified prompts
   // are tagged `spec` so they surface as SDD inputs. Metadata is enriched after the run.
@@ -112,7 +112,7 @@ export async function runOnHost(
     const message = String(err instanceof Error ? err.message : err).slice(0, 500);
     await ensureMongoose();
     await RunModel.updateOne({ _id: runId }, { $set: { status: "error", ended_at: new Date(), error: message } });
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "error", payload: { host: host.name, message } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId, type: "error", payload: { host: host.name, message } }));
     await recordPrompt({ status: "error", error: message });
     throw err;
   }
@@ -121,7 +121,7 @@ export async function runOnHost(
   const usage = result.usage ?? { input: 0, output: 0 };
   const meta = result.meta ?? null;
   await store.appendMessage(
-    makeMessage({ project, run_id: runId, idx: 1, role: "assistant", content: result.text, tokens: usage.output }),
+    await makeMessage({ project, run_id: runId, idx: 1, role: "assistant", content: result.text, tokens: usage.output }),
   );
   await ensureMongoose();
   await RunModel.updateOne(
@@ -157,7 +157,7 @@ export async function runOnHost(
       });
       synthesisSlug = res.slug;
       await store.logEvent(
-        makeEvent({ project, run_id: runId, type: "synthesis", payload: { slug: res.slug, kind: "spec", host: host.name } }),
+        await makeEvent({ project, run_id: runId, type: "synthesis", payload: { slug: res.slug, kind: "spec", host: host.name } }),
       );
     } catch {
       // synthesis is best-effort; never fail a completed run over it

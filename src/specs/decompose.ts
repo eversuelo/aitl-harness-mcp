@@ -176,7 +176,7 @@ export async function decomposeTasks(args: DecomposeArgs): Promise<{ tasks: SddT
       JSON.stringify(t, null, 2),
       "```",
     ].join("\n");
-    const doc: MemoryDoc = makeMemoryDoc({
+    const doc: MemoryDoc = await makeMemoryDoc({
       project: args.project,
       slug,
       repo: args.repo ?? null,

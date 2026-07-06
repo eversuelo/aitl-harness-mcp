@@ -29,7 +29,7 @@ export async function parseMarkdownFile(path: string, project: string): Promise<
 
   const slug = String(meta.name ?? basename(path, extname(path)));
 
-  return makeMemoryDoc({
+  return await makeMemoryDoc({
     project,
     slug,
     type: mdType,

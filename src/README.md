@@ -31,8 +31,7 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [mcpserver/](mcpserver/) | Servidor MCP stdio + HTTP. |
 | [server/](server/) | API HTTP y launcher de UI web (incluye knowledge map). |
 | [interactive/](interactive/) | Panel `aitl -i`; ver [ADR-0008](../docs/adr/0008-interactive-control-panel.md). |
-| [eval/](eval/) | Runner de evaluacion. |
-| [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`, `retry.ts`, `quiet.ts` — silencia deprecations del proceso, importado primero en `cli.ts`). |
+| [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`, `retry.ts`, `optional.ts`). |
 
 ## Flujos de lectura
 

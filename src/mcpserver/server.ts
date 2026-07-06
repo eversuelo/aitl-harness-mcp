@@ -383,7 +383,7 @@ export function buildServer(): McpServer {
         const t: MemoryType = (MEMORY_TYPES as readonly string[]).includes(type) && !RESERVED_MEMORY_TYPES.has(type)
           ? (type as MemoryType)
           : "project";
-        const doc = makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
+        const doc = await makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
         await new Classifier().classifyMemory(doc);
         doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
         const a = mcpActor();
@@ -657,7 +657,7 @@ export function buildServer(): McpServer {
     async ({ project, id, title, context, decision, consequences, status }) => {
       return runLogged("record_decision", { project, id, title, context, decision, consequences, status }, async () => {
         const { makeADR } = await import("../models/decision.model.js");
-        const adr = makeADR({ project, id, title, context, decision, consequences, status });
+        const adr = await makeADR({ project, id, title, context, decision, consequences, status });
         const a = mcpActor();
         await new ADRStore().upsert(adr, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
         return text({ id: adr.id, title: adr.title, status: adr.status, version: adr.version });
@@ -1048,7 +1048,7 @@ export function buildServer(): McpServer {
     async ({ project, run_id, reason, minutes }) => {
       return runLogged("record_human_intervention", { project, run_id, reason, minutes }, async () => {
         const { makeEvent } = await import("../models/event.model.js");
-        await new MemoryStore().logEvent(makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
+        await new MemoryStore().logEvent(await makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
         return text({ ok: true, run_id, minutes });
       });
     },
