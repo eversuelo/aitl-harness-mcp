@@ -27,7 +27,10 @@ const dim = (s: string) => `${DIM}${s}${RESET}`;
 const bold = (s: string) => `${BOLD}${s}${RESET}`;
 const cyan = (s: string) => `${CYAN}${s}${RESET}`;
 
-/** Braille spinner on stderr; stopped (and its line cleared) on first output. */
+/** Braille spinner on stderr; stopped (and its line cleared) on first output.
+ *  The stop closure is idempotent: it clears the line only ONCE. It gets called
+ *  again after the run resolves, and by then the line holds streamed model text —
+ *  a second `\r`+spaces would overwrite the first ~15 chars of the response. */
 function spinner(label: string): () => void {
   if (!process.stderr.isTTY) return () => {};
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -35,8 +38,11 @@ function spinner(label: string): () => void {
   const iv = setInterval(() => {
     process.stderr.write(`\r${CYAN}${frames[i++ % frames.length]}${RESET} ${DIM}${label}${RESET}  `);
   }, 80);
+  let cleared = false;
   return () => {
     clearInterval(iv);
+    if (cleared) return;
+    cleared = true;
     process.stderr.write(`\r${" ".repeat(label.length + 6)}\r`);
   };
 }
@@ -133,7 +139,20 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
   // never reaches the process. Handle both + force cooked mode during runs.
   const onSigint = () => {
     process.stdout.write(`\n${DIM}(interrumpido)${RESET}\n`);
-    process.exit(130);
+    // Tear down before dying: a bare process.exit() orphans the MCP server child
+    // processes and leaves DB connections open. The timer backstop guarantees the
+    // process still exits even if a close() wedges.
+    setTimeout(() => process.exit(130), 2000).unref();
+    void (async () => {
+      try {
+        await mcpMount?.close();
+      } catch {}
+      try {
+        const { closeClient } = await import("../db/client.js");
+        await closeClient();
+      } catch {}
+      process.exit(130);
+    })();
   };
   process.on("SIGINT", onSigint);
 

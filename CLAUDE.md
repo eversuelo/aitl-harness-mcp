@@ -44,7 +44,12 @@ spelling — those fragment the history. Verify the hash above matches
 > usado por `decomposeTasks`); `AITL_API_KEY` único clasificado por prefijo;
 > `aitl models` (providerStatus) + `FallbackProvider` (`--model auto` con cadena de
 > fallback); chat estilo Claude Code (`src/repl/chat.ts`, hook `onTool`, slash commands)
-> + submenu Chat en el TUI. Ledger ahora contiguo **0001–0044**; next free **0045**.
+> + submenu Chat en el TUI. 0045 (2026-07-05): hardening del CLI — fix del robo de stdin
+> del TUI al chat hijo ("pulsar dos veces la tecla"; suspend() pausa stdin), spinner
+> idempotente, teardown en SIGINT, deadline de streaming (`AITL_STREAM_IDLE_MS`),
+> ToolRegistry por sub-agente en orchestrate, preAction fail-fast, tree-kill POSIX,
+> ShellTool maxBuffer+clip, parseLimit en la API. Ledger ahora contiguo **0001–0045**;
+> next free **0046**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
@@ -74,5 +79,5 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Context lookups (memory, decisions, conventions, skills) use a robust cascade
   (vector → text → recency) so they work even before the Atlas vector index exists.
 - Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0045). Keep ADR ids contiguous and never reuse one. The number is the
+  currently 0046). Keep ADR ids contiguous and never reuse one. The number is the
   next-free read from the `decisions` collection at BUILD time — never pin it in docs.
