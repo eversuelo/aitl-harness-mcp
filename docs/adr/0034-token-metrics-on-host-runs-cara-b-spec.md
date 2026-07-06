@@ -1,0 +1,16 @@
+# ADR-0034 — Token metrics on host runs (Cara B) + spec auto-classification & spec↔task synthesis (SDD Pilar 4)
+
+- **Status:** accepted
+- **Date:** 2026-06-29
+
+## Context
+
+Dos huecos pedidos por el usuario, ambos centrales a la tesis: (1) `aitl run-host` (Cara B, hosts externos) NO capturaba `token_usage` — solo `aitl run` (Cara A, loop de modelo) lo hacía. Como el piloto tiene como bloqueador único la falta de OPENROUTER_API_KEY y la vía alterna oficial es `run-host --host claude-code` (ver [[pilot-t1-t3-ready-0032]], [[estado-harness-2026-06-28]]), la métrica #7 (eficiencia: tokens/tool_calls/iters) de la Tabla 4.3 quedaba sin medir para Claude Code. (2) El Pilar 4 (SDD) de [[plan-4-pilares]] seguía sin construir: no se persistían ni sintetizaban artefactos de especificación. El usuario pidió: auto-clasificación de prompts spec (sin flags), persistirlos, y sintetizarlos con el resultado de la tarea; además mostrar TODAS las métricas en la UI.
+
+## Decision
+
+Trabajo aditivo y parity-neutral (TS-only). (1) TOKENS EN HOSTS: `HostResult` gana `usage?{input,output}` y `meta?`; `CliHostSpec` gana `parse?(stdout)`. El host claude-code ahora invoca `claude -p --output-format json` y `parseClaudeJson` extrae result/usage(input+cache)/output/total_cost_usd/num_turns/duration_ms (src/hosts/base.ts). `CliHostAdapter` parsea solo en exit 0 (best-effort; cae al texto crudo). `runOnHost` escribe `token_usage`, `host_meta`, `iters=num_turns`, `spec` en el doc del run; `aitl run-show` y `aitl run-host` reportan tokens/costo. (2) SPECS (SDD): clasificador puro bilingüe ES/EN `classifySpec()` (src/specs/classify.ts). `runOnHost` registra SIEMPRE el prompt en la colección `prompts` (source=host, run_id, tags spec|sdd vs task, metadata con señales + tokens/cost/status/synthesis_slug al cerrar) y, si es spec, escribe un MemoryDoc type=synthesis (src/specs/synthesis.ts, slug spec-synthesis-<run8>) que une Spec + Outcome + Métricas, embebido y searchable. Flags `--no-record-prompt`/`--no-spec-synthesis`. (3) UI: endpoints `GET /api/runs` y `GET /api/runs/:id` (run + event_counts + minutos de supervisión); cliente web `api.runs/api.run` + tipos RunDoc/RunDetail; pestaña nueva "Runs" en App.tsx con rollup agregado (Σ tokens, Σ costo), lista de runs y panel de detalle (tokens in/out/total, costo, iters/turns, tool_calls, gate_denials, duración, desglose de caché, roles, conteo de eventos, supervisión humana).
+
+## Consequences
+
+La métrica #7 (tokens) ahora se captura también para Cara B → el piloto C0/C2 puede medirse vía Claude Code sin OPENROUTER_API_KEY, levantando el bloqueador. El Pilar 4 (SDD) arranca: specs auto-detectados, persistidos y sintetizados con su resultado y métricas, trazables por run_id. Toda la telemetría medida es visible en la UI. Verificado: typecheck core+web verdes, build verde, vite build (1915 módulos), 44/44 tests (4 nuevos de classifySpec). Limitaciones/pendientes: la síntesis de specs es determinista (sin modelo) por diseño (run-host no tiene Provider y el escenario es 'sin key'); codex/antigravity no emiten JSON aún (parse solo para claude-code); `tool_calls` no es observable desde el host (queda 0/null). CLAUDE.md ledger → próximo ADR libre 0035.

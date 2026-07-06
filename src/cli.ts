@@ -10,6 +10,7 @@
  *   aitl synthesize --project P           compact a project's memory (force optional)
  *   aitl repomap --root DIR --project P   build/print the repo map
  *   aitl adr-sync --dir docs/adr --project P  mirror ADRs into Mongo
+ *   aitl sync --project P                 bidirectional markdown sync (Mongo ⇄ .aitl + docs/adr)
  *   aitl export --adapter cursor --project P  project canon into a tool's format
  *   aitl mcp                              run the MCP server (stdio) for Claude Code
  *   aitl interactive | -i                interactive control panel (supervise MCP/UI)
@@ -541,7 +542,7 @@ program
 
 program
   .command("export")
-  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae")
+  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown")
   .requiredOption("--project <project>", "Project scope.")
   .option("--root <dir>", "Repo root to write tool files into.", ".")
   .description("Project the canonical artifacts into a tool's native format (incremental).")
@@ -549,7 +550,50 @@ program
     const { getAdapter, loadCanon } = await import("./adapters/base.js");
     const canon = await loadCanon(opts.project, opts.root);
     const written = await (await getAdapter(opts.adapter)).export(canon, opts.root);
-    console.log(`Wrote: ${written.join(", ")}`);
+    console.log(written.length ? `Wrote: ${written.join(", ")}` : "Nothing to write (all up to date).");
+    await closeClient();
+  });
+
+program
+  .command("sync")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--pull", "One-way Mongo → disk; conflicts resolve in Mongo's favor.")
+  .option("--push", "One-way disk → Mongo; conflicts resolve in the disk's favor.")
+  .option("--dir <dir>", "Mirror root for memory/skills/agents (hosts .sync-state.json).", ".aitl")
+  .option("--adr-dir <dir>", "ADR mirror directory.", "docs/adr")
+  .option("--include-reserved", "Also sync reserved memory types (synthesis/spec/design/task).")
+  .description("Bidirectional markdown sync: Mongo ⇄ .aitl/{memory,skills,agents} + docs/adr (manifest-based; conflicts reported, never clobbered).")
+  .action(async (opts) => {
+    if (opts.pull && opts.push) {
+      console.error("Elige --pull O --push (sin flags = bidireccional).");
+      process.exitCode = 1;
+      return;
+    }
+    const { basename } = await import("node:path");
+    const { syncProject } = await import("./sync/sync.js");
+    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const mode = opts.pull ? "pull" : opts.push ? "push" : "both";
+    const res = await syncProject(project, {
+      dir: opts.dir,
+      adrDir: opts.adrDir,
+      mode,
+      includeReserved: Boolean(opts.includeReserved),
+      actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role },
+    });
+    const show = (label: string, items: { entity: string; key: string; path?: string; reason?: string }[]) => {
+      if (!items.length) return;
+      console.log(`${label} (${items.length}):`);
+      for (const it of items) {
+        console.log(`  - ${it.entity} ${it.key}${it.path ? ` → ${it.path}` : ""}${it.reason ? `  [${it.reason}]` : ""}`);
+      }
+    };
+    console.log(`sync '${project}' (${mode}) — ${opts.dir} + ${opts.adrDir}`);
+    show("pulled (Mongo → disco)", res.pulled);
+    show("pushed (disco → Mongo)", res.pushed);
+    show("CONFLICTS (sin tocar)", res.conflicts);
+    show("skipped", res.skipped);
+    console.log(`unchanged: ${res.unchanged} · manifiesto: ${res.statePath}`);
+    if (res.conflicts.length) process.exitCode = 2;
     await closeClient();
   });
 
@@ -1657,15 +1701,36 @@ Examples:
   aitl adr-sync --dir docs/adr --project demo
 
 Notes:
-  Mirrors Nygard-format ADR markdown into the decisions collection (file → ledger only).`,
+  Mirrors Nygard-format ADR markdown into the decisions collection (file → ledger only).
+  For the bidirectional (ledger ⇄ file) flow with conflict detection use: aitl sync.`,
 
   "export": `
 Examples:
   aitl export --adapter cursor --project demo
   aitl export --adapter agents_md --project demo --root .
+  aitl export --adapter markdown --project demo     # Mongo → .aitl/ + docs/adr (one-shot)
 
 Notes:
-  Adapters: agents_md | cursor | copilot | antigravity | kiro | trae. Incremental write.`,
+  Adapters: agents_md | cursor | copilot | antigravity | kiro | trae | markdown.
+  Incremental write. The markdown adapter is manifest-less: .aitl/ is overwritten
+  freely, but existing docs/adr files with different content are kept (use aitl sync).`,
+
+  "sync": `
+Examples:
+  aitl sync --project demo                 # bidireccional: propaga y reporta conflictos
+  aitl sync --pull --project demo          # Mongo gana: refresca el espejo en disco
+  aitl sync --push --project demo          # disco gana: sube tus ediciones .md a Mongo
+
+Notes:
+  Espejo canónico: memoria/skills/agents en .aitl/{memory,skills,agents}/<slug>.md y
+  ADRs en docs/adr/NNNN-slug.md. El manifiesto .aitl/.sync-state.json guarda el hash
+  de CADA lado en el último sync: "cambió" = cambió respecto a esa línea base, nunca
+  "difiere del otro lado". Primera corrida (bootstrap): lo que existe en un solo lado
+  se propaga; lo que existe en ambos con bytes distintos NO se toca (se siembra la
+  línea base) — por eso los docs/adr escritos a mano sobreviven byte a byte.
+  Conflicto (cambió en ambos) → exit code 2 y nada se escribe; resuélvelo con --pull
+  o --push. Los borrados nunca se propagan. --include-reserved añade los tipos de
+  pipeline (synthesis/spec/design/task). Sin --project usa $AITL_PROJECT o la carpeta.`,
 
   "mcp": `
 Examples:

@@ -8,3 +8,7 @@ node_modules/
 npm-debug.log*
 logs/
 .claude/settings.local.json
+
+# P4 markdown sync: the .aitl/ mirror IS versioned (readable memory mirror);
+# the manifest is a machine-local sync baseline, never shared.
+.aitl/.sync-state.json

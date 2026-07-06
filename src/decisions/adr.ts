@@ -10,20 +10,38 @@ import { promises as fs } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { ensureMongoose } from "../db/mongoose.js";
 import { embedOne } from "../ingest/embedder.js";
-import { type ADR, DecisionModel, makeADR } from "../models/decision.model.js";
+import { type ADR, ADR_STATUSES, type AdrStatus, DecisionModel, makeADR } from "../models/decision.model.js";
 import { currentBranch, headSha } from "../util/git.js";
 import { ADR_CONTENT_FIELDS, type VersioningActor, archiveAndBumpVersion } from "../memory/versioning.js";
 
 const ID_RE = /ADR-?(\d+)/i;
-const SECTION_RE = /^##\s+(Context|Decision|Consequences)\s*$/gim;
+// `Status` is split out too (ADR-0027 style `## Status` sections) so it never leaks
+// into `context`; the canonical form is the `- **Status:** …` metadata bullet.
+const SECTION_RE = /^##\s+(Status|Context|Decision|Consequences)\s*$/gim;
+// Metadata bullets in the header block, e.g. `- **Status:** accepted` / `- **Date:** 2026-06-13`.
+const META_BULLET_RE = /^-\s*\*\*([A-Za-z][A-Za-z -]*?):?\*\*:?\s*(.+?)\s*$/gm;
+
+/** Parse `YYYY-MM-DD` (or any Date.parse-able string) into a Date, or null. */
+function parseDateMeta(value: string | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Normalize a status string ("Accepted", "accepted") to the enum, or null if unknown. */
+function normalizeStatus(value: string | undefined): AdrStatus | null {
+  const s = value?.trim().split(/\s+/)[0]?.toLowerCase();
+  return s && (ADR_STATUSES as readonly string[]).includes(s) ? (s as AdrStatus) : null;
+}
 
 export async function parseAdrMarkdown(path: string, project: string): Promise<ADR> {
   const text = await fs.readFile(path, "utf-8");
   const firstLine = text.split(/\r?\n/).find((ln) => ln.trim()) ?? "";
   const m = ID_RE.exec(firstLine) ?? ID_RE.exec(basename(path));
   const adrId = m ? m[1] : basename(path, extname(path));
+  // Strip only the `ADR-NNNN —` prefix so titles containing an em-dash survive round-trips.
   const title =
-    firstLine.replace(/^#+\s*/, "").split("—").pop()?.trim() || firstLine.trim();
+    firstLine.replace(/^#+\s*/, "").replace(/^ADR[-\s]?\d+\s*[—–-]\s*/i, "").trim() || firstLine.trim();
 
   // Split on the section headings: [pre, "Context", body, "Decision", body, ...].
   const parts = text.split(SECTION_RE);
@@ -32,6 +50,18 @@ export async function parseAdrMarkdown(path: string, project: string): Promise<A
     sections[parts[i].toLowerCase()] = parts[i + 1].trim();
   }
 
+  // Lifecycle/provenance metadata from the header bullets (the block before the first `##`).
+  const meta: Record<string, string> = {};
+  for (const b of parts[0].matchAll(META_BULLET_RE)) {
+    meta[b[1].toLowerCase().replace(/\s+/g, "-")] = b[2];
+  }
+  const status = normalizeStatus(meta.status) ?? normalizeStatus(sections.status) ?? "accepted";
+  const createdAt = parseDateMeta(meta.date);
+  const reviewAfter = parseDateMeta(meta["review-after"]);
+  const components = meta.components
+    ? meta.components.split(",").map((c) => c.trim()).filter(Boolean)
+    : [];
+
   return await makeADR({
     project,
     id: adrId,
@@ -39,6 +69,12 @@ export async function parseAdrMarkdown(path: string, project: string): Promise<A
     context: sections.context ?? "",
     decision: sections.decision ?? "",
     consequences: sections.consequences ?? "",
+    status,
+    deprecation_reason: meta["deprecation-reason"] ?? null,
+    superseded_by: meta["superseded-by"] ?? null,
+    review_after: reviewAfter,
+    components,
+    ...(createdAt ? { created_at: createdAt } : {}),
     git_ref: path,
   });
 }
