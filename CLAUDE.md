@@ -73,7 +73,11 @@ spelling — those fragment the history. Verify the hash above matches
 > del harness desde la web UI (`GET /api/config/status`, `PUT /api/config`, pestaña
 > Config root/admin) con espejo automático al `.env` (`src/config/envfile.ts`;
 > `aitl config set --env`); matriz RBAC: `config_secrets` gana admin:delegated.
-> Ledger ahora contiguo **0001–0050**; next free **0051**.
+> 0051 (2026-07-06): sync markdown bidireccional (`aitl sync [--pull|--push]`) — espejo
+> legible en `.aitl/{memory,skills,agents}/` + `docs/adr/` (serie 0001–0050 completa),
+> manifiesto de dos hashes (cambió-vs-propia-línea-base), conflictos sin merge (exit 2),
+> borrados nunca se propagan; `export --adapter markdown`. Ledger ahora contiguo
+> **0001–0051**; next free **0052**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
