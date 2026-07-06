@@ -77,7 +77,14 @@ spelling — those fragment the history. Verify the hash above matches
 > legible en `.aitl/{memory,skills,agents}/` + `docs/adr/` (serie 0001–0050 completa),
 > manifiesto de dos hashes (cambió-vs-propia-línea-base), conflictos sin merge (exit 2),
 > borrados nunca se propagan; `export --adapter markdown`. Ledger ahora contiguo
-> **0001–0051**; next free **0052**.
+> **0001–0051**.
+> 0052 (2026-07-06): `aitl init` — bootstrap de repo en un comando (idempotente,
+> [ok|skip|done]: DB+root, software→repo→branch, indexRepo, seeds, guías y
+> .mcp.json/.claude/settings.json con merges conservadores, post-merge hook,
+> `--memory-only`) + degradación sin backend (auto = cadena de fallback también en
+> run; NO_BACKEND_MESSAGE accionable; synthesize extractivo con aviso). Ledger ahora
+> contiguo **0001–0052**; next free **0053**. El espejo docs/adr lo mantiene
+> `aitl sync` (ADR-0051).
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero

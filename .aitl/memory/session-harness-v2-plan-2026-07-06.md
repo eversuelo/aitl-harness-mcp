@@ -1,11 +1,10 @@
 ---
 name: session-harness-v2-plan-2026-07-06
 description: >-
-  Sesión harness-v2 PAUSADA por el usuario (2026-07-06): P0-P2 cerrados (ADRs
-  0046-0048), P3 detenido con implementación completa verify-green en wip
-  9ea12b5 (solo falta E2E + ADR 0049), P3.5 (registro usuarios + config web UI)
-  especificada y en cola, luego P4-P11. Reanudar por thesis-harnesss/To Do.md
-  sección 0.
+  Sesión harness-v2 REANUDADA y avanzando (corte tras P4): cerrados P0-P4 + P3.5
+  (ADRs 0046-0051), tesis T2 5/6 + T5 + bitácora a IMPL-0051; P5
+  (init+degradación) EN VUELO; cola P6-P11. Reanudación futura: To Do.md §0 ya
+  no aplica (P3 cerrado); usar este cuerpo.
 type: project
 category: task
 tags:
@@ -13,32 +12,32 @@ tags:
   - plan
   - feat/harness-v2
   - estado-sesion
-  - paused
-  - adr-0046
-  - adr-0047
-  - adr-0048
+  - adr-0049
+  - adr-0050
+  - adr-0051
   - 'component:thesis-harnesss'
-version: 3
-updated_at: 2026-07-06T06:54:54.957Z
+version: 4
+updated_at: 2026-07-06T20:33:34.520Z
 branch: feat/harness-v2
 ---
-SESIÓN PAUSADA por el usuario 2026-07-06. Punto de reanudación canónico: **thesis-harnesss/To Do.md sección 0** (commit 5d12545). Espejo local: /home/eversuelo/Code/thesis-harness/PLAN-HARNESS-V2.md. Plan aprobado: ~/.claude/plans/necesitamos-dise-ar-la-t-sis-merry-babbage.md.
+SESIÓN REANUDADA (usuario: "continua con el plan"). Espejo local: /home/eversuelo/Code/thesis-harness/PLAN-HARNESS-V2.md (parcialmente desactualizado; este cuerpo manda). To Do vivo: thesis-harnesss/To Do.md.
 
-== CÓMO REANUDAR (en orden) ==
-1. **Cerrar P3** — la implementación YA ESTÁ HECHA y verify-green (commit `wip 9ea12b5` en feat/harness-v2, typecheck + 132/132 tests). El agente fue detenido durante la verificación E2E. Falta SOLO:
-   (a) E2E: escribir una memoria real (MemoryStore o MCP write_memory sobre un proyecto de prueba) y verificar commit_sha == `git rev-parse HEAD`;
-   (b) round-trip: registrar decisión en proyecto e2e-p3-test, `aitl adr deprecate <id> --project e2e-p3-test --reason ...`, verificar status deprecated + versión bumpeada, y que `aitl hydrate --project e2e-p3-test` la excluye (vencidas → needs_review);
-   (c) `aitl branch sync --reindex` dos corridas sobre el harness (1.ª guarda head/reindexa, 2.ª "sin cambios");
-   (d) cierre: record_decision id **0049** (leer next-free primero) + espejo docs/adr/0049-*.md + nota ledger en CLAUDE.md del harness + fila IMPL-0049 en la bitácora de la tesis (y actualizar "cuarenta y ocho").
-   Qué contiene 9ea12b5: commit_sha en memory/decision models; headSha/resolveRef en util/git.ts (+git.test.ts); estampado en versioning.ts + MemoryStore.upsertMemory/ADRStore.upsert (explícito>default); synthesizer propaga {actor,branch,commit_sha}; synthesize --at <ref>; src/branches/reindex.ts (branch sync --reindex); enum status+deprecated + deprecation_reason/superseded_by/review_after(TTL suave)/components[]; record_decision extendido + tool deprecate_decision + CLI aitl adr deprecate; hydrate excluye deprecated/superseded/vencidos y devuelve needs_review; src/decisions/lifecycle.ts proposeDeprecations (solo propone; 3 criterios) + lifecycle.test.ts; badges en DecisionsView (web/src/App.tsx).
-2. **Lanzar P3.5** (pedido del usuario; task #13; NO se lanzó por choque de archivos con P3): registro de usuarios en web UI y CLI (`aitl user register`), email/username ÚNICOS (índices en db/indexes.ts + 409 en API), flag AITL_WEB_ALLOW_SIGNUP default on, PRIMER usuario real→admin (resto rol user, promoción con user set-role); pestaña Config en la web UI (estado de backends/modelo tipo `aitl models`, keys enmascaradas, campos editables AITL_API_KEY/MODEL_PRIMARY/LMSTUDIO_*/EMBEDDING_*/AITL_WEB_ORIGINS) que persiste vía la maquinaria de `aitl config set` (~/.aitl/config.json, ADR-0006) Y ESPEJA claves al .env del proyecto en automático (utilidad que reemplaza/añade líneas KEY= preservando el resto); PUT /api/config gated RBAC (config_secrets.update: root allow, admin delegated — extender matriz) + auditado. ADR nuevo al cerrar. NOTA: ".env en automático" es interpretación mía del pedido — confirmar con el usuario.
-3. **Continuar cola**: P4 sync markdown → P5 degradación+init → P6 module map → P7 coordinación → P8 council → P9 TUI Task → P10-harness docs → P11 tesis (T5 THESIS-STATE, T2 chapter-03 6 puntos, bitácora 0050+, T6 humanizar+latexmk). Especificaciones detalladas por fase: versión 2 de esta memoria (list_memory_versions slug session-harness-v2-plan-2026-07-06) y PLAN-HARNESS-V2.md.
+== CERRADO DESDE LA PAUSA ==
+- P3 (ADR-0049; commits 9ea12b5+9e93ad5+81f5ab9): commit-anchor + ciclo de vida ADR. E2E vivo ok. Fix del E2E: `consequences` required:true→default:"" (Mongoose rechaza "" en String required, gotcha ADR-0043); deprecateDecision coalesce. verify 133/133. NOTA operativa: aitl hydrate fuera de hook espera EOF de stdin → invocar con </dev/null en scripts.
+- T2 5/6 (tesis, commit a192e00): chapter-03 alineado — puerto N adaptadores (invariante reescrito), tab:cap3-mcp por 10 familias ~45 tools, record_human_intervention implementada, sec:cap3-captura nueva (hydrate/capture-session/dos grafos), párrafo LangGraph retirado (IMPL-0047). Solo falta v2 (~L497-711) tras P7/P8. + fix global cleveref \crefname{section}{sección} en book.tex (dcdaad9).
+- T5 (7400605): docs/THESIS-STATE.md regenerado al estado real.
+- P3.5 (ADR-0050; commits c8a1459+8edcc1c): signup self-service (RegistrationConflictError username/email + E11000, AITL_WEB_ALLOW_SIGNUP default on, primer real→admin; aitl user register; LoginDialog modo Create-account oculto si me.signup=false) + config web (GET /api/config/status, PUT /api/config gated config_secrets.update con admin:delegated NUEVO en matriz; applyConfigUpdates → ~/.aitl/config.json + espejo .env vía src/config/envfile.ts updateEnvFile; pestaña Config root/admin; aitl config set --env; AITL_WEB_ORIGINS añadida a ENV_KEYS). verify 157/157. Deuda: UI sin unset por campo; config no recarga en caliente.
+- P4 (ADR-0051; commits eddf9fa+…+274bf20 tesis): sync markdown bidireccional. src/sync/{export,state,sync}.ts: renderers deterministas; manifiesto .aitl/.sync-state.json de DOS hashes (diskHash+mongoHash: "cambió" = vs propia línea base → prosa manuscrita convive con render canónico); motor 3 estados (conflicto sin tocar exit 2, --pull/--push fuerzan); bootstrap siembra línea base sin escribir cuando ambos lados existen; borrados nunca se propagan; solo ids ADR numéricos. parseAdrMarkdown extendido (lifecycle + variantes legadas). aitl sync + export --adapter markdown; adr-sync intacto. docs/adr COMPLETO 0001-0050 (23 backfilled, 0 manuscritos tocados); .aitl/ 35 memorias+2 skills+5 agents versionado (solo .sync-state.json ignorado). verify 176/176. HALLAZGO: 2 docs legados id malformado en Mongo ("0036-mongoose-data-layer","0037-branch-aware-repomap") — solo reportados, decidir borrado.
+- Bitácora tesis al día: IMPL-0049/0050/0051 (filas + párrafos "Trazabilidad al nivel del commit", "Acceso y configuración sin fricción", "El estado durable como archivos legibles"); prosa "cincuenta y una entradas". Ledger contiguo 0001-0051, next free 0052.
 
-== CERRADO (no rehacer) ==
-- P1 auth web ADR-0046 (cd76417+9c2720f): sessions opacas TTL, login/logout, 401/403 split, delegated para web autenticado, CORS allowlist, cliente web+LoginDialog. E2E Atlas ok. Usuario e2e-admin de prueba (borrar tras piloto).
-- P2 infra ADRs 0047-0048 (ba603ce+d0e34e1+6d9c756): LangGraph fuera (runAgent único), conexión única Mongoose-dueño (getDb() no autoconecta), factories async validate(), quiet.ts fuera, eval retirado (C0/C2), mongodb@7 dedupe. verify 118/118 entonces; con P3 wip son 132/132.
-- Tesis (master): 0634583 limpieza; 9dacf3d renumeración H1-H11; f7481c2 cap2 tab:cap2-frameworks + 5 bib; e7b4ac3 bitácora IMPL-0038..0046 + sec:impl-vivo; 392222a IMPL-0047/0048 ("cuarenta y ocho"); b9fb1d6/77e2436/5d12545 To Do.md vivo.
-- Ledger ADRs contiguo 0001-0048, next free 0049. pnpm-lock.yaml sucio pre-sesión: NO commitear.
+== EN VUELO ==
+P5 (agente): F9 degradación (run --model auto → getProviderWithFallback como chat, sin cambiar semántica de nombres explícitos; mensajes accionables sin provider; synthesize extractivo con aviso) + F1 aitl init (src/init/initRepo.ts orquestador idempotente: DB/init extraído a función, software+repo+branch sync, indexRepo con skip inteligente, build+role seed, guías merge-sin-pisar, .mcp.json merge conservador apuntando a la instalación del harness, hooks claude-code en .claude/settings.json UserPromptSubmit→hydrate + Stop→capture-session, .git/hooks/post-merge → branch sync --reindex best-effort, --memory-only, reporte [ok|skip|done] + próximos pasos; aitl init padre con subcomandos agent/claude intactos; ajustar NO_DB_COMMANDS). E2E: repo temporal en scratchpad/init-e2e, idempotencia, degradación, limpieza de project init-e2e-test. Al cerrar: commit + ADR 0052 + espejo (vía aitl sync ya!) + ledger CLAUDE.md + fila IMPL-0052 bitácora.
+
+== COLA ==
+P6 module map (repomap/modules.ts por dir 1er nivel, kind view|back|mixed|infra ext+ruta override .aitl/modules.json; aitl repomap --modules; MCP get_module_map; module-brief <dir> con ADRs por components[] de P3) → P7 coordinación (taskClaim/coordEvent models; src/coord/{claims,events}.ts claim atómico findOneAndUpdate+heartbeat+expiración; MCP claim_task/release_task/poll_events; aitl coord poll/claim/release; hook en settings de init) → P8 council (src/council/{ports,adapters,rubric,orchestrator}.ts; Zod PlanProposal/PlanCritique; HostClientAdapter reusa CliHostAdapter/HOST_SPECS + AITL_HOST_CMD_*; ProviderClientAdapter jsonSchema; rondas 2 proponer→criticar-anonimizado→juez≠proponentes; sin-voto tras 1 retry; presupuesto NxR; telemetría events+runs; aitl council <task> --hosts; E2E hosts fake AITL_HOST_CMD_FAKE1/2) → P9 TUI rama Task → P10-harness (consolidar docs/ARQUITECTURA*.md, archivar docs/thesis+sessions) → P11 restante tesis: T2-v2 (ADR-0002→parcial, ADR-0003→implementado), bitácora 0052+, T6 humanizar+latexmk+conteo final.
+
+== PENDIENTES SUELTOS ==
+Rotar password Atlas + borrar usuario e2e-admin tras piloto; decidir borrado de los 2 docs id-malformado; pnpm-lock.yaml sucio pre-sesión NO commitear; sesión e2e-admin del E2E de P3.5 expira por TTL.
 
 == CONVENCIONES ==
-Por fase: npm run verify verde + E2E dirigida + record_decision (next-free) + espejo docs/adr + commit feat/harness-v2 + fila bitácora tesis + actualizar el conteo en prosa de la bitácora. Prosa tesis con skills/academic-thesis-humanizer. Clave MCP siempre project="aitl-js". Relacionado: [[thesis-drift-analysis-2026-07-05]], [[product-positioning]], [[project-identity]].
+Por fase: verify verde + E2E + record_decision next-free + espejo docs/adr (ahora vía aitl sync) + commit feat/harness-v2 + fila bitácora + conteo prosa. Tesis: skill humanizadora. project="aitl-js" siempre. Relacionado: [[thesis-drift-analysis-2026-07-05]], [[product-positioning]], [[project-identity]].
