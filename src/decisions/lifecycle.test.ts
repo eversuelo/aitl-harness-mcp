@@ -100,6 +100,25 @@ test("deprecateDecision flips status+reason, bumps the version and archives the 
   }
 });
 
+test("deprecateDecision tolerates legacy docs missing required fields (consequences)", async () => {
+  const { live, restore } = stubModels([
+    // Written by an older builder: no `consequences` field at all.
+    {
+      project: "p", id: "0002", title: "Legacy", context: "ctx", decision: "old choice",
+      status: "accepted", version: 1,
+    } as Record<string, unknown>,
+  ]);
+  try {
+    const res = await deprecateDecision({ project: "p", id: "0002", reason: "obsolete" }, depsOver(live));
+    assert.deepEqual(res, { id: "0002", status: "deprecated", version: 2 });
+    const doc = live.find((d) => d.id === "0002") as Record<string, unknown>;
+    assert.equal(doc.consequences, "");
+    assert.equal(doc.deprecation_reason, "obsolete");
+  } finally {
+    restore();
+  }
+});
+
 test("deprecateDecision throws for an unknown ADR", async () => {
   await assert.rejects(
     deprecateDecision({ project: "p", id: "9999", reason: "x" }, { load: async () => null, upsert: async () => "9999" }),

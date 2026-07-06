@@ -91,6 +91,8 @@ export async function deprecateDecision(
       decision: string;
       consequences: string;
     }),
+    // Legacy/foreign docs may predate required fields; deprecation must still work on them.
+    consequences: (rest.consequences as string | undefined) ?? "",
     status: "deprecated",
     deprecation_reason: opts.reason,
     superseded_by: opts.supersededBy ?? ((rest.superseded_by as string | null) ?? null),

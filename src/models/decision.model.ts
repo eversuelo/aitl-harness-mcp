@@ -33,7 +33,9 @@ const adrSchema = new Schema(
     title: { type: String, required: true },
     context: { type: String, required: true },
     decision: { type: String, required: true },
-    consequences: { type: String, required: true },
+    // Not `required`: Mongoose required-on-String rejects "" (the MCP tool's default),
+    // and legacy docs may lack the field — deprecation must still work on them.
+    consequences: { type: String, default: "" },
     status: { type: String, enum: ADR_STATUSES, default: "accepted" },
     /** Why this ADR was deprecated (lifecycle F4; null while active). */
     deprecation_reason: { type: String, default: null },
