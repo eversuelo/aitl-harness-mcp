@@ -15,6 +15,7 @@ import { makeEvent } from "../models/event.model.js";
 import { RunModel, makeRun } from "../models/run.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { type Provider, getProvider } from "../providers/base.js";
+import { ToolRegistry } from "../tools/base.js";
 import { type RunAgentOpts, type RunAgentResult, runAgent } from "./graph.js";
 
 export interface OrchestrateOpts {
@@ -96,6 +97,10 @@ export async function orchestrate(
         provider,
         store,
         summarize: false, // the orchestrator writes the single session summary
+        // Isolation: without this every sub-agent would share the process-wide
+        // defaultRegistry, so gates installed by one (roles/ask/denyPaths) would
+        // apply to — and stack across — all of its siblings.
+        registry: opts.subAgentOpts?.registry ?? new ToolRegistry(),
         ...opts.subAgentOpts,
       }),
     ),

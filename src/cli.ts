@@ -34,7 +34,7 @@ program
 
 // Commands that never touch MongoDB — skip the connection probe so they stay instant
 // and work offline (the interactive panel only supervises child processes).
-const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db"]);
+const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models"]);
 
 // Resolve the working MongoDB URI (primary → fallback) once, before any DB command runs,
 // so every subcommand inherits the resilient local-and/or-Atlas connection.
@@ -51,7 +51,11 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
       console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
     }
   } catch (err) {
+    // Fail fast with one clear message. Letting the command proceed just moves the
+    // failure to the first DB access, where it surfaces as a confusing stall/stack.
     console.error(err instanceof Error ? err.message : String(err));
+    console.error("\n[aitl] No hay MongoDB accesible. Revisa MONGODB_URI/MONGODB_URI_FALLBACK o corre `aitl check-db`.");
+    process.exit(1);
   }
 });
 

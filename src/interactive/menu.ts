@@ -94,7 +94,13 @@ export async function runInteractive(): Promise<void> {
     if (svc.child) return;
     svc.status = "starting";
     const [cmd, args] = aitlSpawnArgs(svc.args);
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    // detached puts the service in its own process group on POSIX, so stopping it can
+    // kill the whole tree (the UI spawns a Vite grandchild that a plain kill() misses).
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+      detached: process.platform !== "win32",
+    });
     svc.child = child;
     svc.status = "running";
     const tag = `${GRAY}[${svc.id}]${RESET} `;
@@ -105,6 +111,11 @@ export async function runInteractive(): Promise<void> {
       svc.child = undefined;
       pushLog(`${tag}exited (code ${code ?? 0})`);
     });
+    child.on("error", (err) => {
+      svc.status = "stopped";
+      svc.child = undefined;
+      pushLog(`${tag}failed to start: ${err.message}`);
+    });
     pushLog(`${tag}started: aitl ${svc.args.join(" ")}`);
     render();
   };
@@ -112,11 +123,15 @@ export async function runInteractive(): Promise<void> {
   /** Async tree-kill — used by the menu's "Stop" action so the UI stays responsive. */
   const stopService = (svc: Service) => {
     if (!svc.child) return;
-    // On Windows, kill the whole tree (UI spawns a Vite grandchild).
+    // Kill the whole tree on every platform (UI spawns a Vite grandchild).
     if (process.platform === "win32" && svc.child.pid) {
       spawn("taskkill", ["/pid", String(svc.child.pid), "/T", "/F"], { stdio: "ignore" });
-    } else {
-      svc.child.kill();
+    } else if (svc.child.pid) {
+      try {
+        process.kill(-svc.child.pid, "SIGTERM"); // negative pid = whole process group
+      } catch {
+        svc.child.kill();
+      }
     }
   };
 
@@ -128,24 +143,33 @@ export async function runInteractive(): Promise<void> {
     try {
       if (process.platform === "win32" && child.pid) {
         spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-      } else {
-        child.kill("SIGTERM");
+      } else if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
       }
     } catch {
       // best-effort
     }
   };
 
-  /** Suspend the menu's raw keyboard handling, run `fn`, then restore the menu. */
+  /** Suspend the menu's raw keyboard handling, run `fn`, then restore the menu.
+   *  stdin is PAUSED while `fn` runs: an attached child shares this TTY fd, and a
+   *  flowing parent stdin keeps read()ing it, stealing ~every other keystroke from
+   *  the child (symptom: keys must be pressed twice inside `aitl chat`). */
   const suspend = async (fn: () => Promise<void>) => {
     mode = "busy";
     stdin.removeListener("keypress", onKeypress);
     if (stdin.isTTY) stdin.setRawMode(false);
+    stdin.pause();
     try {
       await fn();
     } finally {
       if (stdin.isTTY) stdin.setRawMode(true);
       stdin.on("keypress", onKeypress);
+      stdin.resume();
       mode = "menu";
       render();
     }
@@ -159,9 +183,15 @@ export async function runInteractive(): Promise<void> {
           stdout.write(`${CLEAR}${CYAN}› aitl ${args.join(" ")}${RESET}\n\n`);
           const [cmd, spawnArgs] = aitlSpawnArgs(args);
           const child = spawn(cmd, spawnArgs, { stdio: "inherit", env: process.env });
-          child.on("exit", () => {
+          const returnToMenu = () => {
             stdout.write(`\n${DIM}— done. Press Enter to return to the menu —${RESET}`);
             stdin.once("data", () => resolve());
+            stdin.resume(); // paused for the child's benefit; wake up for the Enter
+          };
+          child.on("exit", returnToMenu);
+          child.on("error", (err) => {
+            stdout.write(`\nfailed to spawn: ${err.message}\n`);
+            returnToMenu();
           });
         }),
     );
@@ -179,10 +209,17 @@ export async function runInteractive(): Promise<void> {
             if (!args.length) return resolve();
             const [cmd, spawnArgs] = aitlSpawnArgs(args);
             stdout.write(`\n${CYAN}› aitl ${args.join(" ")}${RESET}\n\n`);
+            stdin.pause(); // readline resumed stdin; hand the TTY back to the child
             const child = spawn(cmd, spawnArgs, { stdio: "inherit", env: process.env });
-            child.on("exit", () => {
+            const returnToMenu = () => {
               stdout.write(`\n${DIM}— done. Press Enter to return to the menu —${RESET}`);
               stdin.once("data", () => resolve());
+              stdin.resume();
+            };
+            child.on("exit", returnToMenu);
+            child.on("error", (err) => {
+              stdout.write(`\nfailed to spawn: ${err.message}\n`);
+              returnToMenu();
             });
           });
           if (prefill) rl.write(prefill);

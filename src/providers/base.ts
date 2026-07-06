@@ -284,7 +284,9 @@ export class FallbackProvider implements Provider {
       const gen = p.chatStream
         ? p.chatStream(messages, opts)
         : (async function* (prov: Provider): AsyncGenerator<StreamDelta, ChatTurn, void> {
-            return prov.chat(messages, opts);
+            // Await INSIDE the generator so a rejected chat() surfaces at gen.next()
+            // (inside the try below) and falls back to the next backend.
+            return await prov.chat(messages, opts);
           })(p);
       let started = false;
       try {

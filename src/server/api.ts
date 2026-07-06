@@ -133,6 +133,15 @@ async function upsertMemoryDoc(body: Record<string, unknown>, actor?: Actor): Pr
   return { slug: doc.slug, project: doc.project, category: doc.category, type: doc.type, version: doc.version };
 }
 
+/** Parse a `limit` query param defensively: NaN/negative/absent → default, always ≤ max.
+ *  Mongoose treats `.limit(NaN)` as "no limit", which would let `?limit=abc` stream a
+ *  whole collection through the unauthenticated read routes. */
+function parseLimit(searchParams: URLSearchParams, def: number, max = 500): number {
+  const n = Number(searchParams.get("limit") ?? def);
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(Math.floor(n), max);
+}
+
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -192,7 +201,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (pathname === "/api/memory/search" && method === "GET") {
     const project = searchParams.get("project") ?? undefined;
     const q = searchParams.get("q") ?? "";
-    const limit = Number(searchParams.get("limit") ?? "20");
+    const limit = parseLimit(searchParams, 20);
     const { embedOne } = await import("../ingest/embedder.js");
     let hits: unknown[];
     try {
@@ -209,7 +218,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return send(res, 200, await store.listMemory(project, {
       category: searchParams.get("category") ?? undefined,
       type: searchParams.get("type") ?? undefined,
-      limit: searchParams.has("limit") ? Number(searchParams.get("limit")) : undefined,
+      limit: parseLimit(searchParams, 200),
     }));
   }
 
@@ -278,7 +287,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     await ensureMongoose();
     const rows = await McpContextModel.find(query, { messages: 0, context: 0 })
       .sort({ created_at: -1 })
-      .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 100)
+      .limit(parseLimit(searchParams, 100))
       .lean();
     return send(res, 200, rows);
   }
@@ -322,7 +331,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     await ensureMongoose();
     const rows = await RunModel.find({ project })
       .sort({ started_at: -1 })
-      .limit(searchParams.has("limit") ? Number(searchParams.get("limit")) : 200)
+      .limit(parseLimit(searchParams, 200))
       .lean();
     return send(res, 200, rows);
   }
@@ -364,7 +373,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!project) throw new HttpError(400, "`project` query param is required.");
     const { PromptStore } = await import("../prompts/store.js");
     const rows = await new PromptStore().list(project, {
-      limit: searchParams.has("limit") ? Number(searchParams.get("limit")) : 200,
+      limit: parseLimit(searchParams, 200),
     });
     return send(res, 200, rows);
   }
