@@ -11,6 +11,7 @@
 import type { Db } from "mongodb";
 import { settings } from "../config.js";
 import { COLLECTIONS, getDb } from "./client.js";
+import { ensureMongoose } from "./mongoose.js";
 
 // Collections that hold an `embedding` field and need a vector index.
 export const VECTOR_COLLECTIONS = ["messages", "memory", "decisions"] as const;
@@ -125,6 +126,7 @@ export async function ensureVectorIndexes(db: Db): Promise<void> {
 }
 
 export async function initIndexes(db?: Db): Promise<Db> {
+  if (!db) await ensureMongoose(); // opens the shared connection getDb() rides on
   const database = db ?? getDb();
   await ensureCollections(database);
   await ensureScalarIndexes(database);

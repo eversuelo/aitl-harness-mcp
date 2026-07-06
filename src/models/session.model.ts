@@ -39,12 +39,11 @@ export type SessionDoc = InferSchemaType<typeof sessionSchema>;
 export const SessionModel = model("Session", sessionSchema);
 
 /** Build + validate a session doc (fills schema defaults). Same technique as `makeMemoryDoc`. */
-export const makeSessionDoc = (
+export const makeSessionDoc = async (
   v: Partial<SessionDoc> & { token_hash: string; user_id: string; role: string; expires_at: Date },
-): SessionDoc => {
+): Promise<SessionDoc> => {
   const doc = new SessionModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as SessionDoc & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the other builders
   return obj;

@@ -48,10 +48,19 @@ function modelForCollection(collection: string): Model<any> {
 }
 
 export class MemoryStore {
-  readonly db: Db;
+  private readonly _db: Db | null;
 
   constructor(db?: Db) {
-    this.db = db ?? getDb();
+    this._db = db ?? null;
+  }
+
+  /**
+   * Db handle: the injected one (tests) or the shared Mongoose-owned connection.
+   * Resolved lazily so `new MemoryStore()` works before the connection is open —
+   * every entry method awaits `ensureMongoose()` before touching it.
+   */
+  get db(): Db {
+    return this._db ?? getDb();
   }
 
   // ── writes ───────────────────────────────────────────────────────────

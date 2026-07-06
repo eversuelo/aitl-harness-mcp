@@ -62,10 +62,9 @@ export type Event = InferSchemaType<typeof eventSchema>;
 export const EventModel = model("Event", eventSchema);
 
 /** Build + validate an event (fills schema defaults). Mirrors the former Zod builder. */
-export const makeEvent = (v: Partial<Event> & { project: string; type: Event["type"] }): Event => {
+export const makeEvent = async (v: Partial<Event> & { project: string; type: Event["type"] }): Promise<Event> => {
   const doc = new EventModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as Event & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

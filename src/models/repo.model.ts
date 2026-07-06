@@ -39,10 +39,9 @@ export type RepoRecord = InferSchemaType<typeof repoSchema>;
 export const RepoModel = model("Repo", repoSchema);
 
 /** Build + validate a repo record (fills schema defaults). Mirrors the former Zod builder. */
-export const makeRepoRecord = (v: Partial<RepoRecord> & { project: string; name: string }): RepoRecord => {
+export const makeRepoRecord = async (v: Partial<RepoRecord> & { project: string; name: string }): Promise<RepoRecord> => {
   const doc = new RepoModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as RepoRecord & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

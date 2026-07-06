@@ -8,6 +8,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getDb } from "../db/client.js";
+import { ensureMongoose } from "../db/mongoose.js";
 
 export interface Canon {
   project: string;
@@ -17,6 +18,7 @@ export interface Canon {
 }
 
 export async function loadCanon(project: string, repoRoot: string): Promise<Canon> {
+  await ensureMongoose(); // opens the shared connection getDb() rides on
   const db = getDb();
   const agentsPath = join(repoRoot, "AGENTS.md");
   let agentsMd = "";

@@ -11,7 +11,7 @@ export class BranchStore {
 
   async upsert(rec: Partial<BranchRecord> & { project: string; repo: string; name: string }): Promise<BranchRecord> {
     await ensureMongoose();
-    const doc = makeBranchRecord(rec);
+    const doc = await makeBranchRecord(rec);
     doc.updated_at = new Date();
     const existing = await BranchModel.findOne(
       { project: doc.project, repo: doc.repo, name: doc.name },

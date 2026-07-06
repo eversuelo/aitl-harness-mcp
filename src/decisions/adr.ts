@@ -31,7 +31,7 @@ export async function parseAdrMarkdown(path: string, project: string): Promise<A
     sections[parts[i].toLowerCase()] = parts[i + 1].trim();
   }
 
-  return makeADR({
+  return await makeADR({
     project,
     id: adrId,
     title,

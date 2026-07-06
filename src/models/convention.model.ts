@@ -34,10 +34,9 @@ export type Convention = InferSchemaType<typeof conventionSchema>;
 export const ConventionModel = model("Convention", conventionSchema);
 
 /** Build + validate a convention (fills schema defaults). Mirrors the former Zod builder. */
-export const makeConvention = (v: Partial<Convention> & { project: string }): Convention => {
+export const makeConvention = async (v: Partial<Convention> & { project: string }): Promise<Convention> => {
   const doc = new ConventionModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as Convention & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

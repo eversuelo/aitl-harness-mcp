@@ -165,6 +165,7 @@ async function ensureCollection(name: string): Promise<void> {
 async function ensureMcpStorage(): Promise<void> {
   if (mcpStorageReady === null) {
     mcpStorageReady = (async () => {
+      await ensureMongoose(); // opens the shared connection getDb() rides on
       const db = getDb();
       for (const name of ["prompts", "mcp_context", "mcp_tool_calls"]) {
         await ensureCollection(name);
@@ -204,6 +205,7 @@ let projectCtxStorageReady: Promise<void> | null = null;
 async function ensureProjectCtxStorage(): Promise<void> {
   if (projectCtxStorageReady === null) {
     projectCtxStorageReady = (async () => {
+      await ensureMongoose(); // opens the shared connection getDb() rides on
       const db = getDb();
       for (const name of [AGENTS_COLLECTION, SKILLS_COLLECTION]) {
         await ensureCollection(name);
@@ -633,6 +635,7 @@ export function buildServer(): McpServer {
     { project: z.string(), limit: z.number().int().default(50) },
     async ({ project, limit }) => {
       return runLogged("list_decisions", { project, limit }, async () => {
+        await ensureMongoose();
         const rows = await getDb().collection("decisions").find({ project }).sort({ id: 1 }).limit(limit).toArray();
         return text(rows.map(jsonable));
       });
@@ -674,6 +677,7 @@ export function buildServer(): McpServer {
     "List the revision history of an ADR (current live version + archived snapshots).",
     { project: z.string(), id: z.string() },
     async ({ project, id }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
       const history = await db
@@ -697,6 +701,7 @@ export function buildServer(): McpServer {
     "Fetch a specific ADR version (live if it is the current version, else from history).",
     { project: z.string(), id: z.string(), version: z.number().int() },
     async ({ project, id, version }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
       const liveVersion = typeof live?.version === "number" ? live.version : 1;
@@ -712,6 +717,7 @@ export function buildServer(): McpServer {
     "List the revision history of a memory doc (current live version + archived snapshots).",
     { project: z.string(), slug: z.string() },
     async ({ project, slug }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
       const history = await db
@@ -734,6 +740,7 @@ export function buildServer(): McpServer {
     "Fetch a specific memory doc version (live if it is the current version, else from history).",
     { project: z.string(), slug: z.string(), version: z.number().int() },
     async ({ project, slug, version }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
       const liveVersion = typeof live?.version === "number" ? live.version : 1;
@@ -1091,6 +1098,7 @@ export function buildServer(): McpServer {
     { project: z.string().optional(), scope: z.string().default("all"), fmt: z.string().default("json") },
     async ({ project, scope, fmt }) => {
       return runLogged("graphify", { project, scope, fmt }, async () => {
+        await ensureMongoose();
         const graphs = await graphify(new MongoGraphSource(getDb()), { project, scope: scope as Scope });
         const per: Record<string, unknown> = {};
         let totalNodes = 0;

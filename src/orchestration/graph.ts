@@ -3,10 +3,8 @@
  *
  * `runAgent` is a fully-working, provider-agnostic loop that persists the run and
  * every turn into MongoDB (durable transcript) and respects the context budget.
- *
- * `buildGraph` wires the same loop as a LangGraph StateGraph with a MongoDB
- * checkpointer so runs are resumable/replayable. It is kept thin and lazily-imported
- * so the package works even before LangGraph internals are pinned.
+ * Runs are resumable/replayable from that durable transcript (`opts.resume`) — no
+ * graph framework involved.
  */
 
 import { randomUUID } from "node:crypto";
@@ -466,55 +464,4 @@ export async function runAgent(
     status: "done",
     decision_brief: decisionBrief,
   };
-}
-
-/**
- * Wire the loop as a checkpointed LangGraph StateGraph (resumable/replayable).
- * Lazily imports LangGraph + the Mongo checkpointer.
- */
-export async function buildGraph(opts: { provider?: Provider; registry?: ToolRegistry } = {}) {
-  const { optionalImport } = await import("../util/optional.js");
-  const { StateGraph, END, Annotation } = await optionalImport("@langchain/langgraph");
-  const { getCheckpointer } = await import("./checkpointer.js");
-
-  const provider = opts.provider ?? (await getProvider());
-  const registry = opts.registry ?? defaultRegistry;
-
-  // `Annotation` is resolved lazily as `any` (optional dep), so generic type args
-  // aren't available here; the reducers below carry the runtime contract instead.
-  const State = Annotation.Root({
-    messages: Annotation({
-      reducer: (a: Record<string, unknown>[], b: Record<string, unknown>[]) => a.concat(b),
-      default: () => [],
-    }),
-    last: Annotation(),
-  });
-
-  const agentNode = async (state: any) => {
-    const turn = await provider.chat(state.messages, { tools: registry.schemas() });
-    return {
-      messages: [{ role: "assistant", content: turn.text, tool_calls: turn.tool_calls }],
-      last: turn,
-    };
-  };
-
-  const toolsNode = async (state: any) => {
-    const out: Record<string, unknown>[] = [];
-    for (const call of state.last?.tool_calls ?? []) {
-      const result = await registry.call(call.name, call.input ?? {});
-      out.push({ role: "tool", tool_call_id: call.id, content: result });
-    }
-    return { messages: out };
-  };
-
-  const route = (state: any) => (state.last?.tool_calls.length ? "tools" : END);
-
-  const graph = new StateGraph(State)
-    .addNode("agent", agentNode)
-    .addNode("tools", toolsNode)
-    .setEntryPoint("agent")
-    .addConditionalEdges("agent", route, { tools: "tools", [END]: END })
-    .addEdge("tools", "agent");
-
-  return graph.compile({ checkpointer: await getCheckpointer() });
 }

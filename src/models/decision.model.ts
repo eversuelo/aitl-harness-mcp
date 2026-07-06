@@ -48,12 +48,11 @@ export type ADR = InferSchemaType<typeof adrSchema>;
 export const DecisionModel = model("Decision", adrSchema);
 
 /** Build + validate an ADR (fills schema defaults). Mirrors the former Zod builder. */
-export const makeADR = (
+export const makeADR = async (
   v: Partial<ADR> & { project: string; id: string; title: string; context: string; decision: string; consequences: string },
-): ADR => {
+): Promise<ADR> => {
   const doc = new DecisionModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as ADR & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

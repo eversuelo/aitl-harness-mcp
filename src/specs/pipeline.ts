@@ -44,7 +44,7 @@ export async function runSddPipeline(prompt: string, opts: SddPipelineOpts): Pro
 
   if (persist) {
     await ensureMongoose();
-    const run = makeRun({ project: opts.project, model: provider.name, harness_config: { sdd: true } });
+    const run = await makeRun({ project: opts.project, model: provider.name, harness_config: { sdd: true } });
     await RunModel.create({ ...run, _id: pipelineId });
   }
   // Phase telemetry reuses the existing `synthesis` event type (payload.kind disambiguates).

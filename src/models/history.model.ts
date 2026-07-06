@@ -64,12 +64,11 @@ export const modelFor = (kind: HistoryKind): Model<any> =>
   (kind === "decision" ? DecisionHistoryModel : MemoryHistoryModel) as unknown as Model<any>;
 
 /** Build + validate a history entry (fills schema defaults). Mirrors the former Zod builder. */
-export const makeHistoryEntry = (
+export const makeHistoryEntry = async (
   v: Partial<HistoryEntry> & { project: string; kind: HistoryEntry["kind"]; ref: string; version: number; snapshot: unknown },
-): HistoryEntry => {
+): Promise<HistoryEntry> => {
   const doc = new DecisionHistoryModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as HistoryEntry & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

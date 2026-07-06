@@ -12,7 +12,7 @@ export class RepoStore {
   /** Insert/update a repo, keyed by (project, name). Preserves created_at. */
   async upsert(rec: Partial<RepoRecord> & { project: string; name: string }): Promise<RepoRecord> {
     await ensureMongoose();
-    const doc = makeRepoRecord(rec);
+    const doc = await makeRepoRecord(rec);
     doc.updated_at = new Date();
     const existing = await RepoModel.findOne({ project: doc.project, name: doc.name }, { created_at: 1 }).lean();
     if (existing?.created_at instanceof Date) doc.created_at = existing.created_at;

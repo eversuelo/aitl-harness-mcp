@@ -25,7 +25,7 @@ export async function parseAgentsMd(path: string, project: string): Promise<Conv
       const severity = ["never", "must", "always"].some((w) => rule.toLowerCase().includes(w))
         ? "error"
         : "warn";
-      conventions.push(makeConvention({ project, scope_glob: "**/*", rule, severity }));
+      conventions.push(await makeConvention({ project, scope_glob: "**/*", rule, severity }));
     }
   }
   return conventions;

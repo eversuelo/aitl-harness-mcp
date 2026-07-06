@@ -60,10 +60,9 @@ export const RunModel = model("Run", runSchema);
  * Build + validate a run (fills schema defaults). Mirrors the former Zod builder: callers
  * supply the run `_id` (UUID) SEPARATELY at write time, so the built record is `_id`-free.
  */
-export const makeRun = (v: Partial<Run> & { project: string; model: string }): Run => {
+export const makeRun = async (v: Partial<Run> & { project: string; model: string }): Promise<Run> => {
   const doc = new RunModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as Run & { _id?: unknown };
   delete obj._id; // callers supply _id (the run UUID) separately at write time
   return obj;

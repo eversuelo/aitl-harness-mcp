@@ -68,7 +68,7 @@ export async function createSession(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlMs);
   await store.insert(
-    makeSessionDoc({
+    await makeSessionDoc({
       token_hash: hashToken(token),
       user_id: userId,
       role,

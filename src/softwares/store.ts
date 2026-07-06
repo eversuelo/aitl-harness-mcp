@@ -13,7 +13,7 @@ export class SoftwareStore {
   /** Insert/update a software, keyed by `name`. Preserves created_at. */
   async upsert(rec: Partial<SoftwareRecord> & { name: string }): Promise<SoftwareRecord> {
     await ensureMongoose();
-    const doc = makeSoftwareRecord(rec);
+    const doc = await makeSoftwareRecord(rec);
     doc.updated_at = new Date();
     const existing = await SoftwareModel.findOne({ name: doc.name }, { created_at: 1 }).lean();
     if (existing?.created_at instanceof Date) doc.created_at = existing.created_at;

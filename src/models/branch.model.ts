@@ -46,12 +46,11 @@ export type BranchRecord = InferSchemaType<typeof branchSchema>;
 export const BranchModel = model("Branch", branchSchema);
 
 /** Build + validate a branch record (fills schema defaults). Mirrors the former Zod builder. */
-export const makeBranchRecord = (
+export const makeBranchRecord = async (
   v: Partial<BranchRecord> & { project: string; repo: string; name: string },
-): BranchRecord => {
+): Promise<BranchRecord> => {
   const doc = new BranchModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as BranchRecord & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

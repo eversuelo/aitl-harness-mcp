@@ -11,7 +11,6 @@
  *   aitl repomap --root DIR --project P   build/print the repo map
  *   aitl adr-sync --dir docs/adr --project P  mirror ADRs into Mongo
  *   aitl export --adapter cursor --project P  project canon into a tool's format
- *   aitl eval --models gemini,openai --project P  run the eval delta (stub benchmarks)
  *   aitl mcp                              run the MCP server (stdio) for Claude Code
  *   aitl interactive | -i                interactive control panel (supervise MCP/UI)
  *   aitl ui --project P                   memory-admin web UI (HTTP API + Vite)
@@ -21,7 +20,6 @@
  *   aitl migrate-atlas <uri> --to-db P   copy a DB to another cluster (local → Atlas)
  */
 
-import "./util/quiet.js"; // FIRST: mute deprecation noise before mongoose loads
 import { Command } from "commander";
 import { closeClient } from "./db/client.js";
 
@@ -351,8 +349,8 @@ program
     const { getDb } = await import("./db/client.js");
     const { ensureMongoose } = await import("./db/mongoose.js");
     const { RunModel } = await import("./models/run.model.js");
-    const db = getDb();
     await ensureMongoose();
+    const db = getDb();
     const run = (await RunModel.findOne({ _id: runId }).lean()) as Record<string, unknown> | null;
     if (!run) {
       console.log(`(no run '${runId}')`);
@@ -529,19 +527,6 @@ program
     const canon = await loadCanon(opts.project, opts.root);
     const written = await (await getAdapter(opts.adapter)).export(canon, opts.root);
     console.log(`Wrote: ${written.join(", ")}`);
-    await closeClient();
-  });
-
-program
-  .command("eval")
-  .requiredOption("--models <list>", "Comma-separated model roles/names (e.g. gemini,openai).")
-  .option("--project <project>", "Project scope.", "eval")
-  .description("Run a benchmark with/without the harness for ≥2 models (concrete benchmarks TODO).")
-  .action(async (opts) => {
-    console.log(
-      `eval requires a concrete Benchmark implementation (see src/eval/runner.ts TODOs). ` +
-        `Models: ${opts.models}, project: ${opts.project}.`,
-    );
     await closeClient();
   });
 
@@ -1460,6 +1445,9 @@ Notes:
   combines cleanly). Servers that omit the stream usage chunk (older LM Studio)
   report 0 tokens for streamed turns; a mid-stream retry may repeat deltas.
   --verify-cmd makes the run end only when the command exits 0 (quality gate).
+  Experimental comparison (thesis conditions): C0 = \`aitl run --bare\` (no hydrate,
+  no skills, no gates) vs C2 = the default full harness. Run the same task under both
+  conditions and compare with run-show — there is no separate eval command.
   Persists a run+transcript; inspect it with: aitl run-show <runId>.`,
 
   "chat": `
@@ -1563,13 +1551,6 @@ Examples:
 
 Notes:
   Adapters: agents_md | cursor | copilot | antigravity | kiro | trae. Incremental write.`,
-
-  "eval": `
-Examples:
-  aitl eval --models openrouter,primary --project eval
-
-Notes:
-  Runs the harness-vs-bare delta across ≥2 models. Concrete benchmarks are stubs (TODO).`,
 
   "mcp": `
 Examples:
