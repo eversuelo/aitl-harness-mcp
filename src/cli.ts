@@ -521,16 +521,48 @@ program
 
 program
   .command("repomap")
-  .requiredOption("--root <dir>", "Codebase root to map.")
+  .option("--root <dir>", "Codebase root to map (required without --modules; with --modules it forces a rebuild first).")
   .requiredOption("--project <project>", "Project scope.")
   .option("--repo <repo>", "Repo sub-scope (rebuilds only this repo's symbols).")
-  .description("Build the tree-sitter + PageRank repo map and print the top symbols.")
+  .option("--modules", "Print the first-level module map (kind view|back|mixed|infra + files + top symbols) from the cached symbols.", false)
+  .option("--json", "With --modules: print the module map as JSON.", false)
+  .description("Build the tree-sitter + PageRank repo map and print the top symbols (or the module map with --modules).")
   .action(async (opts) => {
+    // Without --modules the legacy contract holds: --root is required (build + render).
+    if (!opts.root && !opts.modules) program.error("error: required option '--root <dir>' not specified");
     const { RepoMap } = await import("./repomap/store.js");
     const rm = new RepoMap();
-    const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
-    console.log(`Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`);
-    console.log(await rm.render(opts.project, opts.repo ? { repo: opts.repo } : {}));
+    if (opts.root) {
+      const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
+      // With --modules --json keep stdout machine-readable; the build note goes to stderr.
+      const note = `Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`;
+      if (opts.modules && opts.json) console.error(note.trimEnd());
+      else console.log(note);
+    }
+    if (opts.modules) {
+      const { buildModuleMap, renderModuleMap } = await import("./repomap/modules.js");
+      const map = await buildModuleMap(opts.project, {
+        ...(opts.repo ? { repo: opts.repo } : {}),
+        ...(opts.root ? { root: opts.root } : {}),
+      });
+      console.log(opts.json ? JSON.stringify(map, null, 2) : renderModuleMap(map));
+    } else {
+      console.log(await rm.render(opts.project, opts.repo ? { repo: opts.repo } : {}));
+    }
+    await closeClient();
+  });
+
+program
+  .command("module-brief")
+  .argument("<dir>", "Module dir, repo-root-relative (e.g. src/server).")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--repo <repo>", "Repo sub-scope for the module map.")
+  .option("--json", "Print the brief as JSON.", false)
+  .description("Render a module's brief: its module-map block + ACTIVE ADRs whose components match the dir + memories tagged component:<dir>.")
+  .action(async (dir, opts) => {
+    const { buildModuleBrief, renderModuleBrief } = await import("./repomap/modules.js");
+    const brief = await buildModuleBrief({ project: opts.project, dir, ...(opts.repo ? { repo: opts.repo } : {}) });
+    console.log(opts.json ? JSON.stringify(brief, null, 2) : renderModuleBrief(brief));
     await closeClient();
   });
 
@@ -1776,10 +1808,26 @@ Notes:
 Examples:
   aitl repomap --root . --project demo
   aitl repomap --root . --project demo --repo backend
+  aitl repomap --modules --project demo --repo backend        # module map from the cached symbols
+  aitl repomap --modules --json --root . --project demo       # rebuild first, then JSON module map
 
 Notes:
   Builds the symbol map (tree-sitter heuristic) + PageRank and prints the top symbols.
+  --modules groups the cached symbols by first-level dir (kind view|back|mixed|infra,
+  files, top symbols by PageRank); when ONE top-level dir holds >80% of the files it
+  descends one level (src/server, src/db, ...). Override kinds in .aitl/modules.json.
   Tip: point --root at src to avoid indexing dist/ noise.`,
+
+  "module-brief": `
+Examples:
+  aitl module-brief src/server --project demo
+  aitl module-brief web --project demo --repo frontend --json
+
+Notes:
+  Renders the module's invariants checklist: its module-map block (kind, files, top
+  symbols) + ACTIVE ADRs whose components[] match the dir (prefix match both ways;
+  deprecated/superseded excluded) + memories tagged component:<dir>. Tag decisions
+  via record_decision { components: ["src/server"] }; capture-session auto-tags memories.`,
 
   "index-repo": `
 Examples:

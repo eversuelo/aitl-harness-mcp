@@ -34,6 +34,7 @@ import { makeMemoryDoc } from "../models/memory.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { ADRStore } from "../decisions/adr.js";
 import { RepoMap } from "../repomap/store.js";
+import { buildModuleBrief, buildModuleMap, renderModuleBrief, renderModuleMap } from "../repomap/modules.js";
 import { DefinitionStore } from "../projectctx/store.js";
 import { AGENTS_COLLECTION, SKILLS_COLLECTION, type DefinitionKind } from "../models/definition.model.js";
 import { MongoGraphSource, type Scope, graphToDot, graphify } from "../graph/index.js";
@@ -626,6 +627,30 @@ export function buildServer(): McpServer {
         const rm = new RepoMap();
         if (root) await rm.build(root, project, repo ?? null);
         return text(await rm.render(project, repo ? { maxTokens, repo } : { maxTokens }));
+      });
+    },
+  );
+
+  server.tool(
+    "get_module_map",
+    "Return the first-level module map for a project from the cached repo map: module → kind (view|back|mixed|infra), file count, symbol count and top symbols by PageRank. Read-only; build the symbols first with get_repomap/index_repo.",
+    { project: z.string(), repo: z.string().optional() },
+    async ({ project, repo }) => {
+      return runLogged("get_module_map", { project, repo }, async () => {
+        const map = await buildModuleMap(project, repo !== undefined ? { repo } : {});
+        return text({ rendered: renderModuleMap(map), ...(jsonable(map) as Record<string, unknown>) });
+      });
+    },
+  );
+
+  server.tool(
+    "get_module_brief",
+    "Return a module's brief: its module-map block + ACTIVE ADRs whose components[] match the dir (prefix match; deprecated/superseded excluded) + memories tagged component:<dir>. Read-only.",
+    { project: z.string(), dir: z.string(), repo: z.string().optional() },
+    async ({ project, dir, repo }) => {
+      return runLogged("get_module_brief", { project, dir, repo }, async () => {
+        const brief = await buildModuleBrief({ project, dir, ...(repo !== undefined ? { repo } : {}) });
+        return text({ rendered: renderModuleBrief(brief), ...(jsonable(brief) as Record<string, unknown>) });
       });
     },
   );
