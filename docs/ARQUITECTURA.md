@@ -432,11 +432,22 @@ flowchart LR
     SUM --> CLS["Classifier<br/>reglas → LLM<br/>memory/classifier.ts"]
     CLS --> EMB["embedOne()<br/>384d"]
     EMB --> UP["upsertMemory(type=project)"]
-    UP --> TRIG{"¿supera límites?<br/>memoryMaxDocs=500<br/>memoryMaxTokens=200k"}
-    TRIG -- sí --> SYN["Synthesizer<br/>agrupa por category<br/>memory/synthesizer.ts"]
-    SYN --> UP2["upsertMemory(type=synthesis)<br/>logEvent('synthesis')"]
+    UP --> TRIG{"¿supera límites?<br/>memoryMaxDocs=500<br/>memoryMaxTokens=200k<br/>(solo memoria VIVA)"}
+    TRIG -- sí --> SYN["Synthesizer<br/>agrupa por category<br/>pliega la síntesis previa<br/>memory/synthesizer.ts"]
+    SYN --> UP2["upsertMemory(type=synthesis)<br/>logEvent('synthesis' + stats)"]
+    UP2 --> CMP["--compact: fuentes<br/>compacted_into ← slug<br/>(fuera de hydrate/trigger,<br/>nunca borradas)"]
     TRIG -- no --> END["fin"]
 ```
+
+**Compresión rodante (ADR-0059).** `aitl synthesize` comprime de verdad, no solo resume:
+cada corrida pliega la síntesis previa de la categoría más los docs nuevos (no re-lee todo el
+banco); con modelo, el resumen es map-reduce sobre lotes acotados (nada se trunca en silencio;
+una respuesta vacía del modelo cae al extractivo — una síntesis jamás queda en blanco); con
+`--compact`, las fuentes absorbidas se estampan con `compacted_into` y salen de la memoria viva
+(preámbulo de hydrate + trigger de crecimiento) **sin borrarse**: siguen versionadas, espejadas
+por `sync` y alcanzables por búsqueda explícita (recall profundo) — el mismo ciclo de vida
+suave de los ADRs (ADR-0049). El evento `synthesis` registra chars antes→después por categoría
+(métrica #8, memoria).
 
 ### Cascada de recuperación (en `hydrate` y en búsqueda)
 
@@ -509,7 +520,7 @@ flowchart TB
 |---|---|
 | Bootstrap | `init` (repo en un comando, ADR-0052), `init agent`, `init claude` |
 | DB | `check-db`, `init-db`, `migrate-atlas <uri>` |
-| Memoria | `ingest`, `search`, `synthesize [--at <ref>]`, `memory history` |
+| Memoria | `ingest`, `search`, `synthesize [--at <ref>] [--compact]`, `memory history` |
 | Ejecución | `run [--stream\|--ask\|--mcp\|--verify-cmd\|--bare]`, `chat`, `run-host --host`, `orchestrate --max`, `sdd`, `council --hosts a,b [--judge]`, `models`, `run-show`, `intervene` |
 | Repo/ADR | `repomap [--modules]`, `module-brief <dir>`, `index-repo`, `adr-sync`, `adr {history,deprecate}`, `branch {sync,list,rm}`, `software`/`repo` (catálogo) |
 | Coordinación | `coord {claim,release,list,poll}` (cursor incremental en `~/.aitl/`) |

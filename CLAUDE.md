@@ -131,6 +131,14 @@ spelling — those fragment the history. Verify the hash above matches
 > → extraArgs → readonlyArgs AL FINAL: el solo-lectura del council siempre gana),
 > CLI `run-host --permission-mode/--allowed-tools`. 12 tests nuevos (280).
 > Ledger ahora contiguo **0001–0058**; next free **0059**.
+> 0059 (2026-07-07): compresión rodante del knowledge en `synthesize` — campo
+> `compacted_into` en memoria (ciclo de vida suave à la 0049: fuera de hydrate/trigger,
+> nunca borrado, buscable por recall explícito), plegado incremental de la síntesis
+> previa + solo docs nuevos, resumen map-reduce por lotes (`chunkTexts`, sin truncado
+> silencioso; respuesta vacía del modelo cae al extractivo — síntesis jamás en blanco),
+> `markCompacted` en el store, CLI `synthesize --compact` + reporte chars antes→después,
+> evento `synthesis` con stats. 10 tests nuevos (290); E2E vivo contra Atlas.
+> Ledger ahora contiguo **0001–0059**; next free **0060**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero

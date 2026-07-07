@@ -42,8 +42,13 @@ async function relevant(
 ): Promise<Record<string, unknown>[]> {
   // Optional repo sub-scope (ADR-0028): applied as a post-filter on the vector/text
   // paths (whose backends only filter by project) and natively in the recency query.
+  // Memory docs absorbed into a synthesis (`compacted_into`, ADR-0059) are excluded from
+  // the hydrate preamble — their synthesis represents them; explicit search tools still
+  // reach them for deep recall.
   const byRepo = (rows: Record<string, unknown>[]) =>
-    repo === undefined ? rows : rows.filter((r) => (r.repo ?? null) === repo);
+    (repo === undefined ? rows : rows.filter((r) => (r.repo ?? null) === repo)).filter(
+      (r) => !r.compacted_into,
+    );
 
   // The vector branch loads the embedding model (seconds on first use). A fast caller
   // (e.g. a per-prompt hook) can skip it with useVector=false and go straight to the
@@ -63,7 +68,9 @@ async function relevant(
     // fall through to recency
   }
   try {
-    const query: Record<string, unknown> = { project };
+    // `compacted_into: null` also matches docs without the field, so the filter is a
+    // no-op on collections that don't carry the lifecycle flag (decisions, etc.).
+    const query: Record<string, unknown> = { project, compacted_into: null };
     if (repo !== undefined) query.repo = repo;
     return await store.db
       .collection(collection)

@@ -18,7 +18,8 @@ export {
 export { initIndexes } from "./db/indexes.js";
 export { MemoryStore } from "./memory/store.js";
 export { Classifier } from "./memory/classifier.js";
-export { Synthesizer } from "./memory/synthesizer.js";
+export { Synthesizer, chunkTexts } from "./memory/synthesizer.js";
+export type { SynthesisReport, CategorySynthesis } from "./memory/synthesizer.js";
 export { hydrate, summarizeSession, TRIGGER_CATEGORIES } from "./memory/lifecycle.js";
 export { getProvider, estimateTokens } from "./providers/base.js";
 export type { Provider, ChatTurn } from "./providers/base.js";

@@ -603,6 +603,11 @@ program
   .requiredOption("--project <project>", "Project scope.")
   .option("--force", "Synthesize even if under the limit.", false)
   .option("--at <ref>", "Stamp the synthesis docs with this git ref's commit (provenance only, no historical rebuild).")
+  .option(
+    "--compact",
+    "Archive the absorbed sources out of the live memory (compacted_into ← synthesis slug): they leave hydrate and the growth trigger but stay searchable and versioned — nothing is deleted.",
+    false,
+  )
   .description("Compact a project's memory when it exceeds the configured limit.")
   .action(async (opts) => {
     let commitSha: string | undefined;
@@ -629,11 +634,23 @@ program
     }
     const { Synthesizer } = await import("./memory/synthesizer.js");
     const { MemoryStore } = await import("./memory/store.js");
-    const written = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
+    const report = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
       force: opts.force,
+      compact: opts.compact,
       ...(commitSha !== undefined ? { commitSha } : {}),
     });
-    console.log(`Synthesis docs written: ${written.length ? written.join(", ") : "(none — under limit)"}`);
+    console.log(
+      `Synthesis docs written: ${report.written.length ? report.written.join(", ") : "(none — under limit)"}`,
+    );
+    for (const c of report.categories) {
+      const ratio = c.chars_before > 0 ? ` (${Math.round((100 * c.chars_after) / c.chars_before)}%)` : "";
+      console.log(
+        `  - ${c.category}: ${c.sources} source${c.sources === 1 ? "" : "s"}${c.folded ? " + previous synthesis" : ""}, ${c.chars_before} → ${c.chars_after} chars${ratio}`,
+      );
+    }
+    if (opts.compact && report.written.length) {
+      console.log(`Compacted sources (excluded from hydrate/trigger, never deleted): ${report.compacted}`);
+    }
     // Curation (F4): PROPOSE stale-ADR deprecations — never applied automatically.
     const { proposeDeprecations } = await import("./decisions/lifecycle.js");
     const proposals = await proposeDeprecations(opts.project);
@@ -2045,14 +2062,20 @@ Notes:
 Examples:
   aitl synthesize --project demo
   aitl synthesize --project demo --force
+  aitl synthesize --project demo --force --compact     # sources leave the live memory
   aitl synthesize --project demo --force --at v1.2.0   # stamp docs with that ref's commit
 
 Notes:
   Compacts the memory bank by category when it exceeds the configured limit (--force
-  ignores the limit). Never touches ADRs. --at resolves any git ref and stamps its
-  commit_sha on the synthesis docs (provenance only — no historical reconstruction).
-  Afterwards it PROPOSES stale-ADR deprecations (superseded_by set, review_after
-  lapsed, near-duplicate titles); apply them manually with \`aitl adr deprecate\`.`,
+  ignores the limit). Rolling compression: each run folds the previous synthesis plus
+  only the docs that accumulated since. With a model the summary is map-reduced over
+  bounded chunks (nothing silently truncated); without one it degrades to extractive.
+  --compact stamps the absorbed sources with compacted_into so they leave hydrate and
+  the growth trigger — they stay searchable/versioned; NOTHING is deleted. Never
+  touches ADRs. --at resolves any git ref and stamps its commit_sha on the synthesis
+  docs (provenance only — no historical reconstruction). Afterwards it PROPOSES
+  stale-ADR deprecations (superseded_by set, review_after lapsed, near-duplicate
+  titles); apply them manually with \`aitl adr deprecate\`.`,
 
   "repomap": `
 Examples:
