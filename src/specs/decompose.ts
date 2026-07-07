@@ -11,6 +11,7 @@ import { embedOne } from "../ingest/embedder.js";
 import { MemoryStore } from "../memory/store.js";
 import { type MemoryDoc, makeMemoryDoc } from "../models/memory.model.js";
 import type { Provider } from "../providers/base.js";
+import { extractJsonArray } from "../util/json.js";
 
 export interface SddTask {
   id: string;
@@ -85,36 +86,6 @@ function narrowTask(v: unknown, n: number): SddTask | null {
   };
 }
 
-/**
- * Extract the FIRST balanced JSON array from free-form text. A greedy regex
- * (`/\[[\s\S]*\]/`) over-matches when the model appends prose containing another
- * `]` after the array — found live with gemma-4 on LM Studio, so we walk brackets
- * (string- and escape-aware) instead.
- */
-function extractJsonArray(text: string): string {
-  const start = text.indexOf("[");
-  if (start === -1) throw new Error("no JSON array found in the answer");
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "[") depth += 1;
-    else if (ch === "]") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  throw new Error("unbalanced JSON array in the answer");
-}
-
 function parseTasks(text: string, maxTasks: number): SddTask[] {
   const arr = JSON.parse(extractJsonArray(text)) as unknown;
   if (!Array.isArray(arr)) throw new Error("the JSON is not an array");
@@ -176,7 +147,7 @@ export async function decomposeTasks(args: DecomposeArgs): Promise<{ tasks: SddT
       JSON.stringify(t, null, 2),
       "```",
     ].join("\n");
-    const doc: MemoryDoc = makeMemoryDoc({
+    const doc: MemoryDoc = await makeMemoryDoc({
       project: args.project,
       slug,
       repo: args.repo ?? null,

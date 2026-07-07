@@ -27,7 +27,7 @@ function stubModels(initialLive: Record<string, unknown>[] = []): {
     },
   })) as never);
 
-  // `makeHistoryEntry` (which builds via `new DecisionHistoryModel` + validateSync) still
+  // `makeHistoryEntry` (which builds via `new DecisionHistoryModel` + async validate()) still
   // runs for real; only the persistence `create` is captured into the local array.
   mock.method(DecisionHistoryModel, "create", ((doc: Record<string, unknown>) => {
     history.push(doc);
@@ -98,6 +98,66 @@ test("unchanged write → no snapshot, version preserved (idempotent re-sync)", 
     assert.equal(res.changed, false);
     assert.equal(next.version, 3);
     assert.equal(history.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+// ── commit_sha provenance (F2) ────────────────────────────────────────────────
+
+test("commit_sha is stamped alongside branch on the version being written", async () => {
+  const { restore } = stubModels();
+  try {
+    const next: Record<string, unknown> = { project: "p", id: "0002", title: "T", context: "c", decision: "d", consequences: "", status: "accepted" };
+    await archiveAndBumpVersion({
+      kind: "decision",
+      query: { project: "p", id: "0002" }, nextDoc: next, contentFields: ADR_CONTENT_FIELDS, ref: "0002",
+      branch: "feat/x", commit_sha: "cafebabe0001",
+    });
+    assert.equal(next.branch, "feat/x");
+    assert.equal(next.commit_sha, "cafebabe0001");
+  } finally {
+    restore();
+  }
+});
+
+test("unchanged re-write preserves the ORIGINAL commit_sha (like branch/authorship)", async () => {
+  const { history, restore } = stubModels([
+    { project: "p", id: "0002", title: "T", decision: "d", consequences: "", status: "accepted", version: 2, branch: "main", commit_sha: "original000" },
+  ]);
+  try {
+    const next: Record<string, unknown> = { project: "p", id: "0002", title: "T", decision: "d", consequences: "", status: "accepted" };
+    const res = await archiveAndBumpVersion({
+      kind: "decision",
+      query: { project: "p", id: "0002" }, nextDoc: next, contentFields: ADR_CONTENT_FIELDS, ref: "0002",
+      branch: "feat/y", commit_sha: "newer000",
+    });
+    assert.equal(res.changed, false);
+    assert.equal(next.commit_sha, "original000"); // idempotent re-sync keeps provenance
+    assert.equal(next.branch, "main");
+    assert.equal(history.length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("changed write archives the PRIOR commit_sha and stamps the new one on the live doc", async () => {
+  const { history, restore } = stubModels([
+    { project: "p", id: "0002", title: "T", decision: "d", consequences: "", status: "accepted", version: 1, branch: "main", commit_sha: "old0001" },
+  ]);
+  try {
+    const next: Record<string, unknown> = { project: "p", id: "0002", title: "T", decision: "d2", consequences: "", status: "accepted" };
+    const res = await archiveAndBumpVersion({
+      kind: "decision",
+      query: { project: "p", id: "0002" }, nextDoc: next, contentFields: ADR_CONTENT_FIELDS, ref: "0002",
+      branch: "feat/z", commit_sha: "new0002",
+    });
+    assert.equal(res.changed, true);
+    assert.equal(next.version, 2);
+    assert.equal(next.commit_sha, "new0002");
+    assert.equal(history.length, 1);
+    assert.equal(history[0].commit_sha, "old0001"); // archived snapshot attributed to ITS commit
+    assert.equal((history[0].snapshot as Record<string, unknown>).commit_sha, "old0001");
   } finally {
     restore();
   }

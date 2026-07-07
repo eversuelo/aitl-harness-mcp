@@ -29,10 +29,12 @@ import { embedOne } from "../ingest/embedder.js";
 import { extractLinks, parseMarkdownDir } from "../ingest/markdown.js";
 import { Classifier } from "../memory/classifier.js";
 import { MEMORY_TYPES, RESERVED_MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
+import { ADR_STATUSES } from "../models/decision.model.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import { MemoryStore } from "../memory/store.js";
 import { ADRStore } from "../decisions/adr.js";
 import { RepoMap } from "../repomap/store.js";
+import { buildModuleBrief, buildModuleMap, renderModuleBrief, renderModuleMap } from "../repomap/modules.js";
 import { DefinitionStore } from "../projectctx/store.js";
 import { AGENTS_COLLECTION, SKILLS_COLLECTION, type DefinitionKind } from "../models/definition.model.js";
 import { MongoGraphSource, type Scope, graphToDot, graphify } from "../graph/index.js";
@@ -165,6 +167,7 @@ async function ensureCollection(name: string): Promise<void> {
 async function ensureMcpStorage(): Promise<void> {
   if (mcpStorageReady === null) {
     mcpStorageReady = (async () => {
+      await ensureMongoose(); // opens the shared connection getDb() rides on
       const db = getDb();
       for (const name of ["prompts", "mcp_context", "mcp_tool_calls"]) {
         await ensureCollection(name);
@@ -204,6 +207,7 @@ let projectCtxStorageReady: Promise<void> | null = null;
 async function ensureProjectCtxStorage(): Promise<void> {
   if (projectCtxStorageReady === null) {
     projectCtxStorageReady = (async () => {
+      await ensureMongoose(); // opens the shared connection getDb() rides on
       const db = getDb();
       for (const name of [AGENTS_COLLECTION, SKILLS_COLLECTION]) {
         await ensureCollection(name);
@@ -239,6 +243,7 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   ingest_path: { resource: "memory", action: "create" },
   graphify: { resource: "memory", action: "update" },
   record_decision: { resource: "decisions", action: "create" },
+  deprecate_decision: { resource: "decisions", action: "update" },
   record_prompt: { resource: "prompts", action: "create" },
   write_software: { resource: "softwares", action: "create" },
   delete_software: { resource: "softwares", action: "delete" },
@@ -250,6 +255,9 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   delete_branch: { resource: "branches", action: "delete" },
   write_role: { resource: "agents_skills", action: "create" },
   seed_roles: { resource: "agents_skills", action: "create" },
+  // Coordination (ADR-0002 v1): claims mutate durable state; poll_events stays read-only (ungated).
+  claim_task: { resource: "coordination", action: "create" },
+  release_task: { resource: "coordination", action: "update" },
 };
 
 /**
@@ -381,7 +389,7 @@ export function buildServer(): McpServer {
         const t: MemoryType = (MEMORY_TYPES as readonly string[]).includes(type) && !RESERVED_MEMORY_TYPES.has(type)
           ? (type as MemoryType)
           : "project";
-        const doc = makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
+        const doc = await makeMemoryDoc({ project, slug, repo: repo ?? null, type: t, description, body, links: extractLinks(body), tags: tags ?? [] });
         await new Classifier().classifyMemory(doc);
         doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
         const a = mcpActor();
@@ -626,6 +634,30 @@ export function buildServer(): McpServer {
     },
   );
 
+  server.tool(
+    "get_module_map",
+    "Return the first-level module map for a project from the cached repo map: module → kind (view|back|mixed|infra), file count, symbol count and top symbols by PageRank. Read-only; build the symbols first with get_repomap/index_repo.",
+    { project: z.string(), repo: z.string().optional() },
+    async ({ project, repo }) => {
+      return runLogged("get_module_map", { project, repo }, async () => {
+        const map = await buildModuleMap(project, repo !== undefined ? { repo } : {});
+        return text({ rendered: renderModuleMap(map), ...(jsonable(map) as Record<string, unknown>) });
+      });
+    },
+  );
+
+  server.tool(
+    "get_module_brief",
+    "Return a module's brief: its module-map block + ACTIVE ADRs whose components[] match the dir (prefix match; deprecated/superseded excluded) + memories tagged component:<dir>. Read-only.",
+    { project: z.string(), dir: z.string(), repo: z.string().optional() },
+    async ({ project, dir, repo }) => {
+      return runLogged("get_module_brief", { project, dir, repo }, async () => {
+        const brief = await buildModuleBrief({ project, dir, ...(repo !== undefined ? { repo } : {}) });
+        return text({ rendered: renderModuleBrief(brief), ...(jsonable(brief) as Record<string, unknown>) });
+      });
+    },
+  );
+
   // ── decisions / ADRs ────────────────────────────────────────────────────────
   server.tool(
     "list_decisions",
@@ -633,6 +665,7 @@ export function buildServer(): McpServer {
     { project: z.string(), limit: z.number().int().default(50) },
     async ({ project, limit }) => {
       return runLogged("list_decisions", { project, limit }, async () => {
+        await ensureMongoose();
         const rows = await getDb().collection("decisions").find({ project }).sort({ id: 1 }).limit(limit).toArray();
         return text(rows.map(jsonable));
       });
@@ -641,7 +674,7 @@ export function buildServer(): McpServer {
 
   server.tool(
     "record_decision",
-    'Record a versioned ADR (embedded for $vectorSearch). `id` e.g. "0007".',
+    'Record a versioned ADR (embedded for $vectorSearch). `id` e.g. "0007". Optional lifecycle fields: `review_after` (ISO date, soft TTL) and `components` (dirs/modules it constrains).',
     {
       project: z.string(),
       id: z.string(),
@@ -649,15 +682,64 @@ export function buildServer(): McpServer {
       context: z.string(),
       decision: z.string(),
       consequences: z.string().default(""),
-      status: z.enum(["proposed", "accepted", "superseded"]).default("accepted"),
+      status: z.enum(ADR_STATUSES).default("accepted"),
+      review_after: z.string().optional(),
+      components: z.array(z.string()).optional(),
     },
-    async ({ project, id, title, context, decision, consequences, status }) => {
-      return runLogged("record_decision", { project, id, title, context, decision, consequences, status }, async () => {
+    async ({ project, id, title, context, decision, consequences, status, review_after, components }) => {
+      return runLogged("record_decision", { project, id, title, context, decision, consequences, status, review_after, components }, async () => {
         const { makeADR } = await import("../models/decision.model.js");
-        const adr = makeADR({ project, id, title, context, decision, consequences, status });
+        let reviewAfter: Date | null = null;
+        if (review_after) {
+          reviewAfter = new Date(review_after);
+          if (Number.isNaN(reviewAfter.getTime())) throw new Error(`invalid review_after date '${review_after}' (use ISO, e.g. 2027-01-31)`);
+        }
+        const adr = await makeADR({ project, id, title, context, decision, consequences, status, review_after: reviewAfter, components: components ?? [] });
         const a = mcpActor();
         await new ADRStore().upsert(adr, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
+        // Coordination broadcast (ADR-0002 v1): peers polling this project's coord_events
+        // learn about the new ADR without change streams. Best-effort by contract —
+        // `recordCoordNote` swallows storage failures and the explicit catch also covers
+        // a failed dynamic import: NEVER blocks the ADR write.
+        try {
+          const { recordCoordNote } = await import("../coord/events.js");
+          await recordCoordNote(project, "decision", { id: adr.id, title: adr.title }, { actorId: a.id });
+        } catch {
+          // best-effort: a coordination hiccup must never break record_decision
+        }
         return text({ id: adr.id, title: adr.title, status: adr.status, version: adr.version });
+      });
+    },
+  );
+
+  server.tool(
+    "deprecate_decision",
+    "Mark an ADR as deprecated with a reason (append-only: version bump + history snapshot; the doc is NEVER deleted). Optional superseded_by and review_after (ISO date, soft TTL).",
+    {
+      project: z.string(),
+      id: z.string(),
+      reason: z.string(),
+      superseded_by: z.string().optional(),
+      review_after: z.string().optional(),
+    },
+    async ({ project, id, reason, superseded_by, review_after }) => {
+      return runLogged("deprecate_decision", { project, id, reason, superseded_by, review_after }, async () => {
+        const { deprecateDecision } = await import("../decisions/lifecycle.js");
+        let reviewAfter: Date | null = null;
+        if (review_after) {
+          reviewAfter = new Date(review_after);
+          if (Number.isNaN(reviewAfter.getTime())) throw new Error(`invalid review_after date '${review_after}' (use ISO, e.g. 2027-01-31)`);
+        }
+        const a = mcpActor();
+        const res = await deprecateDecision({
+          project,
+          id,
+          reason,
+          supersededBy: superseded_by ?? null,
+          reviewAfter,
+          actor: { id: a.id, role: a.role },
+        });
+        return text(res);
       });
     },
   );
@@ -674,6 +756,7 @@ export function buildServer(): McpServer {
     "List the revision history of an ADR (current live version + archived snapshots).",
     { project: z.string(), id: z.string() },
     async ({ project, id }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
       const history = await db
@@ -697,6 +780,7 @@ export function buildServer(): McpServer {
     "Fetch a specific ADR version (live if it is the current version, else from history).",
     { project: z.string(), id: z.string(), version: z.number().int() },
     async ({ project, id, version }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("decisions").findOne({ project, id }, { projection: { embedding: 0 } });
       const liveVersion = typeof live?.version === "number" ? live.version : 1;
@@ -712,6 +796,7 @@ export function buildServer(): McpServer {
     "List the revision history of a memory doc (current live version + archived snapshots).",
     { project: z.string(), slug: z.string() },
     async ({ project, slug }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
       const history = await db
@@ -734,6 +819,7 @@ export function buildServer(): McpServer {
     "Fetch a specific memory doc version (live if it is the current version, else from history).",
     { project: z.string(), slug: z.string(), version: z.number().int() },
     async ({ project, slug, version }) => {
+      await ensureMongoose();
       const db = getDb();
       const live = await db.collection("memory").findOne({ project, slug }, { projection: { embedding: 0 } });
       const liveVersion = typeof live?.version === "number" ? live.version : 1;
@@ -1041,7 +1127,7 @@ export function buildServer(): McpServer {
     async ({ project, run_id, reason, minutes }) => {
       return runLogged("record_human_intervention", { project, run_id, reason, minutes }, async () => {
         const { makeEvent } = await import("../models/event.model.js");
-        await new MemoryStore().logEvent(makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
+        await new MemoryStore().logEvent(await makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
         return text({ ok: true, run_id, minutes });
       });
     },
@@ -1091,6 +1177,7 @@ export function buildServer(): McpServer {
     { project: z.string().optional(), scope: z.string().default("all"), fmt: z.string().default("json") },
     async ({ project, scope, fmt }) => {
       return runLogged("graphify", { project, scope, fmt }, async () => {
+        await ensureMongoose();
         const graphs = await graphify(new MongoGraphSource(getDb()), { project, scope: scope as Scope });
         const per: Record<string, unknown> = {};
         let totalNodes = 0;
@@ -1103,6 +1190,66 @@ export function buildServer(): McpServer {
         if (fmt === "dot") return text(graphToDot(graphs));
         if (project) return text(per[project]);
         return text({ projects: per, counts: { projects: Object.keys(graphs).length, nodes: totalNodes, edges: totalEdges } });
+      });
+    },
+  );
+
+  // ── coordination (ADR-0002 v1): task claims + events + polling ────────────────
+  // The claim owner is THIS server's actor (mcpActor → AITL_MCP_ACTOR_ID or
+  // agent:aitl-server), so two collaborating servers present distinct owners.
+  server.tool(
+    "claim_task",
+    "Claim a task for coordination (atomic; ONE active claim per project+task_key). Conflict returns { ok:false, heldBy, expiresAt }. Claims ALWAYS expire (default 30 min / AITL_CLAIM_TTL_MS); re-claiming your own task renews it, an expired claim is taken over (emits expire_reclaim).",
+    {
+      project: z.string(),
+      task_key: z.string(),
+      scope: z.string().optional(),
+      ttl_ms: z.number().int().positive().optional(),
+    },
+    async ({ project, task_key, scope, ttl_ms }) => {
+      return runLogged("claim_task", { project, task_key, scope, ttl_ms }, async () => {
+        await ensureMongoose();
+        const { claimTask } = await import("../coord/claims.js");
+        const a = mcpActor();
+        const res = await claimTask({ project, taskKey: task_key, scope, ownerId: a.id, ttlMs: ttl_ms });
+        return text(jsonable(res));
+      });
+    },
+  );
+
+  server.tool(
+    "release_task",
+    "Release YOUR active claim on a task (emits a release event with the outcome). Only the owner may release; returns { ok:false, reason, heldBy? } otherwise.",
+    {
+      project: z.string(),
+      task_key: z.string(),
+      outcome: z.enum(["done", "abandoned"]).default("done"),
+    },
+    async ({ project, task_key, outcome }) => {
+      return runLogged("release_task", { project, task_key, outcome }, async () => {
+        await ensureMongoose();
+        const { releaseTask } = await import("../coord/claims.js");
+        const a = mcpActor();
+        const res = await releaseTask({ project, taskKey: task_key, ownerId: a.id, outcome, role: a.role });
+        return text(jsonable(res));
+      });
+    },
+  );
+
+  server.tool(
+    "poll_events",
+    "Poll coordination events (claim/release/expire_reclaim/decision/task_done/note) strictly newer than `since` (ISO), ascending. Returns { events, cursor, count }; pass `cursor` back as the next `since` for incremental polling. Read-only.",
+    {
+      project: z.string(),
+      since: z.string().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+    },
+    async ({ project, since, limit }) => {
+      return runLogged("poll_events", { project, since, limit }, async () => {
+        await ensureMongoose();
+        const { pollEvents } = await import("../coord/events.js");
+        const res = await pollEvents(project, { since, limit });
+        return text(jsonable(res));
       });
     },
   );

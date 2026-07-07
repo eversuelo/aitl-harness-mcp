@@ -78,14 +78,12 @@ export async function getProvider(which?: string): Promise<Provider> {
         : role;
 
   if (name === "auto") {
-    const detected = detectConfiguredProvider();
-    if (!detected) {
-      throw new Error(
-        "auto: no model backend configured. Set one of ANTHROPIC_API_KEY, OPENROUTER_API_KEY, " +
-          "LMSTUDIO_MODEL, or OPENAI_COMPAT_BASE_URL+OPENAI_COMPAT_MODEL (env or `aitl config set`).",
-      );
-    }
-    return getProvider(detected);
+    // "auto" is ALWAYS the full fallback chain (F9): the active provider first, then
+    // every other configured backend. Same semantics as `aitl chat`; explicit names
+    // ('anthropic', 'lmstudio', …) still resolve to that single backend only.
+    return getProviderWithFallback((from, to, error) => {
+      console.error(`[aitl] provider fallback: ${from} → ${to} (${error})`);
+    });
   }
   if (name === "anthropic") {
     // First-party Anthropic API (amends ADR-0020): prompt caching + structured
@@ -317,6 +315,19 @@ export class FallbackProvider implements Provider {
 }
 
 /**
+ * Actionable message when NO model backend is configured (F9): the harness still
+ * works in memory mode (search/hydrate/sync/capture) and over external hosts, so the
+ * error must say so instead of just listing env vars.
+ */
+export const NO_BACKEND_MESSAGE =
+  "No hay backend de modelo configurado. Opciones:\n" +
+  "  - configura AITL_API_KEY (sk-ant-*/sk-or-*), ANTHROPIC_API_KEY u OPENROUTER_API_KEY,\n" +
+  "  - o un provider local: LMSTUDIO_MODEL (LM Studio) / OPENAI_COMPAT_BASE_URL+OPENAI_COMPAT_MODEL,\n" +
+  "  - o corre en modo memoria (aitl search / hydrate / sync / capture-session),\n" +
+  "  - o delega a un host: aitl run-host \"<tarea>\" --project <p> --host claude-code\n" +
+  "Revisa el estado con: aitl models";
+
+/**
  * Build the auto chain: the active provider first, then every other configured
  * backend as fallback. With a single backend this is just that provider.
  */
@@ -325,10 +336,7 @@ export async function getProviderWithFallback(
 ): Promise<Provider> {
   const status = providerStatus();
   if (!status.active) {
-    throw new Error(
-      "No hay ningún LLM configurado. Define AITL_API_KEY (sk-ant-*/sk-or-*), ANTHROPIC_API_KEY, " +
-        "OPENROUTER_API_KEY, LMSTUDIO_MODEL, o OPENAI_COMPAT_BASE_URL+OPENAI_COMPAT_MODEL.",
-    );
+    throw new Error(NO_BACKEND_MESSAGE);
   }
   const chain: Provider[] = [await getProvider(status.active)];
   for (const n of status.fallbacks) chain.push(await getProvider(n));

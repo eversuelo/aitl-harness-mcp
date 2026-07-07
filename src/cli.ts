@@ -10,8 +10,8 @@
  *   aitl synthesize --project P           compact a project's memory (force optional)
  *   aitl repomap --root DIR --project P   build/print the repo map
  *   aitl adr-sync --dir docs/adr --project P  mirror ADRs into Mongo
+ *   aitl sync --project P                 bidirectional markdown sync (Mongo ⇄ .aitl + docs/adr)
  *   aitl export --adapter cursor --project P  project canon into a tool's format
- *   aitl eval --models gemini,openai --project P  run the eval delta (stub benchmarks)
  *   aitl mcp                              run the MCP server (stdio) for Claude Code
  *   aitl interactive | -i                interactive control panel (supervise MCP/UI)
  *   aitl ui --project P                   memory-admin web UI (HTTP API + Vite)
@@ -21,7 +21,6 @@
  *   aitl migrate-atlas <uri> --to-db P   copy a DB to another cluster (local → Atlas)
  */
 
-import "./util/quiet.js"; // FIRST: mute deprecation noise before mongoose loads
 import { Command } from "commander";
 import { closeClient } from "./db/client.js";
 
@@ -30,11 +29,16 @@ program
   .name("aitl")
   .description("AITL-Harness — Agent In The Loop.")
   .version("0.1.0")
+  // Positional options (here + on `init`) keep the parent `aitl init` options
+  // (--project/--force/…) from swallowing the SAME-named options of its subcommands
+  // (`init agent|claude --project …`). Program-level flags (-i) go before the command.
+  .enablePositionalOptions()
   .option("-i, --interactive", "Launch the interactive control panel (supervise MCP/UI, run commands).");
 
 // Commands that never touch MongoDB — skip the connection probe so they stay instant
-// and work offline (the interactive panel only supervises child processes).
-const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models"]);
+// and work offline (the interactive panel only supervises child processes). `council`
+// probes Mongo itself and DEGRADES to non-persistent deliberation when it is down.
+const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models", "council"]);
 
 // Resolve the working MongoDB URI (primary → fallback) once, before any DB command runs,
 // so every subcommand inherits the resilient local-and/or-Atlas connection.
@@ -172,6 +176,21 @@ program
   .action(async (task, opts) => {
     const { runAgent } = await import("./orchestration/graph.js");
     const { getProvider } = await import("./providers/base.js");
+    // Resolve the provider FIRST (F9): `--model auto` builds the same fallback chain as
+    // `aitl chat` (getProvider('auto') → getProviderWithFallback). A missing backend is a
+    // config problem → actionable message, no stack trace.
+    let provider: import("./providers/base.js").Provider;
+    try {
+      provider = await getProvider(opts.model);
+    } catch (err) {
+      const { NO_BACKEND_MESSAGE, providerStatus } = await import("./providers/base.js");
+      // With ZERO backends configured the root cause is global, not the chosen name:
+      // show the actionable options (memory mode / run-host) instead of a terse key error.
+      console.error(!providerStatus().active ? NO_BACKEND_MESSAGE : String(err instanceof Error ? err.message : err));
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
     // --verify-cmd turns the quality gate into the loop's termination condition: the run
     // only finishes when the command exits 0, so "I'm done" before green can't end it.
     const verify = opts.verifyCmd
@@ -207,7 +226,7 @@ program
         const { makeEvent } = await import("./models/event.model.js");
         const store = new MemoryStore();
         for (const s of mcpMount.servers) {
-          await store.logEvent(makeEvent({ project: opts.project, type: "mcp_connect", payload: { ...s } }));
+          await store.logEvent(await makeEvent({ project: opts.project, type: "mcp_connect", payload: { ...s } }));
         }
       } catch {
         // telemetry is best-effort
@@ -215,7 +234,7 @@ program
     }
     try {
       const result = await runAgent(task, opts.project, {
-        provider: await getProvider(opts.model),
+        provider,
         installDefaultTools: true,
         ...(verify ? { verify } : {}),
         ...(roles ? { roles } : {}),
@@ -338,7 +357,7 @@ program
     await ensureMongoose();
     const run = await RunModel.findOne({ _id: runId }).lean();
     const project = (run?.project as string) ?? "unknown";
-    await new MemoryStore().logEvent(makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
+    await new MemoryStore().logEvent(await makeEvent({ project, run_id: runId, type: "human_intervention", payload: { reason: opts.reason, minutes: Number(opts.minutes) } }));
     console.log(`Recorded human intervention on ${runId} (${opts.minutes} min): ${opts.reason}`);
     await closeClient();
   });
@@ -351,8 +370,8 @@ program
     const { getDb } = await import("./db/client.js");
     const { ensureMongoose } = await import("./db/mongoose.js");
     const { RunModel } = await import("./models/run.model.js");
-    const db = getDb();
     await ensureMongoose();
+    const db = getDb();
     const run = (await RunModel.findOne({ _id: runId }).lean()) as Record<string, unknown> | null;
     if (!run) {
       console.log(`(no run '${runId}')`);
@@ -435,6 +454,106 @@ program
   });
 
 program
+  .command("council")
+  .argument("<task>", "Plan/task to deliberate on (nothing is executed).")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--hosts <list>", "Comma-separated council seats: claude-code | codex | antigravity | provider[:modelo].")
+  .option("--judge <spec>", "Judge (host or provider[:modelo]); must differ from the proponents. Without it and ≥3 seats, the LAST seat judges.")
+  .option("--rounds <n>", "Deliberation rounds: 1 propose + N-1 critique.", "2")
+  .option("--cwd <dir>", "Working directory for host processes.")
+  .option("--timeout <ms>", "Kill a host call after N ms.")
+  .option("--json", "Print the full structured result as JSON.", false)
+  .description("Plan-council (ADR-0003 v1): varios clientes PROPONEN un plan, se CRITICAN anónimamente con rúbrica y un JUEZ emite el veredicto — antes de ejecutar nada. Los hosts corren en modo solo-lectura.")
+  .action(async (task, opts) => {
+    const { makeCouncilClient } = await import("./council/adapters.js");
+    const { runCouncil, splitCouncil } = await import("./council/orchestrator.js");
+    const rounds = Number(opts.rounds);
+    if (!Number.isInteger(rounds) || rounds < 1) {
+      console.error(`[aitl council] --rounds inválido '${opts.rounds}' (entero ≥ 1).`);
+      process.exitCode = 1;
+      return;
+    }
+    const hostOpts = {
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts.timeout ? { timeoutMs: Number(opts.timeout) } : {}),
+    };
+    let proponents: import("./council/ports.js").CouncilClientPort[];
+    let judge: import("./council/ports.js").CouncilClientPort;
+    try {
+      const specs = String(opts.hosts).split(",").map((s: string) => s.trim()).filter(Boolean);
+      const clients = await Promise.all(specs.map((s: string) => makeCouncilClient(s, hostOpts)));
+      const explicitJudge = opts.judge ? await makeCouncilClient(String(opts.judge), hostOpts) : undefined;
+      ({ proponents, judge } = splitCouncil(clients, explicitJudge));
+    } catch (err) {
+      console.error(`[aitl council] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+      return;
+    }
+    // `council` skips the global DB probe: with Mongo down it DEGRADES (deliberates
+    // without persisting) instead of aborting — same contract as `aitl init` (F9).
+    let telemetry: import("./council/orchestrator.js").CouncilTelemetryStore | null | undefined;
+    try {
+      const { connectWithFallback } = await import("./db/client.js");
+      const result = await connectWithFallback();
+      if (result.label === "fallback") console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
+    } catch {
+      telemetry = null;
+      console.error("[aitl council] sin backend Mongo — el consejo corre SIN persistir (run/eventos/memoria omitidos).");
+    }
+    try {
+      const result = await runCouncil({
+        project: opts.project,
+        task,
+        proponents,
+        judge,
+        rounds,
+        ...(telemetry !== undefined ? { telemetry } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      // Human summary: proposals → rubric table → verdict.
+      console.log(
+        `council run=${result.run_id ?? "(sin persistir)"} propuestas=${result.proposals.length} ` +
+          `juez=${result.judge_id} rondas=${result.rounds} tokens=${result.token_usage.input}+${result.token_usage.output} ` +
+          `duración=${result.duration_ms}ms`,
+      );
+      console.log("\nPropuestas:");
+      for (const p of result.proposals) {
+        console.log(`  [${p.label}] ${p.client_id} — ${p.proposal.steps.length} pasos, complejidad ${p.proposal.estimated_complexity}`);
+        for (const s of p.proposal.steps) console.log(`      • ${s.title}`);
+      }
+      const labels = result.proposals.map((p) => p.label);
+      const cell = (v: number | undefined): string => (v === undefined ? "  —  " : v.toFixed(2).padStart(5));
+      const rows = Object.entries(result.rubric.weights).map(([c, w]) => [`${c} (${w})`, c] as const);
+      const width = Math.max("criterio".length, ...rows.map(([head]) => head.length)) + 2;
+      console.log("\nRúbrica (0–5, media ponderada de las críticas):");
+      console.log(`  ${"criterio".padEnd(width)}${labels.map((l) => l.padStart(6)).join("")}`);
+      for (const [head, criterion] of rows) {
+        const row = labels.map((l) => ` ${cell(result.rubric.scores[l]?.criteria[criterion])}`).join("");
+        console.log(`  ${head.padEnd(width)}${row}`);
+      }
+      console.log(`  ${"TOTAL".padEnd(width)}${labels.map((l) => ` ${cell(result.rubric.scores[l]?.total)}`).join("")}`);
+      if (result.no_votes.length) {
+        console.log("\nSin-voto:");
+        for (const nv of result.no_votes) console.log(`  ${nv.client_id} (${nv.phase} r${nv.round}): ${nv.error}`);
+      }
+      const v = result.verdict;
+      console.log(`\nVeredicto (juez ${result.judge_id}):`);
+      console.log(`  Ganador: ${v.winner ? `${v.winner} — ${result.authors[v.winner]}` : "ninguno"}`);
+      console.log(`  Síntesis: ${v.synthesis}`);
+      console.log(`  Razonamiento: ${v.reasoning}`);
+      if (result.memory_slug) console.log(`  Memoria design: ${result.memory_slug}`);
+    } catch (err) {
+      console.error(`[aitl council] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await closeClient();
+    }
+  });
+
+program
   .command("orchestrate")
   .argument("<task>", "Master task prompt.")
   .requiredOption("--project <project>", "Project scope.")
@@ -459,26 +578,92 @@ program
   .command("synthesize")
   .requiredOption("--project <project>", "Project scope.")
   .option("--force", "Synthesize even if under the limit.", false)
+  .option("--at <ref>", "Stamp the synthesis docs with this git ref's commit (provenance only, no historical rebuild).")
   .description("Compact a project's memory when it exceeds the configured limit.")
   .action(async (opts) => {
+    let commitSha: string | undefined;
+    if (opts.at) {
+      const { resolveRef } = await import("./util/git.js");
+      const sha = resolveRef(opts.at);
+      if (!sha) {
+        console.error(`[aitl synthesize] cannot resolve git ref '${opts.at}' (not a repo, or unknown ref).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+      commitSha = sha;
+    }
+    // Degradación sin LLM (F9): with a configured backend the synthesis is model-made
+    // (fallback chain, like chat); without one it degrades to the extractive summary
+    // WITH an explicit notice — it never fails for lack of a provider.
+    const { getProviderWithFallback, providerStatus } = await import("./providers/base.js");
+    let llm: import("./providers/base.js").Provider | null = null;
+    if (providerStatus().active) {
+      llm = await getProviderWithFallback();
+    } else {
+      console.error("[aitl synthesize] sin modelo configurado: síntesis extractiva (primer renglón por fuente).");
+    }
     const { Synthesizer } = await import("./memory/synthesizer.js");
-    const written = await new Synthesizer().synthesize(opts.project, { force: opts.force });
+    const { MemoryStore } = await import("./memory/store.js");
+    const written = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
+      force: opts.force,
+      ...(commitSha !== undefined ? { commitSha } : {}),
+    });
     console.log(`Synthesis docs written: ${written.length ? written.join(", ") : "(none — under limit)"}`);
+    // Curation (F4): PROPOSE stale-ADR deprecations — never applied automatically.
+    const { proposeDeprecations } = await import("./decisions/lifecycle.js");
+    const proposals = await proposeDeprecations(opts.project);
+    if (proposals.length) {
+      console.log(`ADR deprecation proposals (${proposals.length}) — apply manually with \`aitl adr deprecate\`:`);
+      for (const p of proposals) console.log(`  - ${p.id} ${p.title}: ${p.reason}`);
+    }
     await closeClient();
   });
 
 program
   .command("repomap")
-  .requiredOption("--root <dir>", "Codebase root to map.")
+  .option("--root <dir>", "Codebase root to map (required without --modules; with --modules it forces a rebuild first).")
   .requiredOption("--project <project>", "Project scope.")
   .option("--repo <repo>", "Repo sub-scope (rebuilds only this repo's symbols).")
-  .description("Build the tree-sitter + PageRank repo map and print the top symbols.")
+  .option("--modules", "Print the first-level module map (kind view|back|mixed|infra + files + top symbols) from the cached symbols.", false)
+  .option("--json", "With --modules: print the module map as JSON.", false)
+  .description("Build the tree-sitter + PageRank repo map and print the top symbols (or the module map with --modules).")
   .action(async (opts) => {
+    // Without --modules the legacy contract holds: --root is required (build + render).
+    if (!opts.root && !opts.modules) program.error("error: required option '--root <dir>' not specified");
     const { RepoMap } = await import("./repomap/store.js");
     const rm = new RepoMap();
-    const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
-    console.log(`Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`);
-    console.log(await rm.render(opts.project, opts.repo ? { repo: opts.repo } : {}));
+    if (opts.root) {
+      const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
+      // With --modules --json keep stdout machine-readable; the build note goes to stderr.
+      const note = `Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`;
+      if (opts.modules && opts.json) console.error(note.trimEnd());
+      else console.log(note);
+    }
+    if (opts.modules) {
+      const { buildModuleMap, renderModuleMap } = await import("./repomap/modules.js");
+      const map = await buildModuleMap(opts.project, {
+        ...(opts.repo ? { repo: opts.repo } : {}),
+        ...(opts.root ? { root: opts.root } : {}),
+      });
+      console.log(opts.json ? JSON.stringify(map, null, 2) : renderModuleMap(map));
+    } else {
+      console.log(await rm.render(opts.project, opts.repo ? { repo: opts.repo } : {}));
+    }
+    await closeClient();
+  });
+
+program
+  .command("module-brief")
+  .argument("<dir>", "Module dir, repo-root-relative (e.g. src/server).")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--repo <repo>", "Repo sub-scope for the module map.")
+  .option("--json", "Print the brief as JSON.", false)
+  .description("Render a module's brief: its module-map block + ACTIVE ADRs whose components match the dir + memories tagged component:<dir>.")
+  .action(async (dir, opts) => {
+    const { buildModuleBrief, renderModuleBrief } = await import("./repomap/modules.js");
+    const brief = await buildModuleBrief({ project: opts.project, dir, ...(opts.repo ? { repo: opts.repo } : {}) });
+    console.log(opts.json ? JSON.stringify(brief, null, 2) : renderModuleBrief(brief));
     await closeClient();
   });
 
@@ -520,7 +705,7 @@ program
 
 program
   .command("export")
-  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae")
+  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown")
   .requiredOption("--project <project>", "Project scope.")
   .option("--root <dir>", "Repo root to write tool files into.", ".")
   .description("Project the canonical artifacts into a tool's native format (incremental).")
@@ -528,20 +713,50 @@ program
     const { getAdapter, loadCanon } = await import("./adapters/base.js");
     const canon = await loadCanon(opts.project, opts.root);
     const written = await (await getAdapter(opts.adapter)).export(canon, opts.root);
-    console.log(`Wrote: ${written.join(", ")}`);
+    console.log(written.length ? `Wrote: ${written.join(", ")}` : "Nothing to write (all up to date).");
     await closeClient();
   });
 
 program
-  .command("eval")
-  .requiredOption("--models <list>", "Comma-separated model roles/names (e.g. gemini,openai).")
-  .option("--project <project>", "Project scope.", "eval")
-  .description("Run a benchmark with/without the harness for ≥2 models (concrete benchmarks TODO).")
+  .command("sync")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--pull", "One-way Mongo → disk; conflicts resolve in Mongo's favor.")
+  .option("--push", "One-way disk → Mongo; conflicts resolve in the disk's favor.")
+  .option("--dir <dir>", "Mirror root for memory/skills/agents (hosts .sync-state.json).", ".aitl")
+  .option("--adr-dir <dir>", "ADR mirror directory.", "docs/adr")
+  .option("--include-reserved", "Also sync reserved memory types (synthesis/spec/design/task).")
+  .description("Bidirectional markdown sync: Mongo ⇄ .aitl/{memory,skills,agents} + docs/adr (manifest-based; conflicts reported, never clobbered).")
   .action(async (opts) => {
-    console.log(
-      `eval requires a concrete Benchmark implementation (see src/eval/runner.ts TODOs). ` +
-        `Models: ${opts.models}, project: ${opts.project}.`,
-    );
+    if (opts.pull && opts.push) {
+      console.error("Elige --pull O --push (sin flags = bidireccional).");
+      process.exitCode = 1;
+      return;
+    }
+    const { basename } = await import("node:path");
+    const { syncProject } = await import("./sync/sync.js");
+    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const mode = opts.pull ? "pull" : opts.push ? "push" : "both";
+    const res = await syncProject(project, {
+      dir: opts.dir,
+      adrDir: opts.adrDir,
+      mode,
+      includeReserved: Boolean(opts.includeReserved),
+      actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role },
+    });
+    const show = (label: string, items: { entity: string; key: string; path?: string; reason?: string }[]) => {
+      if (!items.length) return;
+      console.log(`${label} (${items.length}):`);
+      for (const it of items) {
+        console.log(`  - ${it.entity} ${it.key}${it.path ? ` → ${it.path}` : ""}${it.reason ? `  [${it.reason}]` : ""}`);
+      }
+    };
+    console.log(`sync '${project}' (${mode}) — ${opts.dir} + ${opts.adrDir}`);
+    show("pulled (Mongo → disco)", res.pulled);
+    show("pushed (disco → Mongo)", res.pushed);
+    show("CONFLICTS (sin tocar)", res.conflicts);
+    show("skipped", res.skipped);
+    console.log(`unchanged: ${res.unchanged} · manifiesto: ${res.statePath}`);
+    if (res.conflicts.length) process.exitCode = 2;
     await closeClient();
   });
 
@@ -640,6 +855,29 @@ user
       const reason = err instanceof Error ? err.message : String(err);
       await recordAudit({ actor_id: CLI_ACTOR.id, actor_role: CLI_ACTOR.role, source: "cli", action: "users.create", resource: `user:${opts.username}`, ok: false, reason });
       console.error(`Create failed: ${reason}`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+user
+  .command("register")
+  .requiredOption("--username <username>", "New username.")
+  .requiredOption("--email <email>", "New email.")
+  .requiredOption("--password <password>", "Password (min 12 chars).")
+  .description("Self-service registration (no root needed). First real user becomes admin; audited.")
+  .action(async (opts) => {
+    const { connectWithFallback } = await import("./db/client.js");
+    const { registerUser } = await import("./auth/users.js");
+    await connectWithFallback();
+    try {
+      const created = await registerUser(
+        { username: opts.username, email: opts.email, password: opts.password },
+        { source: "cli" },
+      );
+      console.log(`Registered user: ${created.username} (${created.email}, role=${created.role})`);
+    } catch (err) {
+      console.error(`Register failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
     }
     await closeClient();
@@ -755,14 +993,22 @@ config
   .command("set")
   .argument("<key>", "ENV-style key (e.g. GEMINI_API_KEY).")
   .argument("<value>", "Value.")
+  .option("--env", "Also mirror the key into ./.env (created when missing; preserves other lines).", false)
   .description("Set a single key in the user-level config profile.")
-  .action(async (key, value) => {
+  .action(async (key, value, opts) => {
     const { ENV_KEYS, writeConfigFile } = await import("./config/store.js");
     if (!(ENV_KEYS as readonly string[]).includes(key)) {
       throw new Error(`Unknown key '${key}'. Known: ${ENV_KEYS.join(", ")}`);
     }
     const path = await writeConfigFile({ [key]: value }, { merge: true });
     console.log(`Set ${key} in ${path}.`);
+    if (opts.env) {
+      const { updateEnvFile } = await import("./config/envfile.js");
+      const { join } = await import("node:path");
+      const envPath = join(process.cwd(), ".env");
+      await updateEnvFile(envPath, { [key]: value });
+      console.log(`Mirrored ${key} into ${envPath}.`);
+    }
   });
 
 config
@@ -906,9 +1152,11 @@ async function showHistory(
   }
 }
 
-program
+const adr = program
   .command("adr")
-  .description("Inspect ADR revision history.")
+  .description("Inspect ADR revision history and curate the ADR lifecycle.");
+
+adr
   .command("history")
   .argument("<id>", "ADR id, e.g. 0026.")
   .requiredOption("--project <project>", "Project scope.")
@@ -918,6 +1166,43 @@ program
   .action(async (id, opts) => {
     const { ADR_CONTENT_FIELDS } = await import("./memory/versioning.js");
     await showHistory("decision", id, { project: opts.project, diff: opts.diff, from: opts.from, to: opts.to, fields: ["title", ...ADR_CONTENT_FIELDS] });
+    await closeClient();
+  });
+
+adr
+  .command("deprecate")
+  .argument("<id>", "ADR id, e.g. 0026.")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--reason <text>", "Why this ADR no longer applies.")
+  .option("--superseded-by <id>", "Id of the ADR that replaces it.")
+  .option("--review-after <date>", "Soft-TTL review date (ISO, e.g. 2027-01-31).")
+  .description("Mark an ADR as deprecated with a reason (append-only: bumps the version, keeps history).")
+  .action(async (id, opts) => {
+    let reviewAfter: Date | undefined;
+    if (opts.reviewAfter) {
+      reviewAfter = new Date(opts.reviewAfter);
+      if (Number.isNaN(reviewAfter.getTime())) {
+        console.error(`[aitl adr deprecate] invalid --review-after date '${opts.reviewAfter}' (use ISO, e.g. 2027-01-31).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+    }
+    const { deprecateDecision } = await import("./decisions/lifecycle.js");
+    try {
+      const res = await deprecateDecision({
+        project: opts.project,
+        id,
+        reason: opts.reason,
+        supersededBy: opts.supersededBy ?? null,
+        reviewAfter: reviewAfter ?? null,
+        actor: { id: CLI_ACTOR.id, role: CLI_ACTOR.role },
+      });
+      console.log(`ADR ${res.id} → status '${res.status}' (v${res.version}).`);
+    } catch (err) {
+      console.error(`[aitl adr deprecate] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
     await closeClient();
   });
 
@@ -1050,10 +1335,17 @@ branch
   .requiredOption("--repo <repo>", "Repo name this branch set belongs to.")
   .option("--root <dir>", "Git repo root.", ".")
   .option("--remote <url>", "Remote URL to record.")
+  .option("--reindex", "Run the master indexer when the base trunk's head advanced since the last sync.", false)
   .description("Read the repo's git branches, classify them and upsert into the catalog.")
   .action(async (opts) => {
-    const { syncBranches } = await import("./branches/sync.js");
-    const recs = await syncBranches({ project: opts.project, repo: opts.repo, root: opts.root, remote: opts.remote });
+    const { syncBranchesWithReindex } = await import("./branches/reindex.js");
+    const { records: recs, reindex } = await syncBranchesWithReindex({
+      project: opts.project,
+      repo: opts.repo,
+      root: opts.root,
+      remote: opts.remote,
+      reindex: opts.reindex,
+    });
     console.log(`Synced ${recs.length} branch(es) for ${opts.project}/${opts.repo}:`);
     for (const r of recs) {
       const env = r.environment !== "none" ? ` [${r.environment}]` : "";
@@ -1061,6 +1353,17 @@ branch
       console.log(`  ${r.name}  (${r.kind})${env}${from}`);
     }
     if (!recs.length) console.log("  (no local branches found — is --root a git repo?)");
+    if (reindex) {
+      if (!reindex.base) {
+        console.log("reindex: no base trunk (main/master/develop) found — skipped.");
+      } else if (!reindex.changed) {
+        console.log(`reindex: base ${reindex.base} sin cambios (${reindex.liveSha ?? "?"}).`);
+      } else {
+        const prev = reindex.storedSha ? `antes ${reindex.storedSha.slice(0, 7)}` : "primer registro";
+        console.log(`reindex: base ${reindex.base} avanzó a ${reindex.liveSha?.slice(0, 7)} (${prev}), reindexando…`);
+        for (const s of reindex.result?.steps ?? []) console.log(`  - ${s}`);
+      }
+    }
     await closeClient();
   });
 
@@ -1091,6 +1394,125 @@ branch
     const { BranchStore } = await import("./branches/store.js");
     console.log((await new BranchStore().delete(opts.project, opts.repo, name)) ? `Deleted '${name}'.` : `(no branch '${name}')`);
     await closeClient();
+  });
+
+// ── coordination (ADR-0002 v1): task claims + eventos + polling ───────────────
+const coord = program
+  .command("coord")
+  .description("Minimal multi-agent coordination over the shared DB: task claims (heartbeat + TTL) + durable events + polling.");
+
+coord
+  .command("claim")
+  .argument("<task_key>", "Task key: SDD task slug, path, or short description.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--scope <text>", "Declared work scope (free text, e.g. \"schoolar backend\").")
+  .option("--ttl <minutes>", "Claim TTL in minutes (fractional ok; default: AITL_CLAIM_TTL_MS or 30 min).")
+  .description("Claim a task (atomic). Conflicts report who holds it; re-claiming your own task renews it.")
+  .action(async (taskKey, opts) => {
+    const { claimTask, coordOwnerId } = await import("./coord/claims.js");
+    let ttlMs: number | undefined;
+    if (opts.ttl !== undefined) {
+      const mins = Number(opts.ttl);
+      if (!Number.isFinite(mins) || mins <= 0) {
+        console.error(`[aitl coord claim] invalid --ttl '${opts.ttl}' (minutes > 0).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+      ttlMs = Math.round(mins * 60_000);
+    }
+    const owner = coordOwnerId();
+    const res = await claimTask({ project: opts.project, taskKey, scope: opts.scope, ownerId: owner, ttlMs });
+    if (res.ok) {
+      const kind = res.renewed ? "renovado" : res.reclaimed ? "reclamado (el anterior expiró)" : "OK";
+      console.log(`Claim ${kind}: "${taskKey}" → ${owner} (expira ${new Date(res.claim.expires_at).toISOString()}).`);
+    } else {
+      console.error(`Conflicto: "${taskKey}" lo tiene ${res.heldBy} (expira ${res.expiresAt.toISOString()}).`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+coord
+  .command("release")
+  .argument("<task_key>", "Task key of YOUR active claim.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--outcome <outcome>", "done | abandoned.", "done")
+  .description("Release your active claim on a task (emits a release event).")
+  .action(async (taskKey, opts) => {
+    const { RELEASE_OUTCOMES, coordOwnerId, releaseTask } = await import("./coord/claims.js");
+    if (!(RELEASE_OUTCOMES as readonly string[]).includes(opts.outcome)) {
+      console.error(`[aitl coord release] invalid --outcome '${opts.outcome}' (use: ${RELEASE_OUTCOMES.join(" | ")}).`);
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
+    const owner = coordOwnerId();
+    const res = await releaseTask({ project: opts.project, taskKey, ownerId: owner, outcome: opts.outcome });
+    if (res.ok) {
+      console.log(`Released: "${taskKey}" (${res.outcome}) por ${owner}.`);
+    } else if (res.reason === "not_owner") {
+      console.error(`No liberado: "${taskKey}" lo tiene ${res.heldBy}, no ${owner}.`);
+      process.exitCode = 1;
+    } else {
+      console.error(`No liberado: no hay claim activo para "${taskKey}".`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+coord
+  .command("list")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--all", "Include released and expired claims (full history).")
+  .description("List the project's task claims (active ones by default).")
+  .action(async (opts) => {
+    const { listClaims } = await import("./coord/claims.js");
+    const rows = await listClaims(opts.project, { active: !opts.all });
+    const now = Date.now();
+    for (const c of rows) {
+      const state = c.released
+        ? `released ${c.released_at ? new Date(c.released_at).toISOString() : ""}`.trimEnd()
+        : new Date(c.expires_at).getTime() > now
+          ? `expira ${new Date(c.expires_at).toISOString()}`
+          : `EXPIRADO ${new Date(c.expires_at).toISOString()}`;
+      console.log(`- ${c.task_key}  → ${c.owner_id}${c.scope ? `  [${c.scope}]` : ""}  (${state})`);
+    }
+    if (!rows.length) console.log(opts.all ? "(no claims)" : "(no active claims)");
+    await closeClient();
+  });
+
+coord
+  .command("poll")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--since <iso>", "Only events after this ISO timestamp (overrides the stored cursor).")
+  .option("--quiet", "Print ONLY when there are new events (for hooks); always exit 0.")
+  .description("Poll coordination events (one compact line each). Incremental: the cursor persists in ~/.aitl/coord-cursor-<hash>.json.")
+  .action(async (opts) => {
+    const { formatCoordEvent, pollEvents } = await import("./coord/events.js");
+    const { loadCursor, saveCursor } = await import("./coord/cursor.js");
+    let since: Date;
+    if (opts.since) {
+      since = new Date(opts.since);
+      if (Number.isNaN(since.getTime())) {
+        console.error(`[aitl coord poll] invalid --since '${opts.since}' (use ISO, e.g. 2026-07-06T12:00:00Z).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+    } else {
+      // Stored cursor → incremental between invocations; first run: last 60 min.
+      since = loadCursor(opts.project) ?? new Date(Date.now() - 60 * 60 * 1000);
+    }
+    const { events, cursor } = await pollEvents(opts.project, { since });
+    for (const e of events) console.log(formatCoordEvent(e));
+    if (!events.length && !opts.quiet) console.log("Sin eventos nuevos.");
+    // Only advance the cursor when something was seen (an explicit old --since must not
+    // rewind the stored cursor, and an empty first poll keeps the 60-min default).
+    if (events.length && cursor) saveCursor(opts.project, cursor);
+    await closeClient();
+    // Hook-friendly: polling never signals failure via exit code.
+    process.exitCode = 0;
   });
 
 // ── engineering roles (H11): asisten al Software Engineer a decidir con criterio ──
@@ -1223,8 +1645,71 @@ build
     await closeClient();
   });
 
-// ── init agent (write an AGENTS.md that enforces consulting the AITL MCP) ─────────
-const init = program.command("init").description("Scaffold agent/project artifacts.");
+// ── init (orchestrator) + init agent/claude (guide-only scaffolds) ────────────────
+// `aitl init` (no subcommand) onboards THIS repo end-to-end: DB, identity, index,
+// seeds, guides, .mcp.json, host hooks, git post-merge (P5/F1). The parent action
+// needs Mongo, but `init` stays in NO_DB_COMMANDS so `init agent|claude` keep working
+// offline — the parent action opens the connection itself (same fail-fast contract).
+const init = program
+  .command("init")
+  .description("Onboard a repo into the harness (aitl init), or scaffold single guides (init agent|claude).")
+  // Options after `agent`/`claude` belong to the subcommand (see enablePositionalOptions
+  // on the program): `aitl init claude --project x` keeps working unchanged.
+  .enablePositionalOptions()
+  .option("--root <path>", "Target repo root.", ".")
+  .option("--project <p>", "Project scope (default: basename of --root).")
+  .option("--software <s>", "Owning software name (default: the project).")
+  .option("--repo <r>", "Repo name / data sub-scope (default: basename of --root).")
+  .option("--host <list>", "Comma-separated hosts to wire hooks for: claude-code,codex.")
+  .option("--memory-only", "Skip provider validation: memory mode (hydrate/search/sync/capture).", false)
+  .option("--force", "Re-apply steps that would skip; overwrite guides and the post-merge hook.", false)
+  .action(async (opts) => {
+    // Fail fast on Mongo exactly like the global preAction does for DB commands.
+    const { connectWithFallback } = await import("./db/client.js");
+    try {
+      const result = await connectWithFallback();
+      if (result.label === "fallback") {
+        console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      console.error("\n[aitl] No hay MongoDB accesible. Revisa MONGODB_URI/MONGODB_URI_FALLBACK o corre `aitl check-db`.");
+      process.exit(1);
+    }
+    try {
+      const { initRepo } = await import("./init/initRepo.js");
+      const hosts = opts.host
+        ? String(opts.host).split(",").map((h: string) => h.trim()).filter(Boolean)
+        : [];
+      const bad = hosts.filter((h: string) => h !== "claude-code" && h !== "codex");
+      if (bad.length) {
+        console.error(`--host inválido: ${bad.join(", ")} (soportados: claude-code, codex)`);
+        process.exitCode = 1;
+        return;
+      }
+      const report = await initRepo({
+        root: opts.root,
+        project: opts.project,
+        software: opts.software,
+        repo: opts.repo,
+        host: hosts as ("claude-code" | "codex")[],
+        memoryOnly: Boolean(opts.memoryOnly),
+        force: Boolean(opts.force),
+      });
+      console.log(
+        `aitl init — proyecto '${report.project}' · software '${report.software}' · repo '${report.repo}'` +
+          `${report.branch ? ` @${report.branch}` : ""} (${report.root})`,
+      );
+      for (const s of report.steps) console.log(`  [${s.status}] ${s.step}: ${s.detail}`);
+      console.log("\nPróximos pasos:");
+      for (const n of report.next) console.log(`  ${n}`);
+    } catch (err) {
+      console.error(`[aitl init] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await closeClient();
+    }
+  });
 
 init
   .command("agent")
@@ -1460,6 +1945,9 @@ Notes:
   combines cleanly). Servers that omit the stream usage chunk (older LM Studio)
   report 0 tokens for streamed turns; a mid-stream retry may repeat deltas.
   --verify-cmd makes the run end only when the command exits 0 (quality gate).
+  Experimental comparison (thesis conditions): C0 = \`aitl run --bare\` (no hydrate,
+  no skills, no gates) vs C2 = the default full harness. Run the same task under both
+  conditions and compare with run-show — there is no separate eval command.
   Persists a run+transcript; inspect it with: aitl run-show <runId>.`,
 
   "chat": `
@@ -1527,19 +2015,39 @@ Notes:
 Examples:
   aitl synthesize --project demo
   aitl synthesize --project demo --force
+  aitl synthesize --project demo --force --at v1.2.0   # stamp docs with that ref's commit
 
 Notes:
   Compacts the memory bank by category when it exceeds the configured limit (--force
-  ignores the limit). Never touches ADRs.`,
+  ignores the limit). Never touches ADRs. --at resolves any git ref and stamps its
+  commit_sha on the synthesis docs (provenance only — no historical reconstruction).
+  Afterwards it PROPOSES stale-ADR deprecations (superseded_by set, review_after
+  lapsed, near-duplicate titles); apply them manually with \`aitl adr deprecate\`.`,
 
   "repomap": `
 Examples:
   aitl repomap --root . --project demo
   aitl repomap --root . --project demo --repo backend
+  aitl repomap --modules --project demo --repo backend        # module map from the cached symbols
+  aitl repomap --modules --json --root . --project demo       # rebuild first, then JSON module map
 
 Notes:
   Builds the symbol map (tree-sitter heuristic) + PageRank and prints the top symbols.
+  --modules groups the cached symbols by first-level dir (kind view|back|mixed|infra,
+  files, top symbols by PageRank); when ONE top-level dir holds >80% of the files it
+  descends one level (src/server, src/db, ...). Override kinds in .aitl/modules.json.
   Tip: point --root at src to avoid indexing dist/ noise.`,
+
+  "module-brief": `
+Examples:
+  aitl module-brief src/server --project demo
+  aitl module-brief web --project demo --repo frontend --json
+
+Notes:
+  Renders the module's invariants checklist: its module-map block (kind, files, top
+  symbols) + ACTIVE ADRs whose components[] match the dir (prefix match both ways;
+  deprecated/superseded excluded) + memories tagged component:<dir>. Tag decisions
+  via record_decision { components: ["src/server"] }; capture-session auto-tags memories.`,
 
   "index-repo": `
 Examples:
@@ -1554,22 +2062,36 @@ Examples:
   aitl adr-sync --dir docs/adr --project demo
 
 Notes:
-  Mirrors Nygard-format ADR markdown into the decisions collection (file → ledger only).`,
+  Mirrors Nygard-format ADR markdown into the decisions collection (file → ledger only).
+  For the bidirectional (ledger ⇄ file) flow with conflict detection use: aitl sync.`,
 
   "export": `
 Examples:
   aitl export --adapter cursor --project demo
   aitl export --adapter agents_md --project demo --root .
+  aitl export --adapter markdown --project demo     # Mongo → .aitl/ + docs/adr (one-shot)
 
 Notes:
-  Adapters: agents_md | cursor | copilot | antigravity | kiro | trae. Incremental write.`,
+  Adapters: agents_md | cursor | copilot | antigravity | kiro | trae | markdown.
+  Incremental write. The markdown adapter is manifest-less: .aitl/ is overwritten
+  freely, but existing docs/adr files with different content are kept (use aitl sync).`,
 
-  "eval": `
+  "sync": `
 Examples:
-  aitl eval --models openrouter,primary --project eval
+  aitl sync --project demo                 # bidireccional: propaga y reporta conflictos
+  aitl sync --pull --project demo          # Mongo gana: refresca el espejo en disco
+  aitl sync --push --project demo          # disco gana: sube tus ediciones .md a Mongo
 
 Notes:
-  Runs the harness-vs-bare delta across ≥2 models. Concrete benchmarks are stubs (TODO).`,
+  Espejo canónico: memoria/skills/agents en .aitl/{memory,skills,agents}/<slug>.md y
+  ADRs en docs/adr/NNNN-slug.md. El manifiesto .aitl/.sync-state.json guarda el hash
+  de CADA lado en el último sync: "cambió" = cambió respecto a esa línea base, nunca
+  "difiere del otro lado". Primera corrida (bootstrap): lo que existe en un solo lado
+  se propaga; lo que existe en ambos con bytes distintos NO se toca (se siembra la
+  línea base) — por eso los docs/adr escritos a mano sobreviven byte a byte.
+  Conflicto (cambió en ambos) → exit code 2 y nada se escribe; resuélvelo con --pull
+  o --push. Los borrados nunca se propagan. --include-reserved añade los tipos de
+  pipeline (synthesis/spec/design/task). Sin --project usa $AITL_PROJECT o la carpeta.`,
 
   "mcp": `
 Examples:
@@ -1629,7 +2151,7 @@ Notes:
 
   // ── parents (overview + pointer to subcommands) ──
   "user": `
-Subcommands: bootstrap | verify | list | create | set-role | disable
+Subcommands: bootstrap | verify | list | create | register | set-role | disable
 Example:  aitl user list`,
   "config": `
 Subcommands: path | show | export | import | set | unset
@@ -1638,7 +2160,7 @@ Example:  aitl config show`,
 Subcommands: add | list | search
 Example:  aitl prompt list --project demo`,
   "adr": `
-Subcommands: history
+Subcommands: history | deprecate
 Example:  aitl adr history 0026 --project demo --diff`,
   "memory": `
 Subcommands: history
@@ -1659,8 +2181,22 @@ Example:  aitl role list --project demo`,
 Subcommands: skill | agent | seed
 Example:  aitl build skill code-review --project demo`,
   "init": `
-Subcommands: agent | claude
-Example:  aitl init claude --project demo`,
+Examples:
+  aitl init                                          # onboard the cwd repo end-to-end
+  aitl init --root ../mi-app --project mi-app --host claude-code
+  aitl init --memory-only --host claude-code          # sin LLM: hydrate/search/sync/capture
+  aitl init --force                                   # re-aplica pasos y sobrescribe guías
+
+Notes:
+  Idempotente: cada paso reporta [ok|skip|done|warn]; una segunda corrida es todo skip.
+  Pasos: DB (colecciones/índices/root) → identidad (software/repo/branches) → índice
+  maestro (símbolos+memoria+ADRs) → seeds (skills/roles) → guías CLAUDE.md/AGENTS.md →
+  .mcp.json → hooks del host → hook git post-merge (branch sync --reindex).
+  No pisa archivos existentes sin --force (merge conservador: añade solo lo que falta).
+  --memory-only omite la validación de provider (run/chat requieren backend o host).
+
+Subcommands (solo guías, sin DB): agent | claude
+  aitl init claude --project demo`,
 
   // ── user subcommands ──
   "user bootstrap": `
@@ -1684,6 +2220,14 @@ Examples:
 
 Notes:
   Root-only; audited. Roles: root | admin | user | agent | auditor.`,
+  "user register": `
+Examples:
+  aitl user register --username alice --email alice@x.com --password "<12+ chars>"
+
+Notes:
+  Self-service (no root needed) — same flow as the web signup. The first real user
+  (excluding the local-root bootstrap) becomes admin; later ones are plain users.
+  Username and email must be unique; audited (action "register").`,
   "user set-role": `
 Examples:
   aitl user set-role --username alice --role auditor
@@ -1719,9 +2263,11 @@ Examples:
   aitl config set MONGODB_URI "mongodb+srv://user:pass@cluster.mongodb.net/aitl?appName=app"
   aitl config set MONGODB_DB aitl
   aitl config set OPENROUTER_API_KEY "<key>"
+  aitl config set MODEL_PRIMARY lmstudio --env    # also mirror into ./.env
 
 Notes:
-  URL-encode special chars in passwords (e.g. * → %2A). Stored in plain text locally; never commit it.`,
+  URL-encode special chars in passwords (e.g. * → %2A). Stored in plain text locally; never commit it.
+  --env mirrors the key into the project's .env (uncomments "# KEY=..." lines, preserves the rest).`,
   "config unset": `
 Examples:
   aitl config unset OPENROUTER_API_KEY`,
@@ -1744,6 +2290,16 @@ Examples:
   aitl adr history 0026 --project demo
   aitl adr history 0026 --project demo --diff
   aitl adr history 0026 --project demo --from 1 --to 3`,
+  "adr deprecate": `
+Examples:
+  aitl adr deprecate 0026 --project demo --reason "replaced by the event-driven design"
+  aitl adr deprecate 0026 --project demo --reason "obsolete" --superseded-by 0031
+  aitl adr deprecate 0026 --project demo --reason "revisit quarterly" --review-after 2027-01-31
+
+Notes:
+  Append-only: the prior version is archived in decisions_history and the live doc gets
+  status "deprecated" + deprecation_reason (never deleted). Deprecated ADRs are excluded
+  from \`aitl hydrate\`; review_after is a SOFT TTL that flags the ADR "needs review".`,
   "memory history": `
 Examples:
   aitl memory history project-identity --project demo --diff`,
@@ -1782,10 +2338,13 @@ Examples:
   "branch sync": `
 Examples:
   aitl branch sync --project demo --repo backend --root .
+  aitl branch sync --project demo --repo backend --root . --reindex
 
 Notes:
   Reads local git branches, classifies them (main/develop/release/feature/…) and detects
-  the real base by fork-point. Falls back to gitflow conventions without git.`,
+  the real base by fork-point. Falls back to gitflow conventions without git.
+  --reindex compares the base trunk's stored head vs the live one and, if it advanced
+  (e.g. a merge landed), re-runs the master indexer (repo map + memory + ADRs).`,
   "branch list": `
 Examples:
   aitl branch list --project demo
@@ -1814,6 +2373,46 @@ Examples:
 
 Notes:
   Deterministic veto for a path (no model). Useful in CI/pre-commit.`,
+
+  // ── coord subcommands (ADR-0002 v1) ──
+  "coord claim": `
+Examples:
+  aitl coord claim "T3-tenant-isolation" --project schoolar --scope "schoolar backend"
+  aitl coord claim src/auth/rbac.ts --project aitl-js --ttl 15
+  AITL_COORD_OWNER=alice aitl coord claim T3 --project demo   # explicit owner identity
+
+Notes:
+  Atomic: ONE active claim per (project, task_key) — a partial unique index arbitrates
+  races. Conflicts exit 1 and report the holder + expiry. Claims ALWAYS expire (default
+  30 min, AITL_CLAIM_TTL_MS); re-claiming your own task renews it (heartbeat), and an
+  expired claim is taken over (emits expire_reclaim). Owner identity: AITL_COORD_OWNER,
+  else AITL_MCP_ACTOR_ID, else cli:<os-user>@<host>.`,
+  "coord release": `
+Examples:
+  aitl coord release "T3-tenant-isolation" --project schoolar
+  aitl coord release "T3-tenant-isolation" --project schoolar --outcome abandoned
+
+Notes:
+  Only the owner may release (same identity rules as coord claim). Emits a release
+  event with the outcome so peers see "[release] ... (done|abandoned)" on their poll.`,
+  "coord list": `
+Examples:
+  aitl coord list --project schoolar
+  aitl coord list --project schoolar --all      # include released/expired history`,
+  "coord poll": `
+Examples:
+  aitl coord poll --project schoolar
+  aitl coord poll --project schoolar --since 2026-07-06T12:00:00Z
+  aitl coord poll --project schoolar --quiet    # hook-friendly: silent when idle
+
+Notes:
+  One compact line per event: "[claim] alice tomó T3 (expira 12:45)", "[decision] nuevo
+  ADR 0054: ...". Incremental without flags: the last cursor persists in
+  ~/.aitl/coord-cursor-<projecthash>.json (base dir honours AITL_HOME); first ever poll
+  defaults to the last 60 minutes. --quiet prints ONLY when there are new events and
+  always exits 0 — wire it as a Claude Code hook, e.g. in .claude/settings.json:
+    { "hooks": { "Stop": [ { "hooks": [ { "type": "command",
+      "command": "aitl coord poll --project <p> --quiet" } ] } ] } }`,
 
   // ── build subcommands ──
   "build skill": `

@@ -2,6 +2,7 @@ import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { settings } from "../config.js";
 import { ensureMongoose } from "../db/mongoose.js";
 import { UserModel, type UserDoc } from "../models/user.model.js";
+import { recordAudit } from "./audit.js";
 import { ROLES, type Role, isRole } from "./rbac.js";
 
 const HASH_ITERATIONS = 310_000;
@@ -191,6 +192,93 @@ export async function createUser(seed: UserSeed): Promise<PublicUser> {
     disabled: false,
     created_at: now,
     updated_at: now,
+  });
+  return { username, email, role, disabled: false, created_at: now, updated_at: now };
+}
+
+/** Uniqueness violation on self-service registration — distinguishable per field. */
+export class RegistrationConflictError extends Error {
+  constructor(readonly conflict: "username" | "email") {
+    super(`${conflict} taken`);
+    this.name = "RegistrationConflictError";
+  }
+}
+
+export interface RegisterUserOpts {
+  /** Where the registration came from (audit trail). Defaults to "web". */
+  source?: "web" | "cli";
+  /** Injectable for tests (recordAudit needs Mongo). */
+  audit?: typeof recordAudit;
+}
+
+/**
+ * Self-service registration (P3.5) — unlike {@link createUser} it needs no root
+ * actor: anyone may register while `AITL_WEB_ALLOW_SIGNUP` allows it (gated at the
+ * call sites, not here). Rules:
+ *   - username/email/password validated like `user create` (password >= 12 chars);
+ *   - username AND email must be unique, with distinguishable errors
+ *     ({@link RegistrationConflictError}: "username taken" / "email taken");
+ *   - the FIRST real user (excluding the auto-generated `local-root` bootstrap)
+ *     becomes `admin` so a fresh install can be configured; everyone after is `user`.
+ * Audited with action `register` (both outcomes; never the password).
+ */
+export async function registerUser(
+  seed: Omit<UserSeed, "role">,
+  opts: RegisterUserOpts = {},
+): Promise<PublicUser> {
+  const audit = opts.audit ?? recordAudit;
+  const source = opts.source ?? "web";
+  validateUserSeed({ ...seed, role: undefined });
+  const username = normalizeUsername(seed.username);
+  const email = normalizeEmail(seed.email);
+  await ensureMongoose();
+
+  const conflictError = async (conflict: "username" | "email") => {
+    await audit({
+      actor_id: `user:${username}`,
+      actor_role: "user",
+      source,
+      action: "register",
+      resource: `user:${username}`,
+      ok: false,
+      reason: `${conflict} taken`,
+    });
+    return new RegistrationConflictError(conflict);
+  };
+  if (await UserModel.findOne({ username }).lean()) throw await conflictError("username");
+  if (await UserModel.findOne({ email }).lean()) throw await conflictError("email");
+
+  // First REAL user → admin (the generated `local-root` fallback does not count).
+  const realUsers = await UserModel.countDocuments({ username: { $ne: "local-root" } });
+  const role: Role = realUsers === 0 ? "admin" : "user";
+
+  const now = new Date();
+  try {
+    await UserModel.create({
+      username,
+      email,
+      role,
+      ...hashPassword(seed.password),
+      disabled: false,
+      created_at: now,
+      updated_at: now,
+    });
+  } catch (err) {
+    // Unique-index race (two concurrent registrations): map E11000 to the same
+    // distinguishable conflict the pre-check would have raised.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/E11000/.test(msg)) throw await conflictError(/email/i.test(msg) ? "email" : "username");
+    throw err;
+  }
+
+  await audit({
+    actor_id: `user:${username}`,
+    actor_role: role,
+    source,
+    action: "register",
+    resource: `user:${username}`,
+    ok: true,
+    reason: `role=${role}`,
   });
   return { username, email, role, disabled: false, created_at: now, updated_at: now };
 }

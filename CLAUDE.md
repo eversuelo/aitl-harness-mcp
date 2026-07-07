@@ -48,8 +48,82 @@ spelling — those fragment the history. Verify the hash above matches
 > del TUI al chat hijo ("pulsar dos veces la tecla"; suspend() pausa stdin), spinner
 > idempotente, teardown en SIGINT, deadline de streaming (`AITL_STREAM_IDLE_MS`),
 > ToolRegistry por sub-agente en orchestrate, preAction fail-fast, tree-kill POSIX,
-> ShellTool maxBuffer+clip, parseLimit en la API. Ledger ahora contiguo **0001–0045**;
-> next free **0046**.
+> ShellTool maxBuffer+clip, parseLimit en la API.
+> 0046 (2026-07-05, rama `feat/harness-v2`): auth web de sesión — colección `sessions`
+> (solo sha256 del token, índice TTL), `POST /api/auth/login|logout`, cascada
+> sesión→AITL_WEB_TOKENS→anónimo, split 401 login_required / 403, escrituras web
+> autenticadas como delegated (mismo modelo que guardTool del MCP), CORS por allowlist
+> `AITL_WEB_ORIGINS`, cliente web con Authorization + diálogo de login. Cierra el
+> hallazgo Alto de la auditoría 2026-07-05.
+> 0047–0048 (2026-07-06): retiro de LangGraph (runAgent loop único, resumible desde el
+> transcript durable; fuera buildGraph/checkpointer/deps, un solo driver mongodb@7
+> deduplicado) y conexión Mongo única con Mongoose dueño (db/client.ts = capa compat,
+> getDb() ya no autoconecta) + factories makeX() async con `await doc.validate()`
+> (validateSync deprecado; util/quiet.ts borrado) + retiro de `aitl eval` (C0 =
+> `run --bare`, C2 = default).
+> 0049 (2026-07-06): memoria/ADRs anclados a commit (`commit_sha` estampado en stores y
+> síntesis; `synthesize --at <ref>`) + ciclo de vida de ADRs (`deprecated` + motivo +
+> `superseded_by` + `review_after` TTL suave que excluye de hydrate sin borrar +
+> `components[]`; tool `deprecate_decision`, CLI `aitl adr deprecate`,
+> `proposeDeprecations` solo propone) + `aitl branch sync --reindex` (head de la base
+> avanzó → indexador maestro). `consequences` ya no es required (Mongoose rechaza "" en
+> String required).
+> 0050 (2026-07-06): signup self-service (email/username únicos con 409 distinguible,
+> `AITL_WEB_ALLOW_SIGNUP`, primer usuario real→admin; `aitl user register`) + config
+> del harness desde la web UI (`GET /api/config/status`, `PUT /api/config`, pestaña
+> Config root/admin) con espejo automático al `.env` (`src/config/envfile.ts`;
+> `aitl config set --env`); matriz RBAC: `config_secrets` gana admin:delegated.
+> 0051 (2026-07-06): sync markdown bidireccional (`aitl sync [--pull|--push]`) — espejo
+> legible en `.aitl/{memory,skills,agents}/` + `docs/adr/` (serie 0001–0050 completa),
+> manifiesto de dos hashes (cambió-vs-propia-línea-base), conflictos sin merge (exit 2),
+> borrados nunca se propagan; `export --adapter markdown`. Ledger ahora contiguo
+> **0001–0051**.
+> 0052 (2026-07-06): `aitl init` — bootstrap de repo en un comando (idempotente,
+> [ok|skip|done]: DB+root, software→repo→branch, indexRepo, seeds, guías y
+> .mcp.json/.claude/settings.json con merges conservadores, post-merge hook,
+> `--memory-only`) + degradación sin backend (auto = cadena de fallback también en
+> run; NO_BACKEND_MESSAGE accionable; synthesize extractivo con aviso). Ledger ahora
+> contiguo **0001–0052**. El espejo docs/adr lo mantiene `aitl sync` (ADR-0051).
+> 0053 (2026-07-06): mapa de módulos (`repomap --modules`, view/back/mixed/infra por
+> extensión+segmentos con override `.aitl/modules.json`, descenso de un nivel en dirs
+> dominantes >80%) + `module-brief <dir>` (bloque del módulo + ADRs por `components[]`
+> + memorias `component:<dir>`) + tools MCP `get_module_map`/`get_module_brief`.
+> Ledger ahora contiguo **0001–0053**.
+> 0054 (2026-07-06): coordinación mínima (ADR-0002 de la tesis, rebanada v1) —
+> `task_claims` con lock por índice único parcial (released:false) + caducidad
+> (AITL_CLAIM_TTL_MS), `coord_events`, tools MCP claim_task/release_task/poll_events
+> (recurso RBAC `coordination`), CLI `aitl coord {claim,release,list,poll}` con cursor
+> incremental; `record_decision` emite evento decision best-effort; `aitl init`
+> instala el hook Stop `coord poll --quiet`. Ledger ahora contiguo **0001–0054**.
+> 0055 (2026-07-06): plan-council (ADR-0003 de la tesis, rebanada v1) — `src/council/`
+> {ports,rubric,adapters,orchestrator}: Zod PlanProposal/PlanCritique/CouncilVerdict,
+> HostClientAdapter en SOLO LECTURA (`readonlyArgs` por spec: claude-code
+> `--permission-mode plan`, codex `--sandbox read-only`) + ProviderClientAdapter
+> (jsonSchema), rúbrica ponderada determinista, rondas proponer-paralelo →
+> criticar-anonimizado (nunca la propia) → juez ≠ proponentes, 1 retry citando el
+> error Zod → sin-voto con quórum ≥2, presupuesto duro N×R; telemetría run kind
+> `council` + eventos `council_*` + veredicto como memoria `design` (best-effort,
+> degrada sin backend); CLI `aitl council "<task>" --hosts a,b [--judge] [--rounds]
+> [--json]`; E2E con hosts fake vía `AITL_HOST_CMD_*`. OJO: `aitl sync` sin
+> `--project` cae al basename del cwd (`AITL-Harness-JS`) y ve Mongo vacío — usar
+> siempre `--project aitl-js`. Ledger ahora contiguo **0001–0055**; next free **0056**.
+> 0056 (2026-07-06): rama «Task» del panel interactivo (P9) — entrada de primer nivel
+> (atajo `t`) en el supervisor readline: al entrar arranca el MCP best-effort y lanza
+> `coord poll --quiet` como notificaciones no bloqueantes; disponibilidad como
+> funciones puras (`src/interactive/taskLogic.ts`: sonda PATH + override
+> `AITL_HOST_CMD_*`, `planCouncilSeats` ≥2 proponentes + juez distinto,
+> `computeTaskActions` con razón legible); flujos in-process bajo `suspend()`
+> (`task.ts`, TaskIO inyectable): Planear = `runSddPipelinePreview`
+> (confirm-before-persist, `BufferMemoryStore`), Delegar = wrap `runOnHost` (degrada a
+> host directo sin Mongo), Council = `runCouncil` + handoff «delegar el plan ganador».
+> Degradación F9: sin Mongo corre sin persistir con aviso. 19 tests nuevos (268).
+> Ledger ahora contiguo **0001–0056**; next free **0057**.
+> 0057 (2026-07-06): documentación consolidada — docs/ARQUITECTURA.md es EL canónico
+> (actualizado post-0056: ciclo v2, CLI/MCP al día, sin LangGraph/eval); lo histórico
+> (ARQUITECTURA-AITL-JS.md, docs/thesis/*, docs/sessions/*) se archivó en docs/attic/;
+> docs/adr/README.md ya no mantiene tabla a mano (el directorio es espejo completo del
+> ledger vía `aitl sync --project aitl-js`). Ledger ahora contiguo **0001–0057**;
+> next free **0058**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
@@ -68,8 +142,10 @@ spelling — those fragment the history. Verify the hash above matches
 
 ## Stack
 
-Model-agnostic agent harness. TypeScript (ESM, Node ≥ 20) · LangGraph orchestration ·
-MongoDB + Atlas Vector Search as the single durable store · local embeddings
+Model-agnostic agent harness. TypeScript (ESM, Node ≥ 20) · loop propio `runAgent`
+(`src/orchestration/graph.ts`: prompt→modelo→tools→repeat, resumible desde el transcript
+durable; sin framework de grafos) · MongoDB + Atlas Vector Search as the single durable
+store (conexión única, dueño Mongoose: `src/db/mongoose.ts`) · local embeddings
 (`Xenova/all-MiniLM-L6-v2`, 384 dims) by default. Connects to Atlas by seedlist with a
 local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 

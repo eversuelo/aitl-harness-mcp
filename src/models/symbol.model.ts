@@ -39,10 +39,9 @@ export type Symbol = InferSchemaType<typeof symbolSchema>;
 export const SymbolModel = model("Symbol", symbolSchema);
 
 /** Build + validate a symbol (fills schema defaults). Mirrors the former Zod builder. */
-export const makeSymbol = (v: Partial<Symbol> & { project: string; file: string; name: string; kind: string }): Symbol => {
+export const makeSymbol = async (v: Partial<Symbol> & { project: string; file: string; name: string; kind: string }): Promise<Symbol> => {
   const doc = new SymbolModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as Symbol & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

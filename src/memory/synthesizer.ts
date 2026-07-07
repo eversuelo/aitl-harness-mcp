@@ -24,6 +24,9 @@ import { type MemoryDoc, makeMemoryDoc } from "../models/memory.model.js";
 import { RESERVED_MEMORY_TYPES } from "./schemas.js";
 import { MemoryStore } from "./store.js";
 
+/** Provenance identity stamped on synthesis docs (same `agent:*` pattern as the MCP actor). */
+export const SYNTHESIZER_ACTOR = { id: "agent:synthesizer", role: "agent" } as const;
+
 export class Synthesizer {
   constructor(
     private store: MemoryStore = new MemoryStore(),
@@ -38,8 +41,14 @@ export class Synthesizer {
   }
 
   // ── main entry ──────────────────────────────────────────────────────
-  /** Compact `project` memory. Returns the slugs of synthesis docs written. */
-  async synthesize(project: string, opts: { force?: boolean } = {}): Promise<string[]> {
+  /**
+   * Compact `project` memory. Returns the slugs of synthesis docs written.
+   *
+   * `commitSha` overrides the git commit stamped on the synthesis docs ("synthesize the
+   * memory as of <ref>", provenance only — no historical reconstruction). When omitted,
+   * the store resolves the live HEAD/branch defaults (F2).
+   */
+  async synthesize(project: string, opts: { force?: boolean; commitSha?: string | null } = {}): Promise<string[]> {
     if (!opts.force && !(await this.shouldSynthesize(project))) return [];
 
     const docs = await this.store.iterMemory(project);
@@ -57,7 +66,7 @@ export class Synthesizer {
       if (items.length < 2) continue; // nothing to compact
       const summary = await this.summarize(category, items);
       const slug = `synthesis-${project}-${category}`;
-      const doc: MemoryDoc = makeMemoryDoc({
+      const doc: MemoryDoc = await makeMemoryDoc({
         project,
         slug,
         type: "synthesis",
@@ -68,12 +77,17 @@ export class Synthesizer {
         links: items.map((d) => d.slug as string).filter(Boolean),
       });
       doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-      await this.store.upsertMemory(doc);
+      // Provenance: attribute the synthesis to the synthesizer agent at the requested
+      // commit (branch/commit default to the live git context inside the store).
+      await this.store.upsertMemory(doc, {
+        actor: SYNTHESIZER_ACTOR,
+        ...(opts.commitSha !== undefined ? { commit_sha: opts.commitSha } : {}),
+      });
       written.push(slug);
     }
 
     await this.store.logEvent(
-      makeEvent({ project, type: "synthesis", payload: { groups: [...groups.keys()], written } }),
+      await makeEvent({ project, type: "synthesis", payload: { groups: [...groups.keys()], written } }),
     );
     return written;
   }

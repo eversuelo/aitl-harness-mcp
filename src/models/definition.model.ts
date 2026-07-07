@@ -58,12 +58,11 @@ export const SkillModel = model("Skill", definitionSchema.clone(), SKILLS_COLLEC
 export const modelFor = (kind: DefinitionKind) => (kind === "agent" ? AgentModel : SkillModel);
 
 /** Build + validate a definition record (fills schema defaults). Mirrors the former Zod builder. */
-export const makeDefinitionRecord = (
+export const makeDefinitionRecord = async (
   v: Partial<DefinitionRecord> & { project: string; name: string },
-): DefinitionRecord => {
+): Promise<DefinitionRecord> => {
   const doc = new AgentModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as DefinitionRecord & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

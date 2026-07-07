@@ -299,7 +299,7 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
   const firstUser = parsed.convo.find((m) => m.role === "user");
   const isSpec = firstUser ? classifySpec(String(firstUser.content)).isSpec : false;
   try {
-    const run = makeRun({
+    const run = await makeRun({
       project: opts.project,
       model: `host:${source}`,
       status: "done",

@@ -40,6 +40,7 @@ const memoryDocSchema = new Schema(
     actor_id: { type: String, default: null }, // who authored the current version (provenance)
     actor_role: { type: String, default: null },
     branch: { type: String, default: null }, // git branch this version was authored on (ADR-0028)
+    commit_sha: { type: String, default: null }, // git commit this version was authored at (F2)
     embedding: { type: [Number], default: null },
   },
   { ...BASE_SCHEMA_OPTS, collection: MEMORY_COLLECTION },
@@ -50,10 +51,9 @@ export type MemoryDoc = InferSchemaType<typeof memoryDocSchema>;
 export const MemoryModel = model("Memory", memoryDocSchema);
 
 /** Build + validate a memory doc (fills schema defaults). Mirrors the former Zod builder. */
-export const makeMemoryDoc = (v: Partial<MemoryDoc> & { project: string; slug: string }): MemoryDoc => {
+export const makeMemoryDoc = async (v: Partial<MemoryDoc> & { project: string; slug: string }): Promise<MemoryDoc> => {
   const doc = new MemoryModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as MemoryDoc & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

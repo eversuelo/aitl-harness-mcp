@@ -42,6 +42,13 @@ export interface CliHostSpec {
   /** Run through a shell (needed on Windows to resolve `.cmd` shims). */
   shell?: boolean;
   /**
+   * Extra argv that puts the host in read-only / plan mode (no file edits, no side
+   * effects). Used by callers that only want the host to THINK (e.g. the plan-council,
+   * ADR-0003): `getHost(name, { readonly: true })`. Hosts without such a flag simply
+   * omit it (the prompt still forbids edits, but nothing enforces it).
+   */
+  readonlyArgs?: string[];
+  /**
    * Parse the host's stdout into final text + measured token usage + meta. Hosts emit
    * different structured formats (e.g. Claude Code `--output-format json`); when omitted
    * the raw stdout is the final text and no metrics are captured. Best-effort: a throw or
@@ -91,10 +98,25 @@ export const HOST_SPECS: Record<string, CliHostSpec> = {
     args: ["-p", "--output-format", "json"],
     promptVia: "stdin",
     parse: parseClaudeJson,
+    readonlyArgs: ["--permission-mode", "plan"],
   },
-  codex: { command: "codex", args: ["exec", "-"], promptVia: "stdin" },
+  codex: {
+    command: "codex",
+    args: ["exec", "-"],
+    promptVia: "stdin",
+    readonlyArgs: ["--sandbox", "read-only"],
+  },
   antigravity: { command: "agy", args: ["run"], promptVia: "stdin" },
 };
+
+/** Apply `readonlyArgs` to a spec (inserted before a trailing `-` stdin marker, if any). */
+function withReadonly(spec: CliHostSpec): CliHostSpec {
+  if (!spec.readonlyArgs?.length) return spec;
+  const args = [...spec.args];
+  const at = args.length > 0 && args[args.length - 1] === "-" ? args.length - 1 : args.length;
+  args.splice(at, 0, ...spec.readonlyArgs);
+  return { ...spec, args };
+}
 
 /** A host backed by a headless CLI invocation. */
 export class CliHostAdapter implements HostAdapter {
@@ -159,12 +181,16 @@ export class CliHostAdapter implements HostAdapter {
   }
 }
 
-/** Resolve a known host by name, honoring an `AITL_HOST_CMD_<NAME>` command override. */
-export function getHost(name: string): HostAdapter {
-  const spec = HOST_SPECS[name];
+/**
+ * Resolve a known host by name, honoring an `AITL_HOST_CMD_<NAME>` command override.
+ * `readonly: true` adds the host's read-only/plan flag (when the spec defines one).
+ */
+export function getHost(name: string, opts: { readonly?: boolean } = {}): HostAdapter {
+  let spec = HOST_SPECS[name];
   if (!spec) {
     throw new Error(`Unknown host '${name}'. Known hosts: ${Object.keys(HOST_SPECS).join(", ")}.`);
   }
+  if (opts.readonly) spec = withReadonly(spec);
   const override = process.env[`AITL_HOST_CMD_${name.toUpperCase().replace(/-/g, "_")}`];
   return new CliHostAdapter(name, override ? { ...spec, command: override } : spec);
 }

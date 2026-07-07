@@ -41,7 +41,7 @@ export async function generateDesign(args: DesignArgs): Promise<{ slug: string; 
   if (!body) throw new Error("sdd: the provider returned an empty design doc.");
 
   const slug = `sdd-design-${id8}`;
-  const doc: MemoryDoc = makeMemoryDoc({
+  const doc: MemoryDoc = await makeMemoryDoc({
     project: args.project,
     slug,
     repo: args.repo ?? null,

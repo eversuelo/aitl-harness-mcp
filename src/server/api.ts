@@ -8,7 +8,13 @@
  *
  * Routes (all JSON):
  *   GET    /api/health
+ *   POST   /api/auth/login                   {username,password} → {token,id,role,expires_at}
+ *   POST   /api/auth/register                {username,email,password} → session (gated by AITL_WEB_ALLOW_SIGNUP)
+ *   POST   /api/auth/logout                  (Bearer) revoke session → 204
+ *   GET    /api/auth/me                      resolved actor identity (+ signup flag)
  *   GET    /api/config                      effective profile (secrets masked)
+ *   GET    /api/config/status               profile + provider status + signup flag
+ *   PUT    /api/config                       {updates:{KEY: value|null}} → profile + .env mirror
  *   GET    /api/projects
  *   GET    /api/memory?project=&category=&type=&limit=
  *   GET    /api/memory/search?project=&q=&limit=
@@ -25,6 +31,8 @@ import type { Server } from "node:http";
 import { MEMORY_TYPES, RESERVED_MEMORY_TYPES, type MemoryType } from "../memory/schemas.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import { recordAudit } from "../auth/audit.js";
+import { createSession, resolveSession, revokeSession } from "../auth/sessions.js";
+import type { VerifyUserResult } from "../auth/users.js";
 import {
   type AccessContext,
   type Action,
@@ -37,39 +45,96 @@ import {
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
 
-/**
- * Resolve the calling actor. The web client never holds Mongo credentials; it
- * presents a bearer token mapped to an actor via the `AITL_WEB_TOKENS` env
- * (JSON: { "<token>": { "id": "...", "role": "..." } }). With no/unknown token
- * the caller is an anonymous `user` (least privilege), so privileged routes 403.
- */
-function resolveActor(req: IncomingMessage): Actor {
-  const auth = req.headers.authorization ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (token) {
-    try {
-      const map = JSON.parse(process.env.AITL_WEB_TOKENS ?? "{}") as Record<string, { id?: string; role?: string }>;
-      const entry = map[token];
-      if (entry && isRole(entry.role)) {
-        return { id: entry.id ?? "web:unknown", role: entry.role as Role, source: "web" };
-      }
-    } catch {
-      /* malformed token map → fall through to anonymous */
-    }
-    return { id: "web:unauthenticated", role: "user", source: "web" };
-  }
-  return { id: "web:anonymous", role: "user", source: "web" };
+const DEFAULT_WEB_ORIGINS = "http://localhost:5173,http://localhost:4173";
+
+/** Effect-ful collaborators of the API, injectable so tests run without Mongo. */
+export interface ApiDeps {
+  resolveSession: (token: string) => Promise<{ id: string; role: Role; source: "web" } | null>;
+  createSession: (userId: string, role: string, ttlMs?: number) => Promise<{ token: string; expiresAt: Date }>;
+  revokeSession: (token: string) => Promise<boolean>;
+  verifyCredentials: (username: string, password: string) => Promise<VerifyUserResult>;
+  /** Self-service signup (P3.5). Throws RegistrationConflictError on duplicates. */
+  registerUser: (seed: { username: string; email: string; password: string }) => Promise<{ username: string; role: string }>;
+  /** Double persistence: ~/.aitl/config.json + project .env mirror (P3.5). */
+  applyConfigUpdates: (updates: Record<string, string | null>) => Promise<{ profilePath: string; envPath: string; keys: string[] }>;
+  audit: typeof recordAudit;
+  upsertMemory: (body: Record<string, unknown>, actor?: Actor) => Promise<Record<string, unknown>>;
 }
 
-/** RBAC guard + audit. Throws HttpError(403) on denial; records both outcomes. */
+/** Self-service signup gate: on by default; AITL_WEB_ALLOW_SIGNUP="false"/"0" turns it off. */
+function signupEnabled(): boolean {
+  return !/^(false|0)$/i.test((process.env.AITL_WEB_ALLOW_SIGNUP ?? "").trim());
+}
+
+/**
+ * Default credential verifier: `verifyUserCredentials` keys on username+email, but the
+ * web login form only asks for a username — so resolve the account's email first.
+ */
+async function verifyWebCredentials(username: string, password: string): Promise<VerifyUserResult> {
+  const { verifyUserCredentials } = await import("../auth/users.js");
+  const { UserModel } = await import("../models/user.model.js");
+  const { ensureMongoose } = await import("../db/mongoose.js");
+  await ensureMongoose();
+  const account = await UserModel.findOne({ username: username.trim().toLowerCase() }, { email: 1 }).lean();
+  if (!account) return { ok: false, reason: "user not found" };
+  return verifyUserCredentials({ username, email: String(account.email ?? ""), password });
+}
+
+function bearerToken(req: IncomingMessage): string {
+  const auth = req.headers.authorization ?? "";
+  return auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+}
+
+/**
+ * Resolve the calling actor. The web client never holds Mongo credentials; it presents
+ * a bearer token resolved through a cascade:
+ *   1. login session (Mongo-backed, `POST /api/auth/login`);
+ *   2. the static `AITL_WEB_TOKENS` env map (legacy compat,
+ *      JSON: { "<token>": { "id": "...", "role": "..." } });
+ *   3. anonymous `user` (least privilege) — writes then 401 with `login_required`.
+ */
+async function resolveActor(req: IncomingMessage, deps: ApiDeps): Promise<Actor> {
+  const token = bearerToken(req);
+  if (!token) return { id: "web:anonymous", role: "user", source: "web" };
+  // Session lookup failures (e.g. Mongo unreachable) fall through to the legacy map.
+  const session = await deps.resolveSession(token).catch(() => null);
+  if (session) return session;
+  try {
+    const map = JSON.parse(process.env.AITL_WEB_TOKENS ?? "{}") as Record<string, { id?: string; role?: string }>;
+    const entry = map[token];
+    if (entry && isRole(entry.role)) {
+      return { id: entry.id ?? "web:unknown", role: entry.role as Role, source: "web" };
+    }
+  } catch {
+    /* malformed token map → fall through to anonymous */
+  }
+  return { id: "web:unauthenticated", role: "user", source: "web" };
+}
+
+/** Web callers that presented no (or no valid) credential — as opposed to a logged-in actor. */
+function isUnauthenticated(actor: Actor): boolean {
+  return actor.source === "web" && (actor.id === "web:anonymous" || actor.id === "web:unauthenticated");
+}
+
+/**
+ * RBAC guard + audit; records both outcomes. On denial throws 401 (`login_required`)
+ * for an unauthenticated caller — so the UI can prompt for login — and 403 for an
+ * authenticated actor whose role lacks the permission.
+ *
+ * Authenticated web writes count as delegated: the API server mediates and stamps the
+ * actor identity, the same trust model under which `guardTool` (MCP server) passes
+ * `delegated: true` — otherwise every "delegated" cell (e.g. admin on memory) would
+ * deny the web UI even after login.
+ */
 async function guard(
+  deps: ApiDeps,
   actor: Actor,
   resource: Resource,
   action: Action,
   ctx: AccessContext = {},
 ): Promise<void> {
-  const decision = can(actor, resource, action, ctx);
-  await recordAudit({
+  const decision = can(actor, resource, action, { delegated: !isUnauthenticated(actor), ...ctx });
+  await deps.audit({
     actor_id: actor.id,
     actor_role: actor.role,
     source: "web",
@@ -79,18 +144,38 @@ async function guard(
     ok: decision.allow,
     reason: decision.reason,
   });
-  if (!decision.allow) throw new HttpError(403, decision.reason);
+  if (!decision.allow) {
+    if (isUnauthenticated(actor)) {
+      throw new HttpError(401, decision.reason, { error: "login_required", hint: "POST /api/auth/login" });
+    }
+    throw new HttpError(403, decision.reason);
+  }
 }
 
-function send(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    ...jsonHeaders,
-    // Permissive CORS so the Vite dev server (separate origin) can call the API.
-    "access-control-allow-origin": "*",
+/**
+ * CORS: reflect the request Origin only when it is in the `AITL_WEB_ORIGINS` allowlist
+ * (CSV; defaults to the Vite dev/preview ports). No Origin header (curl, same-origin)
+ * or an unlisted Origin → no CORS headers at all (the browser then blocks the caller).
+ */
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin;
+  if (!origin) return {};
+  const allowed = (process.env.AITL_WEB_ORIGINS ?? DEFAULT_WEB_ORIGINS)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!allowed.includes(origin)) return {};
+  return {
+    "access-control-allow-origin": origin,
+    vary: "Origin",
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "access-control-allow-headers": "content-type,authorization",
-  });
+  };
+}
+
+function send(req: IncomingMessage, res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { ...jsonHeaders, ...corsHeaders(req) });
   res.end(payload);
 }
 
@@ -118,7 +203,7 @@ async function upsertMemoryDoc(body: Record<string, unknown>, actor?: Actor): Pr
       ? (rawType as MemoryType)
       : "project";
   const text = String(body.body ?? "");
-  const doc = makeMemoryDoc({
+  const doc = await makeMemoryDoc({
     project,
     slug,
     type,
@@ -143,36 +228,172 @@ function parseLimit(searchParams: URLSearchParams, def: number, max = 500): numb
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    /** Optional structured response body (e.g. { error: "login_required", hint }). */
+    readonly body?: Record<string, unknown>,
+  ) {
     super(message);
   }
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const { pathname, searchParams } = url;
   const method = req.method ?? "GET";
 
-  if (method === "OPTIONS") return send(res, 204, {});
-  if (pathname === "/api/health") return send(res, 200, { ok: true });
+  if (method === "OPTIONS") return send(req, res, 204, {});
+  if (pathname === "/api/health") return send(req, res, 200, { ok: true });
 
-  const actor = resolveActor(req);
+  if (pathname === "/api/auth/login" && method === "POST") {
+    const body = await readJson(req);
+    const username = String(body.username ?? "").trim();
+    const password = String(body.password ?? "");
+    let result: VerifyUserResult;
+    try {
+      result = await deps.verifyCredentials(username, password);
+    } catch (err) {
+      // Verifier validation errors (bad format, etc.) are credential failures, not 500s.
+      result = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    const userId = `user:${result.username ?? (username || "unknown")}`;
+    await deps.audit({
+      actor_id: userId,
+      actor_role: result.ok ? String(result.role) : "user",
+      source: "web",
+      action: "login",
+      resource: "users",
+      ok: result.ok,
+      reason: result.reason,
+    });
+    if (!result.ok || !isRole(result.role)) {
+      throw new HttpError(401, result.reason ?? "invalid credentials", { error: "invalid_credentials" });
+    }
+    const session = await deps.createSession(userId, result.role);
+    return send(req, res, 200, {
+      token: session.token,
+      id: userId,
+      role: result.role,
+      expires_at: session.expiresAt.toISOString(),
+    });
+  }
+
+  if (pathname === "/api/auth/register" && method === "POST") {
+    if (!signupEnabled()) {
+      await deps.audit({
+        actor_id: "web:anonymous",
+        actor_role: "user",
+        source: "web",
+        action: "register",
+        resource: "users",
+        ok: false,
+        reason: "signup disabled (AITL_WEB_ALLOW_SIGNUP)",
+      });
+      throw new HttpError(403, "signup is disabled on this server", { error: "signup_disabled" });
+    }
+    const body = await readJson(req);
+    let created: { username: string; role: string };
+    try {
+      created = await deps.registerUser({
+        username: String(body.username ?? ""),
+        email: String(body.email ?? ""),
+        password: String(body.password ?? ""),
+      });
+    } catch (err) {
+      // RegistrationConflictError carries the offending field; detected structurally so
+      // injected fakes don't need the exact class instance.
+      const conflict = (err as { conflict?: string }).conflict;
+      if (conflict === "username" || conflict === "email") {
+        throw new HttpError(409, `${conflict} taken`, { error: `${conflict}_taken` });
+      }
+      throw new HttpError(400, err instanceof Error ? err.message : String(err), { error: "invalid_registration" });
+    }
+    if (!isRole(created.role)) throw new HttpError(500, "registered user has an invalid role");
+    // Same shape as login: the fresh account is signed in right away.
+    const userId = `user:${created.username}`;
+    const session = await deps.createSession(userId, created.role);
+    return send(req, res, 200, {
+      token: session.token,
+      id: userId,
+      role: created.role,
+      expires_at: session.expiresAt.toISOString(),
+    });
+  }
+
+  if (pathname === "/api/auth/logout" && method === "POST") {
+    const token = bearerToken(req);
+    if (!token) throw new HttpError(401, "bearer token required", { error: "login_required", hint: "POST /api/auth/login" });
+    await deps.revokeSession(token);
+    return send(req, res, 204, {});
+  }
+
+  const actor = await resolveActor(req, deps);
   if (pathname === "/api/auth/me" && method === "GET") {
-    return send(res, 200, { id: actor.id, role: actor.role, source: actor.source });
+    // `signup` lets the login dialog hide the "create account" mode when disabled.
+    return send(req, res, 200, { id: actor.id, role: actor.role, source: actor.source, signup: signupEnabled() });
   }
 
   if (pathname === "/api/config" && method === "GET") {
-    // Secrets are masked by resolveProfile; only root may read effective config.
-    await guard(actor, "config_secrets", "read");
+    // Secrets are masked by resolveProfile; root (or admin via web, delegated) only.
+    await guard(deps, actor, "config_secrets", "read");
     const { resolveProfile } = await import("../config/store.js");
-    return send(res, 200, resolveProfile());
+    return send(req, res, 200, resolveProfile());
+  }
+
+  // Config panel snapshot: masked profile + which LLM backends are usable + signup flag.
+  if (pathname === "/api/config/status" && method === "GET") {
+    await guard(deps, actor, "config_secrets", "read");
+    const { resolveProfile } = await import("../config/store.js");
+    const { providerStatus } = await import("../providers/base.js");
+    return send(req, res, 200, {
+      profile: resolveProfile(),
+      providers: providerStatus(),
+      signup_enabled: signupEnabled(),
+    });
+  }
+
+  if (pathname === "/api/config" && method === "PUT") {
+    await guard(deps, actor, "config_secrets", "update");
+    const body = await readJson(req);
+    const raw = body.updates;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpError(400, "`updates` object is required: { KEY: value | null }.");
+    }
+    const { ENV_KEYS, resolveProfile } = await import("../config/store.js");
+    const updates: Record<string, string | null> = {};
+    const unknown: string[] = [];
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!(ENV_KEYS as readonly string[]).includes(k)) unknown.push(k);
+      else updates[k] = v == null ? null : String(v);
+    }
+    if (unknown.length) {
+      throw new HttpError(400, `Unknown config key(s): ${unknown.join(", ")}`, {
+        error: "unknown_keys",
+        unknown,
+        known: [...ENV_KEYS],
+      });
+    }
+    if (!Object.keys(updates).length) throw new HttpError(400, "`updates` is empty.");
+    await deps.applyConfigUpdates(updates);
+    // Audit which keys were touched — never the values (several are secrets).
+    await deps.audit({
+      actor_id: actor.id,
+      actor_role: actor.role,
+      source: "web",
+      action: "config.update",
+      resource: "config_secrets",
+      ok: true,
+      reason: `keys=${Object.keys(updates).join(",")}`,
+    });
+    return send(req, res, 200, resolveProfile());
   }
 
   const { MemoryStore } = await import("../memory/store.js");
   const store = new MemoryStore();
 
   if (pathname === "/api/projects" && method === "GET") {
-    return send(res, 200, await store.listProjects());
+    return send(req, res, 200, await store.listProjects());
   }
 
   // ── graph (durable-state projection) ──────────────────────────────────────
@@ -182,7 +403,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const scope = (searchParams.get("scope") ?? "all") as "all" | "symbols" | "memory";
     const { graphify, MongoGraphSource } = await import("../graph/index.js");
     const graphs = await graphify(new MongoGraphSource(store.db), { project, scope });
-    return send(res, 200, graphs[project] ?? { nodes: [], edges: [] });
+    return send(req, res, 200, graphs[project] ?? { nodes: [], edges: [] });
   }
 
   // ── knowledge map (multi-entity projection, ADR-0029) ─────────────────────
@@ -195,7 +416,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       ? (raw.split(",").map((s) => s.trim()).filter((s) => (KNOWLEDGE_ENTITIES as string[]).includes(s)) as typeof KNOWLEDGE_ENTITIES)
       : undefined;
     const graph = await knowledgeGraphify(new MongoGraphSource(store.db), { project, entities });
-    return send(res, 200, graph);
+    return send(req, res, 200, graph);
   }
 
   if (pathname === "/api/memory/search" && method === "GET") {
@@ -209,13 +430,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     } catch {
       hits = await store.textSearch("memory", q, { project, limit });
     }
-    return send(res, 200, hits);
+    return send(req, res, 200, hits);
   }
 
   if (pathname === "/api/memory" && method === "GET") {
     const project = searchParams.get("project");
     if (!project) throw new HttpError(400, "`project` query param is required.");
-    return send(res, 200, await store.listMemory(project, {
+    return send(req, res, 200, await store.listMemory(project, {
       category: searchParams.get("category") ?? undefined,
       type: searchParams.get("type") ?? undefined,
       limit: parseLimit(searchParams, 200),
@@ -223,8 +444,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (pathname === "/api/memory" && (method === "POST" || method === "PUT")) {
-    await guard(actor, "memory", method === "POST" ? "create" : "update");
-    return send(res, 200, await upsertMemoryDoc(await readJson(req), actor));
+    await guard(deps, actor, "memory", method === "POST" ? "create" : "update");
+    return send(req, res, 200, await deps.upsertMemory(await readJson(req), actor));
   }
 
   // /api/memory/:slug  (GET | PUT | DELETE)
@@ -236,18 +457,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (!project) throw new HttpError(400, "`project` query param is required.");
       const doc = await store.getMemory(project, slug);
       if (!doc) throw new HttpError(404, `No memory '${slug}' in project '${project}'.`);
-      return send(res, 200, doc);
+      return send(req, res, 200, doc);
     }
     if (method === "PUT") {
-      await guard(actor, "memory", "update");
-      return send(res, 200, await upsertMemoryDoc({ ...(await readJson(req)), slug }, actor));
+      await guard(deps, actor, "memory", "update");
+      return send(req, res, 200, await deps.upsertMemory({ ...(await readJson(req)), slug }, actor));
     }
     if (method === "DELETE") {
-      await guard(actor, "memory", "delete");
+      await guard(deps, actor, "memory", "delete");
       const project = searchParams.get("project");
       if (!project) throw new HttpError(400, "`project` query param is required.");
       const ok = await store.deleteMemory(project, slug);
-      return send(res, ok ? 200 : 404, { deleted: ok, slug, project });
+      return send(req, res, ok ? 200 : 404, { deleted: ok, slug, project });
     }
   }
 
@@ -260,7 +481,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       .find({ project }, { projection: { embedding: 0 } })
       .sort({ id: 1 })
       .toArray();
-    return send(res, 200, rows);
+    return send(req, res, 200, rows);
   }
 
   const d = /^\/api\/decisions\/([^/]+)$/.exec(pathname);
@@ -272,7 +493,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       .collection("decisions")
       .findOne({ project, id }, { projection: { embedding: 0 } });
     if (!doc) throw new HttpError(404, `No decision '${id}' in project '${project}'.`);
-    return send(res, 200, doc);
+    return send(req, res, 200, doc);
   }
 
   // ── context snapshots (mcp_context) ───────────────────────────────────────
@@ -289,7 +510,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       .sort({ created_at: -1 })
       .limit(parseLimit(searchParams, 100))
       .lean();
-    return send(res, 200, rows);
+    return send(req, res, 200, rows);
   }
 
   const ctx = /^\/api\/context\/([^/]+)$/.exec(pathname);
@@ -300,26 +521,26 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     await ensureMongoose();
     const doc = await McpContextModel.findOne({ context_id: id }).lean();
     if (!doc) throw new HttpError(404, `No context '${id}'.`);
-    return send(res, 200, doc);
+    return send(req, res, 200, doc);
   }
 
   // ── software / repo catalog (ADR-0028) ────────────────────────────────────
   if (pathname === "/api/softwares" && method === "GET") {
     const { SoftwareStore } = await import("../softwares/store.js");
-    return send(res, 200, await new SoftwareStore().list({ limit: 200 }));
+    return send(req, res, 200, await new SoftwareStore().list({ limit: 200 }));
   }
   if (pathname === "/api/repos" && method === "GET") {
     const { RepoStore } = await import("../repos/store.js");
     const project = searchParams.get("project") ?? undefined;
     const software = searchParams.get("software") ?? undefined;
-    return send(res, 200, await new RepoStore().list({ project, software, limit: 200 }));
+    return send(req, res, 200, await new RepoStore().list({ project, software, limit: 200 }));
   }
   if (pathname === "/api/branches" && method === "GET") {
     const { BranchStore } = await import("../branches/store.js");
     const project = searchParams.get("project") ?? undefined;
     const repo = searchParams.get("repo") ?? undefined;
     const kind = searchParams.get("kind") ?? undefined;
-    return send(res, 200, await new BranchStore().list({ project, repo, kind, limit: 500 }));
+    return send(req, res, 200, await new BranchStore().list({ project, repo, kind, limit: 500 }));
   }
 
   // ── runs (measured telemetry: tokens, cost, iters, tool calls, status) ──────
@@ -333,7 +554,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       .sort({ started_at: -1 })
       .limit(parseLimit(searchParams, 200))
       .lean();
-    return send(res, 200, rows);
+    return send(req, res, 200, rows);
   }
 
   // Per-session graph (ADR-0035): the run linked to the ADRs/memories/prompts it produced.
@@ -345,7 +566,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const { sessionGraph } = await import("../graph/session.js");
     const graph = await sessionGraph(store.db, project, id, { temporal: searchParams.get("temporal") === "1" });
     if (!graph) throw new HttpError(404, `No run '${id}'.`);
-    return send(res, 200, graph);
+    return send(req, res, 200, graph);
   }
 
   const rr = /^\/api\/runs\/([^/]+)$/.exec(pathname);
@@ -364,7 +585,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       byType[t] = (byType[t] ?? 0) + 1;
       if (t === "human_intervention") interventionMinutes += Number((e.payload as Record<string, unknown>)?.minutes ?? 0);
     }
-    return send(res, 200, { run, event_counts: byType, intervention_minutes: interventionMinutes });
+    return send(req, res, 200, { run, event_counts: byType, intervention_minutes: interventionMinutes });
   }
 
   // ── prompt history ────────────────────────────────────────────────────────
@@ -375,7 +596,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const rows = await new PromptStore().list(project, {
       limit: parseLimit(searchParams, 200),
     });
-    return send(res, 200, rows);
+    return send(req, res, 200, rows);
   }
 
   // DELETE /api/prompts/:id  — owner, admin or root (per RBAC "own" rule)
@@ -387,19 +608,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const existing = await promptStore.getById(id);
     if (!existing) throw new HttpError(404, `No prompt '${id}'.`);
     const ownerId = (existing.owner_user as string | null) ?? (existing.actor_id as string | null) ?? undefined;
-    await guard(actor, "prompts", "delete", { ownerId: ownerId ?? undefined });
+    await guard(deps, actor, "prompts", "delete", { ownerId: ownerId ?? undefined });
     const ok = await promptStore.deleteById(id);
-    return send(res, ok ? 200 : 404, { deleted: ok, id });
+    return send(req, res, ok ? 200 : 404, { deleted: ok, id });
   }
 
   // ── users (RBAC-managed) ────────────────────────────────────────────────────
   if (pathname === "/api/users" && method === "GET") {
-    await guard(actor, "users", "read");
+    await guard(deps, actor, "users", "read");
     const { listUsers } = await import("../auth/users.js");
-    return send(res, 200, await listUsers());
+    return send(req, res, 200, await listUsers());
   }
   if (pathname === "/api/users" && method === "POST") {
-    await guard(actor, "users", "create");
+    await guard(deps, actor, "users", "create");
     const { createUser } = await import("../auth/users.js");
     const body = await readJson(req);
     const created = await createUser({
@@ -408,26 +629,48 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       password: String(body.password ?? ""),
       role: body.role ? String(body.role) : undefined,
     });
-    return send(res, 201, created);
+    return send(req, res, 201, created);
   }
   const ur = /^\/api\/users\/([^/]+)\/role$/.exec(pathname);
   if (ur && method === "PATCH") {
-    await guard(actor, "users", "set_role");
+    await guard(deps, actor, "users", "set_role");
     const { setUserRole } = await import("../auth/users.js");
     const body = await readJson(req);
     const updated = await setUserRole(decodeURIComponent(ur[1]), String(body.role ?? ""));
-    return send(res, 200, updated);
+    return send(req, res, 200, updated);
   }
 
   throw new HttpError(404, `No route for ${method} ${pathname}.`);
 }
 
-/** Build the memory-admin API server (not yet listening). */
-export function createApiServer(): Server {
+const DEFAULT_DEPS: ApiDeps = {
+  resolveSession,
+  createSession,
+  revokeSession,
+  verifyCredentials: verifyWebCredentials,
+  registerUser: async (seed) => {
+    const { registerUser } = await import("../auth/users.js");
+    return registerUser(seed, { source: "web" });
+  },
+  applyConfigUpdates: async (updates) => {
+    const { applyConfigUpdates } = await import("../config/store.js");
+    return applyConfigUpdates(updates);
+  },
+  audit: recordAudit,
+  upsertMemory: upsertMemoryDoc,
+};
+
+/** Build the memory-admin API server (not yet listening). Deps are injectable for tests. */
+export function createApiServer(overrides: Partial<ApiDeps> = {}): Server {
+  const deps: ApiDeps = { ...DEFAULT_DEPS, ...overrides };
   return createServer((req, res) => {
-    handle(req, res).catch((err) => {
+    handle(req, res, deps).catch((err) => {
       const status = err instanceof HttpError ? err.status : 500;
-      send(res, status, { error: err instanceof Error ? err.message : String(err) });
+      const body =
+        err instanceof HttpError && err.body
+          ? err.body
+          : { error: err instanceof Error ? err.message : String(err) };
+      send(req, res, status, body);
     });
   });
 }

@@ -32,7 +32,7 @@ export class DefinitionStore {
     rec: Partial<DefinitionRecord> & { project: string; name: string },
   ): Promise<DefinitionRecord> {
     await ensureMongoose();
-    const doc = makeDefinitionRecord(rec);
+    const doc = await makeDefinitionRecord(rec);
     doc.updated_at = new Date();
     const existing = await this.model
       .findOne({ project: doc.project, name: doc.name }, { created_at: 1 })

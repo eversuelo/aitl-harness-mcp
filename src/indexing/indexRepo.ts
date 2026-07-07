@@ -15,7 +15,7 @@ import { parseMarkdownDir } from "../ingest/markdown.js";
 import { Classifier } from "../memory/classifier.js";
 import { MemoryStore } from "../memory/store.js";
 import { RepoMap } from "../repomap/store.js";
-import { currentBranch } from "../util/git.js";
+import { currentBranch, headSha } from "../util/git.js";
 import type { VersioningActor } from "../memory/versioning.js";
 
 export interface IndexRepoOpts {
@@ -51,7 +51,9 @@ async function exists(path: string): Promise<boolean> {
 /** Index a repo into the durable store: symbols + memory + ADRs. */
 export async function indexRepo(opts: IndexRepoOpts): Promise<IndexRepoResult> {
   const repo = opts.repo ?? null;
+  // Provenance resolved against the INDEXED root (not process.cwd()), branch + commit alike.
   const branch = currentBranch(opts.root);
+  const commitSha = headSha(opts.root);
   const steps: string[] = [];
   const result: IndexRepoResult = { project: opts.project, repo, branch, symbols: 0, memory: 0, adrs: 0, steps };
 
@@ -73,7 +75,7 @@ export async function indexRepo(opts: IndexRepoOpts): Promise<IndexRepoResult> {
         if (repo) doc.repo = repo;
         await clf.classifyMemory(doc);
         doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
-        await store.upsertMemory(doc, { actor: opts.actor, branch });
+        await store.upsertMemory(doc, { actor: opts.actor, branch, commit_sha: commitSha });
       }
       result.memory = docs.length;
       steps.push(`memory: ${docs.length} docs`);
@@ -86,7 +88,7 @@ export async function indexRepo(opts: IndexRepoOpts): Promise<IndexRepoResult> {
   const adrDir = opts.adrDir ?? join(opts.root, "docs", "adr");
   if (await exists(adrDir)) {
     try {
-      const ids = await new ADRStore().syncDir(adrDir, opts.project, { actor: opts.actor, branch });
+      const ids = await new ADRStore().syncDir(adrDir, opts.project, { actor: opts.actor, branch, commit_sha: commitSha });
       result.adrs = ids.length;
       steps.push(`adrs: ${ids.length} synced`);
     } catch (err) {

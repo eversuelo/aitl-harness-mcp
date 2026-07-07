@@ -15,7 +15,7 @@ export class PromptStore {
     rec: Partial<PromptRecord> & { project: string; prompt: string },
   ): Promise<PromptRecord & { id: string }> {
     await ensureMongoose();
-    const d = await PromptModel.create(makePromptRecord(rec));
+    const d = await PromptModel.create(await makePromptRecord(rec));
     return { ...d.toObject(), id: String(d._id) };
   }
 

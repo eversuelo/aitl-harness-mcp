@@ -3,10 +3,8 @@
  *
  * `runAgent` is a fully-working, provider-agnostic loop that persists the run and
  * every turn into MongoDB (durable transcript) and respects the context budget.
- *
- * `buildGraph` wires the same loop as a LangGraph StateGraph with a MongoDB
- * checkpointer so runs are resumable/replayable. It is kept thin and lazily-imported
- * so the package works even before LangGraph internals are pinned.
+ * Runs are resumable/replayable from that durable transcript (`opts.resume`) — no
+ * graph framework involved.
  */
 
 import { randomUUID } from "node:crypto";
@@ -186,22 +184,22 @@ export async function runAgent(
       convo.push({ role: "user", content: prompt });
       idx += 1;
       await store.appendMessage(
-        makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+        await makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
       );
       promptText = prompt;
     }
     await RunModel.updateOne({ _id: runId }, { $set: { status: "running", ended_at: null } });
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
   } else {
     runId = randomUUID();
-    const run = makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
+    const run = await makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
     await ensureMongoose();
     await RunModel.create({ ...run, _id: runId });
     convo = [{ role: "user", content: prompt }];
     idx = 0;
     promptText = prompt;
     await store.appendMessage(
-      makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
+      await makeMessage({ project, run_id: runId, idx, role: "user", content: prompt }),
     );
   }
 
@@ -212,10 +210,10 @@ export async function runAgent(
     const { installApprovalGate } = await import("../hooks/approval.js");
     installApprovalGate(registry, {
       policy: opts.askPolicy,
-      onDecision: (ev) => {
+      onDecision: async (ev) => {
         // The human's wait time (ms) feeds the supervision metric (H11) in run-show.
         void store.logEvent(
-          makeEvent({
+          await makeEvent({
             project,
             run_id: runId,
             type: "approval",
@@ -234,7 +232,7 @@ export async function runAgent(
     try {
       const { preamble, sections } = await hydrate(project, promptText, { store });
       if (preamble) preambles.push(preamble);
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "hydrate", payload: { ...sections } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "hydrate", payload: { ...sections } }));
     } catch {
       // Hydration is best-effort; never block the run.
     }
@@ -246,7 +244,7 @@ export async function runAgent(
       });
       selectedSkills = selected;
       if (preamble) preambles.push(preamble);
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected } }));
     } catch {
       // Skill routing is best-effort; never block the run.
     }
@@ -264,7 +262,7 @@ export async function runAgent(
     for (; it < maxIters; it++) {
       if (ctx.overBudget(convo)) {
         convo = await ctx.compact(convo);
-        await store.logEvent(makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
+        await store.logEvent(await makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
       }
 
       // Provider call is retried on transient failures (429/5xx/network) with backoff.
@@ -280,9 +278,9 @@ export async function runAgent(
         doTurn,
         {
           retries: opts.retries ?? 3,
-          onRetry: ({ attempt, delayMs, error }) =>
+          onRetry: async ({ attempt, delayMs, error }) =>
             store.logEvent(
-              makeEvent({
+              await makeEvent({
                 project,
                 run_id: runId,
                 type: "retry",
@@ -293,7 +291,7 @@ export async function runAgent(
       );
       idx += 1;
       await store.appendMessage(
-        makeMessage({
+        await makeMessage({
           project,
           run_id: runId,
           idx,
@@ -306,7 +304,7 @@ export async function runAgent(
       tokIn += turn.usage.input ?? 0;
       tokOut += turn.usage.output ?? 0;
       toolCalls += turn.tool_calls.length;
-      await store.logEvent(makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId, type: "loop_iter", payload: { iter: it } }));
       finalText = turn.text || finalText;
 
       if (turn.tool_calls.length === 0) {
@@ -316,7 +314,7 @@ export async function runAgent(
           const v = await opts.verify({ finalText, convo, project });
           const ok = v === true;
           await store.logEvent(
-            makeEvent({
+            await makeEvent({
               project,
               run_id: runId,
               type: "verify",
@@ -331,7 +329,7 @@ export async function runAgent(
             convo.push({ role: "user", content: feedback });
             idx += 1;
             await store.appendMessage(
-              makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
+              await makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
             );
             continue;
           }
@@ -353,9 +351,9 @@ export async function runAgent(
           {
             // A hook that acts (mutates args/result) leaves a durable trace, so hook
             // interference is observable in the same event stream as gates/tool calls.
-            onHookEvent: (ev) => {
+            onHookEvent: async (ev) => {
               void store.logEvent(
-                makeEvent({
+                await makeEvent({
                   project,
                   run_id: runId,
                   type: ev.phase === "pre" ? "tool_pre_hook" : "tool_post_hook",
@@ -367,7 +365,7 @@ export async function runAgent(
         );
         idx += 1;
         await store.appendMessage(
-          makeMessage({
+          await makeMessage({
             project,
             run_id: runId,
             idx,
@@ -385,7 +383,7 @@ export async function runAgent(
         if (denyReason !== null) {
           gateDenials += 1;
           await store.logEvent(
-            makeEvent({
+            await makeEvent({
               project,
               run_id: runId,
               type: "gate",
@@ -394,7 +392,7 @@ export async function runAgent(
           );
         } else {
           await store.logEvent(
-            makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
+            await makeEvent({ project, run_id: runId, type: "tool_call", payload: { name: call.name } }),
           );
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: result });
@@ -405,7 +403,7 @@ export async function runAgent(
     const message = String(err instanceof Error ? err.message : err).slice(0, 500);
     await ensureMongoose();
     await RunModel.updateOne({ _id: runId }, { $set: { status: "error", ended_at: new Date(), error: message } });
-    await store.logEvent(makeEvent({ project, run_id: runId, type: "error", payload: { iter: it, message } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId, type: "error", payload: { iter: it, message } }));
     throw err;
   }
 
@@ -417,7 +415,7 @@ export async function runAgent(
       if (res) {
         summarySlug = res.slug;
         await store.logEvent(
-          makeEvent({ project, run_id: runId, type: "session_summary", payload: { slug: res.slug, category: res.category } }),
+          await makeEvent({ project, run_id: runId, type: "session_summary", payload: { slug: res.slug, category: res.category } }),
         );
       }
     } catch {
@@ -466,55 +464,4 @@ export async function runAgent(
     status: "done",
     decision_brief: decisionBrief,
   };
-}
-
-/**
- * Wire the loop as a checkpointed LangGraph StateGraph (resumable/replayable).
- * Lazily imports LangGraph + the Mongo checkpointer.
- */
-export async function buildGraph(opts: { provider?: Provider; registry?: ToolRegistry } = {}) {
-  const { optionalImport } = await import("../util/optional.js");
-  const { StateGraph, END, Annotation } = await optionalImport("@langchain/langgraph");
-  const { getCheckpointer } = await import("./checkpointer.js");
-
-  const provider = opts.provider ?? (await getProvider());
-  const registry = opts.registry ?? defaultRegistry;
-
-  // `Annotation` is resolved lazily as `any` (optional dep), so generic type args
-  // aren't available here; the reducers below carry the runtime contract instead.
-  const State = Annotation.Root({
-    messages: Annotation({
-      reducer: (a: Record<string, unknown>[], b: Record<string, unknown>[]) => a.concat(b),
-      default: () => [],
-    }),
-    last: Annotation(),
-  });
-
-  const agentNode = async (state: any) => {
-    const turn = await provider.chat(state.messages, { tools: registry.schemas() });
-    return {
-      messages: [{ role: "assistant", content: turn.text, tool_calls: turn.tool_calls }],
-      last: turn,
-    };
-  };
-
-  const toolsNode = async (state: any) => {
-    const out: Record<string, unknown>[] = [];
-    for (const call of state.last?.tool_calls ?? []) {
-      const result = await registry.call(call.name, call.input ?? {});
-      out.push({ role: "tool", tool_call_id: call.id, content: result });
-    }
-    return { messages: out };
-  };
-
-  const route = (state: any) => (state.last?.tool_calls.length ? "tools" : END);
-
-  const graph = new StateGraph(State)
-    .addNode("agent", agentNode)
-    .addNode("tools", toolsNode)
-    .setEntryPoint("agent")
-    .addConditionalEdges("agent", route, { tools: "tools", [END]: END })
-    .addEdge("tools", "agent");
-
-  return graph.compile({ checkpointer: await getCheckpointer() });
 }

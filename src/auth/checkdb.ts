@@ -14,6 +14,7 @@
 
 import type { Db } from "mongodb";
 import { getDb } from "../db/client.js";
+import { ensureMongoose } from "../db/mongoose.js";
 import { bootstrapBaseUser, countUsers, rootExists } from "./users.js";
 
 const MISSING_ROOT_HINT =
@@ -36,10 +37,12 @@ async function hasUniqueIndex(db: Db, field: string): Promise<boolean> {
   }
 }
 
-export async function checkRbac(db: Db = getDb()): Promise<RbacCheckResult> {
+export async function checkRbac(db?: Db): Promise<RbacCheckResult> {
+  if (!db) await ensureMongoose(); // opens the shared connection getDb() rides on
+  const database = db ?? getDb();
   const lines: string[] = [];
 
-  const collections = new Set((await db.listCollections().toArray()).map((c) => c.name));
+  const collections = new Set((await database.listCollections().toArray()).map((c) => c.name));
   if (!collections.has("users")) {
     lines.push("Users collection: missing (run aitl init-db)");
     lines.push("RBAC status: not-initialized");
@@ -47,8 +50,8 @@ export async function checkRbac(db: Db = getDb()): Promise<RbacCheckResult> {
   }
   lines.push("Users collection OK");
 
-  const uniqueUsername = await hasUniqueIndex(db, "username");
-  const uniqueEmail = await hasUniqueIndex(db, "email");
+  const uniqueUsername = await hasUniqueIndex(database, "username");
+  const uniqueEmail = await hasUniqueIndex(database, "email");
   if (!uniqueUsername || !uniqueEmail) {
     const missing = [!uniqueUsername && "username", !uniqueEmail && "email"].filter(Boolean).join(", ");
     lines.push(`Unique indexes: missing on ${missing} (run aitl init-db)`);

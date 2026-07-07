@@ -78,10 +78,9 @@ export type MessageInput = {
 };
 
 /** Build + validate a message (fills schema defaults). Mirrors the former Zod builder. */
-export const makeMessage = (v: MessageInput): Message => {
+export const makeMessage = async (v: MessageInput): Promise<Message> => {
   const doc = new MessageModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as Message & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

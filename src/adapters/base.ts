@@ -8,6 +8,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getDb } from "../db/client.js";
+import { ensureMongoose } from "../db/mongoose.js";
 
 export interface Canon {
   project: string;
@@ -17,6 +18,7 @@ export interface Canon {
 }
 
 export async function loadCanon(project: string, repoRoot: string): Promise<Canon> {
+  await ensureMongoose(); // opens the shared connection getDb() rides on
   const db = getDb();
   const agentsPath = join(repoRoot, "AGENTS.md");
   let agentsMd = "";
@@ -48,12 +50,14 @@ export function renderRules(canon: Canon): string {
   return canon.conventions.map((c) => `- ${String(c.rule)}`).join("\n");
 }
 
-export const ADAPTERS = ["agents_md", "cursor", "copilot", "antigravity", "kiro", "trae"] as const;
+export const ADAPTERS = ["agents_md", "cursor", "copilot", "antigravity", "kiro", "trae", "markdown"] as const;
 
 export async function getAdapter(name: string): Promise<ToolAdapter> {
   switch (name) {
     case "agents_md":
       return new (await import("./agentsMd.js")).AgentsMdAdapter();
+    case "markdown":
+      return new (await import("./markdown.js")).MarkdownAdapter();
     case "cursor":
       return new (await import("./cursor.js")).CursorAdapter();
     case "copilot":

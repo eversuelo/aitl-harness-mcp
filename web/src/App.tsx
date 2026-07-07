@@ -10,12 +10,15 @@ import {
   RefreshCw,
   Save,
   Search,
+  Settings2,
   Share2,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
+import { AuthBadge, LoginDialog } from "@/components/LoginView";
+import { ConfigView } from "@/components/ConfigView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -30,12 +33,14 @@ import {
   type GraphData,
   type GraphNode,
   KNOWLEDGE_KINDS,
+  type Me,
   type MemoryDoc,
   type MemoryInput,
   type NodeKind,
   type PromptDoc,
   type RunDetail,
   type RunDoc,
+  UnauthorizedError,
   api,
 } from "./api.js";
 
@@ -50,23 +55,56 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge";
+type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge" | "config";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
   const [project, setProject] = useState(DEFAULT_PROJECT);
   const [tab, setTab] = useState<Tab>("memory");
   const [error, setError] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+
+  // Central error sink: a 401 on a write opens the login dialog instead of a red banner.
+  const reportError = useCallback((e: unknown) => {
+    if (e == null) return setError(null);
+    if (e instanceof UnauthorizedError) {
+      setMe(null);
+      setLoginOpen(true);
+      setError("Login required for this action.");
+      return;
+    }
+    setError(e instanceof Error ? e.message : String(e));
+  }, []);
+
+  const refreshMe = useCallback(() => {
+    api
+      .me()
+      .then(setMe)
+      .catch(() => setMe(null));
+  }, []);
 
   useEffect(() => {
+    refreshMe();
     api
       .projects()
       .then((ps) => {
         setProjects(ps);
         setProject((p) => p || ps[0] || "");
       })
-      .catch((e) => setError(e.message));
-  }, []);
+      .catch(reportError);
+  }, [refreshMe, reportError]);
+
+  const logout = useCallback(() => {
+    void api.logout().then(refreshMe);
+  }, [refreshMe]);
+
+  // Config is root/admin only — the server enforces it (RBAC config_secrets); the tab
+  // simply hides for everyone else, and falls back when the role drops (logout).
+  const canConfig = me?.role === "root" || me?.role === "admin";
+  useEffect(() => {
+    if (tab === "config" && !canConfig) setTab("memory");
+  }, [tab, canConfig]);
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -99,25 +137,44 @@ export function App() {
               <TabsTrigger value="knowledge">
                 <Share2 /> Knowledge Map
               </TabsTrigger>
+              {canConfig && (
+                <TabsTrigger value="config">
+                  <Settings2 /> Config
+                </TabsTrigger>
+              )}
             </TabsList>
           </Tabs>
         </div>
-        <div className="flex items-center gap-2">
-          <Label className="text-xs text-muted-foreground">project</Label>
-          <Select value={project} onValueChange={setProject}>
-            <SelectTrigger className="h-8 w-52">
-              <SelectValue placeholder="select a project…" />
-            </SelectTrigger>
-            <SelectContent>
-              {[...new Set([project, ...projects].filter(Boolean))].map((p) => (
-                <SelectItem key={p} value={p}>
-                  {p}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground">project</Label>
+            <Select value={project} onValueChange={setProject}>
+              <SelectTrigger className="h-8 w-52">
+                <SelectValue placeholder="select a project…" />
+              </SelectTrigger>
+              <SelectContent>
+                {[...new Set([project, ...projects].filter(Boolean))].map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Separator orientation="vertical" className="h-6" />
+          <AuthBadge me={me} onLogin={() => setLoginOpen(true)} onLogout={logout} />
         </div>
       </header>
+
+      <LoginDialog
+        open={loginOpen}
+        onClose={() => setLoginOpen(false)}
+        signupEnabled={me?.signup !== false}
+        onLoggedIn={() => {
+          refreshMe();
+          setError(null);
+        }}
+      />
 
       {error && (
         <div className="flex items-center justify-between gap-2 border-b border-destructive/40 bg-destructive/15 px-5 py-2 text-sm text-destructive">
@@ -129,12 +186,13 @@ export function App() {
       )}
 
       <div className="min-h-0 flex-1">
-        {tab === "memory" && <MemoryView project={project} onError={setError} />}
-        {tab === "decisions" && <DecisionsView project={project} onError={setError} />}
-        {tab === "prompts" && <PromptsView project={project} onError={setError} />}
-        {tab === "runs" && <RunsView project={project} onError={setError} />}
-        {tab === "graph" && <GraphView project={project} onError={setError} />}
-        {tab === "knowledge" && <KnowledgeMapView project={project} onError={setError} />}
+        {tab === "memory" && <MemoryView project={project} onError={reportError} />}
+        {tab === "decisions" && <DecisionsView project={project} onError={reportError} />}
+        {tab === "prompts" && <PromptsView project={project} onError={reportError} />}
+        {tab === "runs" && <RunsView project={project} onError={reportError} />}
+        {tab === "graph" && <GraphView project={project} onError={reportError} />}
+        {tab === "knowledge" && <KnowledgeMapView project={project} onError={reportError} />}
+        {tab === "config" && canConfig && <ConfigView onError={reportError} />}
       </div>
     </div>
   );
@@ -160,7 +218,7 @@ function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
 }
 
 /* ── memory ──────────────────────────────────────────────────────────────── */
-function MemoryView({ project, onError }: { project: string; onError: (e: string | null) => void }) {
+function MemoryView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [items, setItems] = useState<MemoryDoc[]>([]);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<MemoryDoc | null>(null);
@@ -175,7 +233,7 @@ function MemoryView({ project, onError }: { project: string; onError: (e: string
     try {
       setItems(query.trim() ? await api.search(project, query.trim()) : await api.list(project));
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setLoading(false);
     }
@@ -198,7 +256,7 @@ function MemoryView({ project, onError }: { project: string; onError: (e: string
       setDraft(null);
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setBusy(false);
     }
@@ -213,7 +271,7 @@ function MemoryView({ project, onError }: { project: string; onError: (e: string
       setDraft(null);
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setBusy(false);
     }
@@ -394,7 +452,48 @@ function MemoryEditor({
 }
 
 /* ── decisions / ADRs ──────────────────────────────────────────────────────── */
-function DecisionsView({ project, onError }: { project: string; onError: (e: string | null) => void }) {
+/** Soft-TTL check (F4): the ADR is still active but its review_after date lapsed. */
+function isReviewOverdue(d: DecisionDoc): boolean {
+  if (!d.review_after || d.status === "deprecated" || d.status === "superseded") return false;
+  const t = new Date(d.review_after).getTime();
+  return !Number.isNaN(t) && t < Date.now();
+}
+
+/** Lifecycle-aware status badge: gray for deprecated/superseded (reason in the tooltip), amber when the soft TTL lapsed. */
+function DecisionStatusBadge({ d, className }: { d: DecisionDoc; className?: string }) {
+  if (d.status === "deprecated") {
+    return (
+      <Badge variant="secondary" className={`text-muted-foreground ${className ?? ""}`} title={d.deprecation_reason || "deprecated"}>
+        deprecated{d.superseded_by ? ` → ${d.superseded_by}` : ""}
+      </Badge>
+    );
+  }
+  if (d.status === "superseded") {
+    return (
+      <Badge variant="secondary" className={`text-muted-foreground ${className ?? ""}`} title={d.superseded_by ? `superseded by ${d.superseded_by}` : undefined}>
+        superseded
+      </Badge>
+    );
+  }
+  if (isReviewOverdue(d)) {
+    return (
+      <Badge
+        variant="outline"
+        className={`border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400 ${className ?? ""}`}
+        title={`review_after vencido: ${new Date(d.review_after as string).toLocaleDateString()}`}
+      >
+        a revisión
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant={d.status === "accepted" ? "default" : "secondary"} className={className}>
+      {d.status}
+    </Badge>
+  );
+}
+
+function DecisionsView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [items, setItems] = useState<DecisionDoc[]>([]);
   const [selected, setSelected] = useState<DecisionDoc | null>(null);
   const [loading, setLoading] = useState(false);
@@ -410,7 +509,7 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: str
         setItems(rows);
         setSelected(rows[0] ?? null);
       })
-      .catch((e) => onError((e as Error).message))
+      .catch((e) => onError(e))
       .finally(() => setLoading(false));
   }, [project]);
 
@@ -433,9 +532,7 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: str
               >
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs text-muted-foreground">ADR-{d.id}</span>
-                  <Badge variant={d.status === "accepted" ? "default" : "secondary"} className="ml-auto">
-                    {d.status}
-                  </Badge>
+                  <DecisionStatusBadge d={d} className="ml-auto" />
                 </div>
                 <p className="mt-1 text-sm font-medium leading-snug">{d.title}</p>
               </Card>
@@ -453,8 +550,11 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: str
           <article className="mx-auto max-w-3xl p-6">
             <div className="mb-1 flex items-center gap-2">
               <span className="font-mono text-sm text-muted-foreground">ADR-{selected.id}</span>
-              <Badge variant={selected.status === "accepted" ? "default" : "secondary"}>{selected.status}</Badge>
+              <DecisionStatusBadge d={selected} />
             </div>
+            {selected.status === "deprecated" && selected.deprecation_reason && (
+              <p className="mb-2 text-xs text-muted-foreground">Motivo: {selected.deprecation_reason}</p>
+            )}
             <h2 className="mb-4 text-xl font-semibold">{selected.title}</h2>
             <Separator className="mb-4" />
             <Markdown>{md(selected)}</Markdown>
@@ -468,7 +568,7 @@ function DecisionsView({ project, onError }: { project: string; onError: (e: str
 }
 
 /* ── prompts ──────────────────────────────────────────────────────────────── */
-function PromptsView({ project, onError }: { project: string; onError: (e: string | null) => void }) {
+function PromptsView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [items, setItems] = useState<PromptDoc[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -479,7 +579,7 @@ function PromptsView({ project, onError }: { project: string; onError: (e: strin
     api
       .prompts(project)
       .then(setItems)
-      .catch((e) => onError((e as Error).message))
+      .catch((e) => onError(e))
       .finally(() => setLoading(false));
   }, [project]);
 
@@ -530,7 +630,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function RunsView({ project, onError }: { project: string; onError: (e: string | null) => void }) {
+function RunsView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [items, setItems] = useState<RunDoc[]>([]);
   const [selected, setSelected] = useState<RunDoc | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
@@ -543,7 +643,7 @@ function RunsView({ project, onError }: { project: string; onError: (e: string |
     try {
       setItems(await api.runs(project));
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setLoading(false);
     }
@@ -558,7 +658,7 @@ function RunsView({ project, onError }: { project: string; onError: (e: string |
 
   useEffect(() => {
     if (!selected) return setDetail(null);
-    api.run(selected._id).then(setDetail).catch((e) => onError((e as Error).message));
+    api.run(selected._id).then(setDetail).catch((e) => onError(e));
   }, [selected, onError]);
 
   // Aggregate totals across runs (thesis-level rollup: tokens & cost spent on this project).
@@ -906,7 +1006,7 @@ function computeLayout(nodes: GraphNode[], edges: GraphData["edges"]): Map<strin
   return pos;
 }
 
-function GraphView({ project, onError }: { project: string; onError: (m: string) => void }) {
+function GraphView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   const [scope, setScope] = useState<GraphScope>("memory");
   const [data, setData] = useState<GraphData>({ nodes: [], edges: [] });
   const [loading, setLoading] = useState(false);
@@ -921,7 +1021,7 @@ function GraphView({ project, onError }: { project: string; onError: (m: string)
       setData(await api.graph(project, scope));
       setView({ scale: 1, tx: 0, ty: 0 });
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setLoading(false);
     }
@@ -1062,7 +1162,7 @@ const KIND_LABEL: Record<NodeKind, string> = {
   prompt: "prompt",
 };
 
-function KnowledgeMapView({ project, onError }: { project: string; onError: (m: string) => void }) {
+function KnowledgeMapView({ project, onError }: { project: string; onError: (e: unknown) => void }) {
   // Symbols excluded by default (large; available in the Graph tab).
   const [enabled, setEnabled] = useState<Set<NodeKind>>(
     () => new Set(KNOWLEDGE_KINDS.filter((k) => k !== "symbol")),
@@ -1082,7 +1182,7 @@ function KnowledgeMapView({ project, onError }: { project: string; onError: (m: 
       setData(await api.knowledgeGraph(project, kinds.length ? kinds : ["project"]));
       setView({ scale: 1, tx: 0, ty: 0 });
     } catch (e) {
-      onError((e as Error).message);
+      onError(e);
     } finally {
       setLoading(false);
     }

@@ -1,27 +1,24 @@
-# Architecture (conceptual overview)
-
-> **Note (English).** This document is the **conceptual, Python-origin architecture
-> overview** and predates the current TypeScript data-layer migration. For the up-to-date,
-> **canonical TypeScript architecture** — hexagonal ports, the Mongoose data layer
-> (`src/models/*.model.ts`), the MCP surface, the CLI and the engineering roles — read
-> [ARQUITECTURA-AITL-JS.md](ARQUITECTURA-AITL-JS.md). The sections below remain useful for
-> the design intent and the file-level references, but where they mention Zod document
-> schemas or the raw MongoDB driver, treat Mongoose as the source of truth (ADR-0036).
-
----
-
 # Arquitectura de AITL-Harness-JS
 
+> **Documento canónico** de la arquitectura del harness (consolidado 2026-07-06, tras
+> ADR-0056). La revisión histórica en inglés con formato de auditoría
+> (`ARQUITECTURA-AITL-JS.md`) y los planes de ciclo viven archivados en
+> [`docs/attic/`](attic/); su historial completo está en el ledger de decisiones
+> (colección `decisions`, proyecto `aitl-js`, espejo en [`docs/adr/`](adr/)).
+>
 > **Qué es.** Un *harness* de agentes **model-agnostic**: orquesta el loop de un agente
 > (prompt → modelo → herramientas → repetir), persiste **todo** (transcript, memoria, decisiones,
 > eventos de traza) en un único store durable (MongoDB + Atlas Vector Search) y expone ese estado
 > por **CLI**, **MCP**, **HTTP/UI** y **adapters cross-tool**.
 >
-> **Stack.** TypeScript (ESM, Node ≥ 20) · LangGraph (orquestación opcional/resumible) ·
-> MongoDB + Atlas Vector Search (store único) · embeddings locales `Xenova/all-MiniLM-L6-v2`
+> **Stack.** TypeScript (ESM, Node ≥ 20) · loop propio `runAgent` (prompt→modelo→tools→repeat,
+> resumible desde el transcript durable — ADR-0047; sin framework de grafos) ·
+> MongoDB + Atlas Vector Search (store único; capa de datos **Mongoose**,
+> `src/models/*.model.ts` — ADR-0036) · embeddings locales `Xenova/all-MiniLM-L6-v2`
 > (384 dims) por defecto, con fallback a Voyage.
 >
-> Las referencias `archivo.ts:línea` apuntan al símbolo exacto.
+> Las referencias `archivo.ts:línea` apuntan al símbolo exacto (las líneas pueden derivar;
+> el nombre del símbolo es el ancla real).
 
 ---
 
@@ -94,7 +91,7 @@ flowchart LR
         MCP["MCP server<br/>mcpserver/server.ts"]
         API["HTTP API<br/>server/api.ts"]
         UI["Web UI React<br/>web/"]
-        TUI["TUI Ink<br/>interactive/menu.ts"]
+        TUI["Panel interactivo (readline)<br/>interactive/menu.ts + task.ts"]
         ADP["Adapters cross-tool<br/>adapters/*"]
     end
 
@@ -102,6 +99,9 @@ flowchart LR
         GRAPH["graph.ts · runAgent"]
         ORCH["orchestrator.ts · orchestrate"]
         RUNH["hosts/run.ts · runOnHost"]
+        COUNCIL["council/orchestrator.ts · runCouncil"]
+        COORD["coord/* · claims + eventos"]
+        SDD["specs/pipeline.ts · runSddPipeline"]
         CTXM["context/manager.ts"]
         GATES["hooks/gates.ts"]
         PROV["providers/*"]
@@ -118,17 +118,19 @@ flowchart LR
         DB[("MongoDB / Atlas<br/>db/client.ts")]
     end
 
-    CLI --> GRAPH & ORCH & RUNH & MS & ADRS & PS & DS & RM
-    MCP --> MS & ADRS & PS & DS & RM
+    CLI --> GRAPH & ORCH & RUNH & COUNCIL & COORD & SDD & MS & ADRS & PS & DS & RM
+    MCP --> MS & ADRS & PS & DS & RM & COORD
     API --> MS & ADRS & PS & DS
     UI --> API
     TUI --> CLI
+    TUI -. "rama Task (in-process)" .-> SDD & RUNH & COUNCIL
     ADP --> MS & ADRS
 
     GRAPH --> PROV & TOOLS2 & CTXM & MS
     GRAPH --> GATES
     ORCH --> GRAPH
-    RUNH --> RUNH
+    COUNCIL --> PROV
+    COUNCIL -. "hosts solo-lectura" .-> RUNH
     TOOLS2 --> GATES
     MS & ADRS & PS & DS & RM --> DB
     MS --> EMB
@@ -191,7 +193,7 @@ sequenceDiagram
     R-->>U: {run_id, final_text, iters, summary_slug, gate_denials}
 ```
 
-**Eventos de traza emitidos** (colección `events`, `memory/schemas.ts:126`): `hydrate`,
+**Eventos de traza emitidos** (colección `events`, modelo `models/event.model.ts`): `hydrate`,
 `skills_route`, `loop_iter`, `tool_call`, `gate`, `compaction`, `retry`, `verify`,
 `session_summary`, `spawn`, `synthesis`, `resume`, `error`.
 
@@ -276,7 +278,32 @@ flowchart LR
 
 ---
 
-## 7. Estado durable: colecciones y relaciones
+## 7. El ciclo harness-v2 (ADRs 0046–0056)
+
+El ciclo 2026-07-05/06 convirtió el prototipo en herramienta operativa. Cada pieza tiene su ADR
+(espejo en `docs/adr/`); aquí solo el mapa:
+
+| Capacidad | Qué añade | ADR | Código |
+|---|---|---|---|
+| Auth web de sesión | `sessions` con hash de token + TTL, login/logout, escrituras delegadas, CORS por allowlist | 0046 | `server/api.ts`, `auth/*` |
+| Loop propio | retiro de LangGraph: `runAgent` único, resumible desde el transcript durable | 0047 | `orchestration/graph.ts` |
+| Conexión única | Mongoose dueño de la conexión; `db/client.ts` queda como capa compat; factorías async | 0048 | `db/mongoose.ts` |
+| Anclaje a commit + ciclo de vida de ADRs | `commit_sha` en stores; `deprecated`/`superseded_by`/`review_after`; `aitl adr deprecate` | 0049 | `decisions/*` |
+| Signup + config web | registro self-service (primer usuario real → admin), pestaña Config con espejo a `.env` | 0050 | `server/*`, `config/envfile.ts` |
+| Sync markdown bidireccional | espejo legible `.aitl/{memory,skills,agents}/` + `docs/adr/`; manifiesto de dos hashes; conflictos sin merge | 0051 | `sync/*` |
+| `aitl init` | bootstrap de repo en un comando, idempotente + degradación sin backend/modelo | 0052 | `init/*` |
+| Mapa de módulos | `repomap --modules` (view/back/mixed/infra) + `module-brief <dir>` (ADRs por `components[]`) | 0053 | `repomap/modules.ts` |
+| Coordinación mínima | `task_claims` con lock atómico + caducidad; `coord_events`; `aitl coord {claim,release,list,poll}` con cursor incremental | 0054 | `coord/*` |
+| Consejo de planeación | propuestas paralelas → crítica anonimizada con rúbrica ponderada → juez independiente; hosts en solo-lectura | 0055 | `council/*` |
+| Rama «Task» del panel | punto de entrada operativo: Planear (SDD preview confirm-before-persist) / Delegar / Council; MCP + `coord poll` al entrar | 0056 | `interactive/task*.ts`, `specs/pipeline.ts` |
+
+Contrato transversal de **degradación**: sin Mongo los flujos corren con un aviso y no persisten;
+sin modelo, las rutas con LLM caen a su alternativa determinista o se deshabilitan con la razón
+visible (ADR-0052, F9).
+
+---
+
+## 8. Estado durable: colecciones y relaciones
 
 Fuente de verdad de colecciones: `COLLECTIONS` en `db/client.ts:18`. Tres llevan `embedding` y se
 indexan para Atlas Vector Search: `VECTOR_COLLECTIONS = ["messages","memory","decisions"]`
@@ -366,7 +393,7 @@ erDiagram
 
 ---
 
-## 8. Conexión resiliente a MongoDB (Atlas + fallback)
+## 9. Conexión resiliente a MongoDB (Atlas + fallback)
 
 `connectWithFallback()` (`db/client.ts:95`) prueba el URI primario y, si falla, el de respaldo —
 permite migrar local ↔ Atlas sin tocar código (ADR-0002). La config se resuelve por capas
@@ -389,7 +416,7 @@ flowchart TB
 
 ---
 
-## 9. Ciclo de vida de la memoria
+## 10. Ciclo de vida de la memoria
 
 `hydrate → (run) → classify → embed → summarizeSession → synthesize`. Cada paso con LLM tiene un
 **fallback determinista** (el sistema funciona sin proveedor).
@@ -431,7 +458,7 @@ key) por defecto; `VoyageEmbedder` (1024d) opcional. `embeddingDims` **debe** co
 
 ---
 
-## 10. Repo map: símbolos + PageRank
+## 11. Repo map: símbolos + PageRank
 
 ```mermaid
 flowchart LR
@@ -449,46 +476,52 @@ un presupuesto de tokens y los inyecta en la hidratación.
 
 ---
 
-## 11. Superficie de interfaces
+## 12. Superficie de interfaces
 
 ```mermaid
 flowchart TB
     subgraph HUMANO["Humano"]
         T1["aitl CLI"]
         T2["Web UI (navegador)"]
-        T3["TUI interactiva"]
+        T3["Panel interactivo<br/>(rama Task: Planear/Delegar/Council)"]
     end
     subgraph AGENTE["Agente externo (Claude Code, Cursor…)"]
         A1["MCP (stdio / HTTP)"]
-        A2["hooks: hydrate / capture-session"]
+        A2["hooks: hydrate / capture-session / coord poll"]
     end
 
     T1 --> CORE2["núcleo + stores"]
     T2 --> APIH["HTTP API /api/*<br/>server/api.ts"] --> CORE2
     T3 --> SUP["supervisa procesos<br/>mcp + ui"]
+    T3 --> CORE2
     A1 --> MCPS["MCP server<br/>mcpserver/server.ts"] --> CORE2
     A2 --> CORE2
     CORE2 --> DB2[("MongoDB / Atlas")]
 ```
 
-### 11.1 CLI (`src/cli.ts`) — comandos principales
+### 12.1 CLI (`src/cli.ts`) — comandos principales
 
 | Grupo | Comandos |
 |---|---|
+| Bootstrap | `init` (repo en un comando, ADR-0052), `init agent`, `init claude` |
 | DB | `check-db`, `init-db`, `migrate-atlas <uri>` |
-| Memoria | `ingest`, `search`, `synthesize` |
-| Ejecución | `run`, `run-host --host`, `orchestrate --max` |
-| Repo/ADR | `repomap`, `adr-sync` |
-| Cross-tool | `export --adapter <name>` |
-| MCP / UI / TUI | `mcp [--http]`, `ui`, `interactive` |
+| Memoria | `ingest`, `search`, `synthesize [--at <ref>]`, `memory history` |
+| Ejecución | `run [--stream\|--ask\|--mcp\|--verify-cmd\|--bare]`, `chat`, `run-host --host`, `orchestrate --max`, `sdd`, `council --hosts a,b [--judge]`, `models`, `run-show`, `intervene` |
+| Repo/ADR | `repomap [--modules]`, `module-brief <dir>`, `index-repo`, `adr-sync`, `adr {history,deprecate}`, `branch {sync,list,rm}`, `software`/`repo` (catálogo) |
+| Coordinación | `coord {claim,release,list,poll}` (cursor incremental en `~/.aitl/`) |
+| Roles | `role {seed,list,rm,gate-check,review,build}` |
+| Cross-tool | `export --adapter <name>`, `sync [--pull\|--push] --project <p>` |
+| MCP / UI / Panel | `mcp [--http]`, `ui`, `interactive` (alias: `aitl` a secas, `-i`) |
 | Prompts | `prompt {add,list,search}` |
-| Guía | `init agent` |
-| RBAC | `user {bootstrap,create,list,set-role,disable,verify}` |
-| Config | `config {path,show,set,unset,export,import}` |
+| RBAC | `user {bootstrap,register,create,list,set-role,disable,verify}` |
+| Config | `config {path,show,set,unset,export,import}` (`set --env` espeja al `.env`) |
 | Hooks | `hydrate`, `capture-session` |
-| Eval | `eval --models` |
 
-### 11.2 MCP server (`src/mcpserver/server.ts`) — herramientas expuestas
+> `aitl eval` fue retirado (ADR-0048): la condición C0 del piloto es `run --bare` y C2 es el
+> default con harness. `aitl sync` **siempre** con `--project` explícito: sin él cae al basename
+> del cwd y puede ver un Mongo vacío.
+
+### 12.2 MCP server (`src/mcpserver/server.ts`) — herramientas expuestas
 
 ```mermaid
 flowchart LR
@@ -525,7 +558,15 @@ Cada tool pasa por `runLogged()` (mide, audita y persiste en `mcp_tool_calls`) y
 (RBAC para tools mutadoras). Transportes: **stdio** (local) y **Streamable HTTP** (remoto, con
 Bearer opcional). El actor por defecto es `agent` (override por `AITL_MCP_ACTOR_*`).
 
-### 11.3 HTTP API + Web UI
+Además de las del diagrama, el servidor expone: catálogo software/repos/branches
+(`write/get/list/delete_software|repo`, `list_branches`, `sync_branches`), historial de versiones
+(`list/get_memory_versions`, `list/get_decision_versions`), ciclo de vida
+(`deprecate_decision`), mapa de módulos (`get_module_map`, `get_module_brief`), roles
+(`seed_roles`, `list_roles`, `write_role`), intervención humana
+(`record_human_intervention`) y **coordinación** (`claim_task`, `release_task`, `poll_events`
+— recurso RBAC `coordination`, ADR-0054).
+
+### 12.3 HTTP API + Web UI
 
 `server/api.ts` expone REST bajo `/api/*` (health, projects, memory CRUD + search, decisions,
 prompts, users) con RBAC por Bearer token (`AITL_WEB_TOKENS`) y auditoría en cada acción.
@@ -534,7 +575,7 @@ prompts, users) con RBAC por Bearer token (`AITL_WEB_TOKENS`) y auditoría en ca
 
 ---
 
-## 12. Adapters cross-tool (exportar el "canon")
+## 13. Adapters cross-tool (exportar el "canon")
 
 `aitl export --adapter <name>` proyecta el *canon* del proyecto (conventions + decisions + AGENTS.md)
 al formato nativo de cada herramienta (`adapters/base.ts:39`, registro en `getAdapter`).
@@ -556,16 +597,19 @@ antes de decidir** y **persistir después** (record_decision / write_memory / re
 
 ---
 
-## 13. Evaluación (DSR)
+## 14. Evaluación (DSR)
 
-`EvalRunner` (`eval/runner.ts:40`) mide el *delta* del harness: corre cada modelo **con harness**
-(memoria durable + tools + repo map) y opcionalmente **sin harness** (modelo desnudo) sobre un
-`Benchmark { name, tasks(), verify() }`, y escribe `MetricRecord`. Los benchmarks concretos
-(SWE-bench, Terminal-Bench, Aider) están deferidos (requieren datasets externos + sandbox).
+El comando `aitl eval` fue retirado (ADR-0048): la comparación del piloto se hace con el propio
+loop. **C0** (modelo desnudo) es `aitl run --bare`; **C2** (con harness) es el default. La
+instrumentación del piloto (ADR-0032/0033/0034) aporta las métricas: `aitl run-show` (tokens,
+eventos, gate denials), `--verify-cmd` como quality gate dentro del loop, `aitl intervene`
+(minutos de supervisión humana) y `capture-session` (runs humanos con tokens reales del
+transcript del host). El consejo de planeación añade su propia telemetría comparable (run kind
+`council`, eventos `council_*` — ADR-0055).
 
 ---
 
-## 14. Invariantes de diseño (resumen)
+## 15. Invariantes de diseño (resumen)
 
 1. **Puertos y adaptadores** — el núcleo solo conoce `ProviderPort/ToolPort/MemoryPort/LoopStrategy`.
 2. **Providers detrás de un único puerto** — *(enmendado por ADR-0044; el enunciado original
@@ -580,12 +624,17 @@ antes de decidir** y **persistir después** (record_decision / write_memory / re
 7. **Fallback determinista** — cada paso con LLM tiene alternativa sin LLM.
 8. **Conexión resiliente** — primary → fallback URI; migración local↔Atlas sin código.
 9. **Gates deterministas** — la seguridad del shell/paths es un gate, no un acuerdo con el agente.
-10. **Cambios arquitectónicos = ADR** — registrados en `decisions` vía `record_decision`
-    (próximo id libre: **0024**).
+10. **Cambios arquitectónicos = ADR** — registrados en `decisions` vía `record_decision` con el
+    **siguiente id libre leído del ledger** en el momento de registrar (nunca fijado en docs;
+    el estado del ledger vive en `CLAUDE.md` y en la colección `decisions`).
+11. **Degradación explícita** — sin Mongo los flujos corren con aviso y sin persistir; sin
+    modelo, alternativa determinista o acción deshabilitada con razón visible (ADR-0052).
+12. **Persistir es decisión humana en las superficies interactivas** — la rama Task muestra
+    los artefactos antes de escribirlos (confirm-before-persist, ADR-0056).
 
 ---
 
-## 15. Índice de símbolos clave
+## 16. Índice de símbolos clave
 
 | Símbolo | Archivo:línea |
 |---|---|
@@ -596,8 +645,15 @@ antes de decidir** y **persistir después** (record_decision / write_memory / re
 | `denyPathsGate` / `PhaseGate` | `hooks/gates.ts:20/36` |
 | `HostAdapter` / `CliHostAdapter` / `getHost` | `hosts/base.ts:28/50/96` |
 | `runOnHost` | `hosts/run.ts:33` |
-| `runAgent` / `buildGraph` | `orchestration/graph.ts:89/321` |
+| `runAgent` | `orchestration/graph.ts:89` |
 | `orchestrate` | `orchestration/orchestrator.ts:63` |
+| `runCouncil` | `council/orchestrator.ts` |
+| `makeCouncilClient` / `HostClientAdapter` | `council/adapters.ts` |
+| `claimTask` / `releaseTask` | `coord/claims.ts` |
+| `pollEvents` / `formatCoordEvent` | `coord/events.ts` |
+| `runSddPipeline` / `runSddPipelinePreview` | `specs/pipeline.ts` |
+| `computeTaskActions` / `planCouncilSeats` / `detectAvailableHosts` | `interactive/taskLogic.ts` |
+| `planFlow` / `delegateFlow` / `councilFlow` | `interactive/task.ts` |
 | `ContextManager` | `context/manager.ts:19` |
 | `MemoryStore` | `memory/store.ts:18` |
 | `hydrate` / `summarizeSession` | `memory/lifecycle.ts:180/251` |
@@ -612,6 +668,5 @@ antes de decidir** y **persistir después** (record_decision / write_memory / re
 | `COLLECTIONS` / `VECTOR_COLLECTIONS` | `db/client.ts:18` / `db/indexes.ts:16` |
 | `connectWithFallback` | `db/client.ts:95` |
 | `getEmbedder` / `embedOne` | `ingest/embedder.ts` |
-| `EvalRunner` | `eval/runner.ts:40` |
-| Schemas (Run/Message/MemoryDoc/ADR/Symbol/Event…) | `memory/schemas.ts:34–133` |
+| Modelos Mongoose (Run/Message/Memory/Decision/Symbol/Event/TaskClaim…) | `src/models/*.model.ts` |
 ```

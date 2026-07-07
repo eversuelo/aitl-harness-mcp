@@ -37,10 +37,9 @@ export type PromptRecord = InferSchemaType<typeof promptSchema>;
 export const PromptModel = model("Prompt", promptSchema);
 
 /** Build + validate a prompt record (fills schema defaults). Mirrors the former Zod builder. */
-export const makePromptRecord = (v: Partial<PromptRecord> & { project: string; prompt: string }): PromptRecord => {
+export const makePromptRecord = async (v: Partial<PromptRecord> & { project: string; prompt: string }): Promise<PromptRecord> => {
   const doc = new PromptModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as PromptRecord & { _id?: unknown };
   delete obj._id; // Mongo assigns a fresh _id on insert; keep the record _id-free like the Zod builder did
   return obj;

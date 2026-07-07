@@ -50,7 +50,7 @@ export class RepoMap {
     }
 
     await SymbolModel.deleteMany(repo ? { project, repo } : { project, repo: null });
-    const docs = files.flatMap((fsym) =>
+    const docs = await Promise.all(files.flatMap((fsym) =>
       fsym.defs.map(([name, kind]) =>
         makeSymbol({
           project,
@@ -64,7 +64,7 @@ export class RepoMap {
           mtime: mtimes.get(fsym.file) ?? 0,
         }),
       ),
-    );
+    ));
     if (docs.length) await SymbolModel.insertMany(docs);
     return docs.length;
   }

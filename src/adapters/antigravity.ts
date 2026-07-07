@@ -1,8 +1,10 @@
 /**
- * Antigravity / Gemini adapter: emit `GEMINI.md`. Rollout order #4.
+ * Antigravity / Gemini adapter: emit `GEMINI.md` + `.agent/skills/`. Rollout order #4.
  *
  * Antigravity (Gemini CLI lineage) reads GEMINI.md / AGENTS.md and supports
- * `.agent/skills/`. Here we project the canon into GEMINI.md; skills export is a TODO.
+ * `.agent/skills/`. Here we project the canon into GEMINI.md and the harness's
+ * durable skills registry (the `skills` collection) into `.agent/skills/<name>/SKILL.md`
+ * via the shared markdown renderer (sync/export.ts).
  *
  * NOTE: this is the EXPORT adapter (canon -> GEMINI.md). It is distinct from the
  * future `providers/antigravity` HostAdapter (Antigravity as IDE host/orchestrator).
@@ -10,6 +12,7 @@
 
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { loadDefinitions, renderDefinitionMarkdown, sanitizeFileName, writeIfChanged } from "../sync/export.js";
 import { type Canon, type ToolAdapter, renderRules } from "./base.js";
 
 export class AntigravityAdapter implements ToolAdapter {
@@ -22,8 +25,13 @@ export class AntigravityAdapter implements ToolAdapter {
       "# Project conventions\n\n" +
       `${renderRules(canon)}\n`;
     await fs.writeFile(out, content, "utf-8");
-    // TODO(phase 9): export skills into `.agent/skills/<name>/` when the harness
-    // gains a skills registry.
-    return [out];
+    const written = [out];
+    // Skills registry → Antigravity's native `.agent/skills/<name>/SKILL.md`.
+    for (const skill of await loadDefinitions("skill", canon.project)) {
+      const path = join(repoRoot, ".agent", "skills", sanitizeFileName(skill.name), "SKILL.md");
+      await writeIfChanged(path, renderDefinitionMarkdown(skill));
+      written.push(path);
+    }
+    return written;
   }
 }

@@ -15,6 +15,13 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createInterface, emitKeypressEvents } from "node:readline";
+import { councilFlow, delegateFlow, planFlow, type TaskIO } from "./task.js";
+import {
+  availableHostNames,
+  computeTaskActions,
+  configuredProviderNames,
+  detectAvailableHosts,
+} from "./taskLogic.js";
 
 const ESC = "\x1b";
 const CLEAR = `${ESC}[2J${ESC}[H`;
@@ -288,9 +295,100 @@ export async function runInteractive(): Promise<void> {
     { label: "Config: path", run: () => runAttached(["config", "path"]) },
   ];
 
+  // ── Task branch (P9): Planear / Delegar / Council over a user-typed task ────
+  const TASK_TAG = `${GRAY}[task]${RESET} `;
+
+  /** Run an in-process Task flow under suspend(), with a readline-backed TaskIO. */
+  const runTaskFlow = (flow: (io: TaskIO) => Promise<void>) =>
+    suspend(async () => {
+      stdout.write(CLEAR);
+      const rl = createInterface({ input: stdin, output: stdout });
+      const io: TaskIO = {
+        write: (text) => void stdout.write(text),
+        question: (q) => new Promise<string>((resolve) => rl.question(q, resolve)),
+      };
+      try {
+        await flow(io);
+      } catch (err) {
+        stdout.write(`\n${err instanceof Error ? err.message : String(err)}\n`);
+      } finally {
+        rl.close();
+      }
+      await new Promise<void>((resolve) => {
+        stdout.write(`\n${DIM}— done. Press Enter to return to the menu —${RESET}`);
+        stdin.once("data", () => resolve());
+        stdin.resume(); // paused by suspend(); wake up for the Enter
+      });
+    });
+
+  /** Availability is re-probed on every render, so plugging in a host (or exporting an
+   *  AITL_HOST_CMD_* override) enables the action without reopening the panel. */
+  const taskMenu = (): MenuItem[] => {
+    const hosts = detectAvailableHosts();
+    const actions = computeTaskActions({
+      hosts: availableHostNames(hosts),
+      providers: configuredProviderNames(),
+    });
+    const gated = (
+      label: string,
+      a: { enabled: boolean; reason?: string },
+      run: () => void,
+    ): MenuItem =>
+      a.enabled
+        ? { label, run }
+        : {
+            label: `${GRAY}${label}${RESET} ${DIM}✗ ${a.reason}${RESET}`,
+            run: () => pushLog(`${TASK_TAG}${label}: ${a.reason}`),
+          };
+    return [
+      gated("Planear (SDD preview → confirmar persistencia)", actions.plan, () =>
+        void runTaskFlow((io) => planFlow(project, io)),
+      ),
+      gated("Delegar (run-host sobre un host disponible)", actions.delegate, () =>
+        void runTaskFlow((io) => delegateFlow(project, io, hosts)),
+      ),
+      gated("Council (deliberar el plan entre agentes)", actions.council, () => {
+        const seats = actions.council.seats;
+        if (seats) void runTaskFlow((io) => councilFlow(project, io, seats, hosts));
+      }),
+    ];
+  };
+
+  let coordPollInFlight = false;
+  /** Entering the Task branch (spec P9.1): make sure the MCP service is up and surface
+   *  pending coordination events — both best-effort and NON-blocking (they land in the
+   *  rolling log panel; `coord poll` keeps its own incremental cursor and exits 0). */
+  const enterTaskBranch = (): void => {
+    if (currentLevel().title === "Task") return;
+    const mcp = services.find((s) => s.id === "mcp");
+    if (mcp && !mcp.child) {
+      pushLog(`${TASK_TAG}MCP server apagado — arrancándolo (best-effort)…`);
+      startService(mcp);
+    }
+    if (!coordPollInFlight) {
+      coordPollInFlight = true;
+      const [cmd, args] = aitlSpawnArgs(["coord", "poll", "--project", project, "--quiet"]);
+      const tag = `${GRAY}[coord]${RESET} `;
+      const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+      child.stdout?.on("data", (d) => pushLog(`${tag}${String(d)}`));
+      child.stderr?.on("data", (d) => pushLog(`${tag}${String(d)}`));
+      child.on("error", (err) => {
+        coordPollInFlight = false;
+        pushLog(`${tag}poll falló: ${err.message}`);
+      });
+      child.on("exit", () => {
+        coordPollInFlight = false;
+      });
+    }
+    stack.push({ title: "Task", items: taskMenu });
+    selected = 0;
+    render();
+  };
+
   const rootLevel: MenuLevel = {
     title: "interactive",
     items: () => [
+      { label: "Task (t) ▸", run: enterTaskBranch },
       { label: "Chat (c) ▸", submenu: chatMenu },
       { label: "Services ▸", submenu: servicesMenu },
       { label: "Memory ▸", submenu: memoryMenu },
@@ -354,7 +452,7 @@ export async function runInteractive(): Promise<void> {
     }
     lines.push(
       "",
-      `${DIM}  ↑↓ navigate · Enter select · 1-9 jump${stack.length > 1 ? " · Esc/← back" : ""} · c chat · p project · : command · q quit${RESET}`,
+      `${DIM}  ↑↓ navigate · Enter select · 1-9 jump${stack.length > 1 ? " · Esc/← back" : ""} · t task · c chat · p project · : command · q quit${RESET}`,
     );
     stdout.write(CLEAR + lines.join("\n") + "\n");
   }
@@ -384,6 +482,7 @@ export async function runInteractive(): Promise<void> {
         break;
     }
     if (key.sequence === ":") return void commandMode();
+    if (key.sequence === "t") return enterTaskBranch();
     if (key.sequence === "p") return void setProject();
     if (key.sequence === "c") return void runAttached(["chat", "--project", project]);
     if (key.sequence && /^[1-9]$/.test(key.sequence)) {

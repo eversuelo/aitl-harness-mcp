@@ -38,6 +38,7 @@ const historyEntrySchema = new Schema(
     actor_id: { type: String, default: "system" },
     actor_role: { type: String, default: "system" },
     branch: { type: String, default: null }, // git branch the archived version was authored on
+    commit_sha: { type: String, default: null }, // git commit the archived version was authored at (F2)
     snapshot: { type: Schema.Types.Mixed, required: true }, // the prior doc, without its embedding
     archived_at: { type: Date, default: now },
   },
@@ -64,12 +65,11 @@ export const modelFor = (kind: HistoryKind): Model<any> =>
   (kind === "decision" ? DecisionHistoryModel : MemoryHistoryModel) as unknown as Model<any>;
 
 /** Build + validate a history entry (fills schema defaults). Mirrors the former Zod builder. */
-export const makeHistoryEntry = (
+export const makeHistoryEntry = async (
   v: Partial<HistoryEntry> & { project: string; kind: HistoryEntry["kind"]; ref: string; version: number; snapshot: unknown },
-): HistoryEntry => {
+): Promise<HistoryEntry> => {
   const doc = new DecisionHistoryModel(v);
-  const err = doc.validateSync();
-  if (err) throw err;
+  await doc.validate(); // rejects with ValidationError (sync validation is deprecated, removed in Mongoose 10)
   const obj = doc.toObject() as HistoryEntry & { _id?: unknown };
   delete obj._id; // Mongo assigns _id on insert; keep the record _id-free like the Zod builder did
   return obj;

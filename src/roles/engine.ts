@@ -87,7 +87,7 @@ export async function deliberate(opts: DeliberateOpts): Promise<DecisionBrief> {
     verdicts.push(v);
     if (store) {
       const type = v.stance === "block" ? "role_veto" : "review";
-      await store.logEvent(makeEvent({ project, run_id: runId ?? null, type, payload: { role: v.role, mode: v.mode, severity: v.severity, stance: v.stance, findings: v.findings, recommendation: v.recommendation } }));
+      await store.logEvent(await makeEvent({ project, run_id: runId ?? null, type, payload: { role: v.role, mode: v.mode, severity: v.severity, stance: v.stance, findings: v.findings, recommendation: v.recommendation } }));
     }
   }
   const blocked = verdicts.some((v) => v.severity === "blocking" && v.stance === "block");
@@ -98,7 +98,7 @@ export async function deliberate(opts: DeliberateOpts): Promise<DecisionBrief> {
       ? `${concerns} rol(es) con observaciones (advisory). Sin bloqueos; el ingeniero decide.`
       : "Todos los roles aprueban. Sin objeciones.";
   if (store) {
-    await store.logEvent(makeEvent({ project, run_id: runId ?? null, type: "deliberation", payload: { target: target.slice(0, 200), blocked, roles: verdicts.map((v) => ({ role: v.role, stance: v.stance })) } }));
+    await store.logEvent(await makeEvent({ project, run_id: runId ?? null, type: "deliberation", payload: { target: target.slice(0, 200), blocked, roles: verdicts.map((v) => ({ role: v.role, stance: v.stance })) } }));
   }
   return { target, verdicts, blocked, summary };
 }
