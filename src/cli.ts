@@ -36,8 +36,9 @@ program
   .option("-i, --interactive", "Launch the interactive control panel (supervise MCP/UI, run commands).");
 
 // Commands that never touch MongoDB — skip the connection probe so they stay instant
-// and work offline (the interactive panel only supervises child processes).
-const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models"]);
+// and work offline (the interactive panel only supervises child processes). `council`
+// probes Mongo itself and DEGRADES to non-persistent deliberation when it is down.
+const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models", "council"]);
 
 // Resolve the working MongoDB URI (primary → fallback) once, before any DB command runs,
 // so every subcommand inherits the resilient local-and/or-Atlas connection.
@@ -450,6 +451,106 @@ program
     );
     console.log(result.final_text);
     await closeClient();
+  });
+
+program
+  .command("council")
+  .argument("<task>", "Plan/task to deliberate on (nothing is executed).")
+  .requiredOption("--project <project>", "Project scope.")
+  .requiredOption("--hosts <list>", "Comma-separated council seats: claude-code | codex | antigravity | provider[:modelo].")
+  .option("--judge <spec>", "Judge (host or provider[:modelo]); must differ from the proponents. Without it and ≥3 seats, the LAST seat judges.")
+  .option("--rounds <n>", "Deliberation rounds: 1 propose + N-1 critique.", "2")
+  .option("--cwd <dir>", "Working directory for host processes.")
+  .option("--timeout <ms>", "Kill a host call after N ms.")
+  .option("--json", "Print the full structured result as JSON.", false)
+  .description("Plan-council (ADR-0003 v1): varios clientes PROPONEN un plan, se CRITICAN anónimamente con rúbrica y un JUEZ emite el veredicto — antes de ejecutar nada. Los hosts corren en modo solo-lectura.")
+  .action(async (task, opts) => {
+    const { makeCouncilClient } = await import("./council/adapters.js");
+    const { runCouncil, splitCouncil } = await import("./council/orchestrator.js");
+    const rounds = Number(opts.rounds);
+    if (!Number.isInteger(rounds) || rounds < 1) {
+      console.error(`[aitl council] --rounds inválido '${opts.rounds}' (entero ≥ 1).`);
+      process.exitCode = 1;
+      return;
+    }
+    const hostOpts = {
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts.timeout ? { timeoutMs: Number(opts.timeout) } : {}),
+    };
+    let proponents: import("./council/ports.js").CouncilClientPort[];
+    let judge: import("./council/ports.js").CouncilClientPort;
+    try {
+      const specs = String(opts.hosts).split(",").map((s: string) => s.trim()).filter(Boolean);
+      const clients = await Promise.all(specs.map((s: string) => makeCouncilClient(s, hostOpts)));
+      const explicitJudge = opts.judge ? await makeCouncilClient(String(opts.judge), hostOpts) : undefined;
+      ({ proponents, judge } = splitCouncil(clients, explicitJudge));
+    } catch (err) {
+      console.error(`[aitl council] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+      return;
+    }
+    // `council` skips the global DB probe: with Mongo down it DEGRADES (deliberates
+    // without persisting) instead of aborting — same contract as `aitl init` (F9).
+    let telemetry: import("./council/orchestrator.js").CouncilTelemetryStore | null | undefined;
+    try {
+      const { connectWithFallback } = await import("./db/client.js");
+      const result = await connectWithFallback();
+      if (result.label === "fallback") console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
+    } catch {
+      telemetry = null;
+      console.error("[aitl council] sin backend Mongo — el consejo corre SIN persistir (run/eventos/memoria omitidos).");
+    }
+    try {
+      const result = await runCouncil({
+        project: opts.project,
+        task,
+        proponents,
+        judge,
+        rounds,
+        ...(telemetry !== undefined ? { telemetry } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      // Human summary: proposals → rubric table → verdict.
+      console.log(
+        `council run=${result.run_id ?? "(sin persistir)"} propuestas=${result.proposals.length} ` +
+          `juez=${result.judge_id} rondas=${result.rounds} tokens=${result.token_usage.input}+${result.token_usage.output} ` +
+          `duración=${result.duration_ms}ms`,
+      );
+      console.log("\nPropuestas:");
+      for (const p of result.proposals) {
+        console.log(`  [${p.label}] ${p.client_id} — ${p.proposal.steps.length} pasos, complejidad ${p.proposal.estimated_complexity}`);
+        for (const s of p.proposal.steps) console.log(`      • ${s.title}`);
+      }
+      const labels = result.proposals.map((p) => p.label);
+      const cell = (v: number | undefined): string => (v === undefined ? "  —  " : v.toFixed(2).padStart(5));
+      const rows = Object.entries(result.rubric.weights).map(([c, w]) => [`${c} (${w})`, c] as const);
+      const width = Math.max("criterio".length, ...rows.map(([head]) => head.length)) + 2;
+      console.log("\nRúbrica (0–5, media ponderada de las críticas):");
+      console.log(`  ${"criterio".padEnd(width)}${labels.map((l) => l.padStart(6)).join("")}`);
+      for (const [head, criterion] of rows) {
+        const row = labels.map((l) => ` ${cell(result.rubric.scores[l]?.criteria[criterion])}`).join("");
+        console.log(`  ${head.padEnd(width)}${row}`);
+      }
+      console.log(`  ${"TOTAL".padEnd(width)}${labels.map((l) => ` ${cell(result.rubric.scores[l]?.total)}`).join("")}`);
+      if (result.no_votes.length) {
+        console.log("\nSin-voto:");
+        for (const nv of result.no_votes) console.log(`  ${nv.client_id} (${nv.phase} r${nv.round}): ${nv.error}`);
+      }
+      const v = result.verdict;
+      console.log(`\nVeredicto (juez ${result.judge_id}):`);
+      console.log(`  Ganador: ${v.winner ? `${v.winner} — ${result.authors[v.winner]}` : "ninguno"}`);
+      console.log(`  Síntesis: ${v.synthesis}`);
+      console.log(`  Razonamiento: ${v.reasoning}`);
+      if (result.memory_slug) console.log(`  Memoria design: ${result.memory_slug}`);
+    } catch (err) {
+      console.error(`[aitl council] ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      await closeClient();
+    }
   });
 
 program

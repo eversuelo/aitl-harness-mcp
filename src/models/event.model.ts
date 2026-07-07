@@ -42,6 +42,11 @@ const EVENT_TYPES = [
   "role_veto",
   "deliberation",
   "human_intervention",
+  // plan-council (ADR-0003 v1): one event per client/round + the judge's verdict.
+  "council_propose",
+  "council_critique",
+  "council_no_vote",
+  "council_verdict",
 ] as const;
 
 const eventSchema = new Schema(
