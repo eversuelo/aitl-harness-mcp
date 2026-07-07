@@ -118,6 +118,12 @@ spelling — those fragment the history. Verify the hash above matches
 > host directo sin Mongo), Council = `runCouncil` + handoff «delegar el plan ganador».
 > Degradación F9: sin Mongo corre sin persistir con aviso. 19 tests nuevos (268).
 > Ledger ahora contiguo **0001–0056**; next free **0057**.
+> 0057 (2026-07-06): documentación consolidada — docs/ARQUITECTURA.md es EL canónico
+> (actualizado post-0056: ciclo v2, CLI/MCP al día, sin LangGraph/eval); lo histórico
+> (ARQUITECTURA-AITL-JS.md, docs/thesis/*, docs/sessions/*) se archivó en docs/attic/;
+> docs/adr/README.md ya no mantiene tabla a mano (el directorio es espejo completo del
+> ledger vía `aitl sync --project aitl-js`). Ledger ahora contiguo **0001–0057**;
+> next free **0058**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
