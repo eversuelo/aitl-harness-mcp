@@ -88,7 +88,14 @@ spelling — those fragment the history. Verify the hash above matches
 > extensión+segmentos con override `.aitl/modules.json`, descenso de un nivel en dirs
 > dominantes >80%) + `module-brief <dir>` (bloque del módulo + ADRs por `components[]`
 > + memorias `component:<dir>`) + tools MCP `get_module_map`/`get_module_brief`.
-> Ledger ahora contiguo **0001–0053**; next free **0054**.
+> Ledger ahora contiguo **0001–0053**.
+> 0054 (2026-07-06): coordinación mínima (ADR-0002 de la tesis, rebanada v1) —
+> `task_claims` con lock por índice único parcial (released:false) + caducidad
+> (AITL_CLAIM_TTL_MS), `coord_events`, tools MCP claim_task/release_task/poll_events
+> (recurso RBAC `coordination`), CLI `aitl coord {claim,release,list,poll}` con cursor
+> incremental; `record_decision` emite evento decision best-effort; `aitl init`
+> instala el hook Stop `coord poll --quiet`. Ledger ahora contiguo **0001–0054**;
+> next free **0055**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
