@@ -26,6 +26,11 @@ export interface RunOnHostOpts {
   host: string | HostAdapter;
   cwd?: string;
   timeoutMs?: number;
+  /**
+   * Extra argv for the host CLI (e.g. explicit `--allowedTools`/`--permission-mode` for
+   * claude-code). Ignored when `host` is a pre-built adapter.
+   */
+  hostArgs?: string[];
   /** Inject the project's durable context into the prompt (default true). */
   hydrate?: boolean;
   /** Persist the prompt to the durable prompt history (default true). */
@@ -58,7 +63,8 @@ export async function runOnHost(
   opts: RunOnHostOpts,
 ): Promise<RunOnHostResult> {
   const store = opts.store ?? new MemoryStore();
-  const host = typeof opts.host === "string" ? getHost(opts.host) : opts.host;
+  const host =
+    typeof opts.host === "string" ? getHost(opts.host, { extraArgs: opts.hostArgs }) : opts.host;
   const spec = classifySpec(prompt);
 
   const runId = randomUUID();

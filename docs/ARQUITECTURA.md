@@ -272,9 +272,13 @@ flowchart LR
 - **`host: model`** → el harness conduce el loop con `model` vía uno de los providers crudos
   (`anthropic`/`openrouter`/`lmstudio`/`openai-compat`, con fallback entre ellos — ADR-0044);
   queda el modelo exacto en el run.
-- **`host: claude-code|codex|antigravity`** → `CliHostAdapter` (`hosts/base.ts:50`) lanza el CLI
-  (`HOST_SPECS`, `hosts/base.ts:43`; override por env `AITL_HOST_CMD_<NAME>`). El harness aporta la
-  capa durable alrededor (hidratación de contexto, evento `spawn`, captura de la transcripción).
+- **`host: claude-code|codex|antigravity`** → `CliHostAdapter` (`hosts/base.ts`) lanza el CLI
+  (`HOST_SPECS`; override por env `AITL_HOST_CMD_<NAME>`, argv extra por
+  `AITL_HOST_ARGS_<NAME>`). El harness aporta la capa durable alrededor (hidratación de
+  contexto, evento `spawn`, captura de la transcripción). Los **permisos viajan explícitos en
+  el argv** (ADR-0058): claude-code corre con `--permission-mode acceptEdits` por defecto (o
+  `--permission-mode plan` en readonly/council), y `run-host --allowed-tools` pre-aprueba
+  herramientas — nunca se depende de settings/trust del directorio destino.
 
 ---
 

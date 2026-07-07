@@ -124,6 +124,13 @@ spelling — those fragment the history. Verify the hash above matches
 > docs/adr/README.md ya no mantiene tabla a mano (el directorio es espejo completo del
 > ledger vía `aitl sync --project aitl-js`). Ledger ahora contiguo **0001–0057**;
 > next free **0058**.
+> 0058 (2026-07-07): permisos explícitos en el argv de los hosts — la postura de permisos
+> viaja SIEMPRE en el argv (nunca settings/trust del cwd destino): `CliHostSpec.writeArgs`
+> (claude-code `--permission-mode acceptEdits` por defecto en corridas delegadas),
+> resolución pura `resolveHostSpec` en capas (args → writeArgs → `AITL_HOST_ARGS_<NAME>`
+> → extraArgs → readonlyArgs AL FINAL: el solo-lectura del council siempre gana),
+> CLI `run-host --permission-mode/--allowed-tools`. 12 tests nuevos (280).
+> Ledger ahora contiguo **0001–0058**; next free **0059**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero

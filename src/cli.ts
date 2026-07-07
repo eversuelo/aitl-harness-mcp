@@ -428,15 +428,39 @@ program
   .requiredOption("--host <host>", "Agent host to run over: claude-code | codex | antigravity")
   .option("--cwd <dir>", "Working directory for the host process.")
   .option("--timeout <ms>", "Kill the host after N ms.")
+  .option(
+    "--permission-mode <mode>",
+    "Explicit permission mode for the host CLI (claude-code: acceptEdits|plan|bypassPermissions; default acceptEdits).",
+  )
+  .option(
+    "--allowed-tools <list>",
+    'Tools to pre-approve, comma-separated (claude-code --allowedTools), e.g. "Bash(make:*),Bash(python3:*)".',
+  )
   .option("--no-record-prompt", "Do not persist the prompt to the durable history.")
   .option("--no-spec-synthesis", "Do not synthesize spec-classified runs into durable memory.")
   .description("Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry.")
   .action(async (task, opts) => {
     const { runOnHost } = await import("./hosts/run.js");
+    // Permission flags travel explicitly on the argv so the host never depends on the
+    // target directory's settings or folder trust (headless runs in an untrusted cwd
+    // would otherwise silently deny every tool). The two flags are claude-code syntax;
+    // other hosts take raw extra argv via AITL_HOST_ARGS_<NAME>.
+    const hostArgs: string[] = [];
+    if (opts.permissionMode) hostArgs.push("--permission-mode", opts.permissionMode);
+    if (opts.allowedTools) hostArgs.push("--allowedTools", opts.allowedTools);
+    if (hostArgs.length && opts.host !== "claude-code") {
+      console.error(
+        `[aitl run-host] --permission-mode/--allowed-tools are claude-code flags; for '${opts.host}' pass raw argv via AITL_HOST_ARGS_${opts.host.toUpperCase().replace(/-/g, "_")}.`,
+      );
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
     const result = await runOnHost(task, opts.project, {
       host: opts.host,
       cwd: opts.cwd,
       timeoutMs: opts.timeout ? Number(opts.timeout) : undefined,
+      hostArgs: hostArgs.length ? hostArgs : undefined,
       recordPrompt: opts.recordPrompt, // commander sets false for --no-record-prompt
       synthesizeSpec: opts.specSynthesis, // commander sets false for --no-spec-synthesis
     });
@@ -1998,11 +2022,17 @@ Examples:
   aitl run-host "implement the spec in SPEC.md" --project demo --host claude-code
   aitl run-host "refactor utils" --project demo --host codex --cwd ./packages/core
   aitl run-host "draft notes" --project demo --host claude-code --no-spec-synthesis
+  aitl run-host "build it" --project demo --host claude-code \\
+    --allowed-tools "Bash(make:*),Bash(python3:*)"
 
 Notes:
   Runs the task OVER an external agent host, wrapped with durable context + telemetry.
   Claude Code reports measured tokens/cost/turns (via --output-format json). Spec-shaped
-  prompts are auto-classified, persisted, and synthesized with the outcome. No model key needed.`,
+  prompts are auto-classified, persisted, and synthesized with the outcome. No model key needed.
+  Permissions travel EXPLICITLY on the argv (never via the target dir's settings/trust):
+  claude-code defaults to --permission-mode acceptEdits; pre-approve more tools with
+  --allowed-tools, or override everything with --permission-mode. Any host also accepts
+  raw extra argv via AITL_HOST_ARGS_<NAME> (e.g. AITL_HOST_ARGS_CLAUDE_CODE).`,
 
   "orchestrate": `
 Examples:
