@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { ensureMongoose } from "../db/mongoose.js";
 import { MemoryStore } from "../memory/store.js";
 import { makeEvent } from "../models/event.model.js";
+import type { MemoryDoc } from "../models/memory.model.js";
 import { RunModel, makeRun } from "../models/run.model.js";
 import { type Provider, getProvider } from "../providers/base.js";
 import { decomposeTasks, type SddTask } from "./decompose.js";
@@ -103,4 +104,62 @@ export async function runSddPipeline(prompt: string, opts: SddPipelineOpts): Pro
     }
     throw err;
   }
+}
+
+// ── preview mode (TUI Task → Planear) ─────────────────────────────────────────
+
+/**
+ * In-memory sink for preview mode: buffers every artifact upsert and drops telemetry
+ * events. Duck-typed to the MemoryStore surface the SDD steps actually use
+ * (`upsertMemory` + `logEvent`) — the same seam the SDD unit tests rely on.
+ */
+class BufferMemoryStore {
+  docs: MemoryDoc[] = [];
+  async upsertMemory(doc: MemoryDoc): Promise<string> {
+    this.docs.push(doc);
+    return doc.slug;
+  }
+  async logEvent(): Promise<void> {
+    // preview never persists telemetry
+  }
+}
+
+export interface SddPreview {
+  result: SddPipelineResult;
+  /** Generated artifacts (spec → design → tasks, in order) — NOT persisted yet. */
+  artifacts: MemoryDoc[];
+  /** Persist the buffered artifacts as spec/design/task memories. Idempotent; returns slugs. */
+  persist(store?: MemoryStore): Promise<string[]>;
+}
+
+/**
+ * Run the SDD pipeline WITHOUT persisting anything (no Run doc, no memories, no
+ * events): the artifacts are buffered so a caller can show them to the human first
+ * and only then `persist()` them — the confirm-before-write flow of the TUI's
+ * Planear action. Generation still needs a model provider; Mongo is only touched
+ * when (and if) `persist()` runs.
+ */
+export async function runSddPipelinePreview(
+  prompt: string,
+  opts: Omit<SddPipelineOpts, "store" | "persistRun">,
+): Promise<SddPreview> {
+  const buffer = new BufferMemoryStore();
+  const result = await runSddPipeline(prompt, {
+    ...opts,
+    store: buffer as unknown as MemoryStore,
+    persistRun: false,
+  });
+  let persisted = false;
+  return {
+    result,
+    artifacts: buffer.docs,
+    async persist(store?: MemoryStore): Promise<string[]> {
+      if (persisted) return buffer.docs.map((d) => d.slug);
+      const real = store ?? new MemoryStore();
+      const slugs: string[] = [];
+      for (const doc of buffer.docs) slugs.push(await real.upsertMemory(doc));
+      persisted = true;
+      return slugs;
+    },
+  };
 }

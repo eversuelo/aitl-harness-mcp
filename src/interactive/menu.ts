@@ -15,6 +15,13 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createInterface, emitKeypressEvents } from "node:readline";
+import type { TaskIO } from "./task.js";
+import {
+  availableHostNames,
+  computeTaskActions,
+  configuredProviderNames,
+  detectAvailableHosts,
+} from "./taskLogic.js";
 
 const ESC = "\x1b";
 const CLEAR = `${ESC}[2J${ESC}[H`;
