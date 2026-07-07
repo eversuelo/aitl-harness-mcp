@@ -1,7 +1,8 @@
 # Arquitectura de AITL-Harness-JS
 
-> **Documento canónico** de la arquitectura del harness (consolidado 2026-07-06, tras
-> ADR-0056). La revisión histórica en inglés con formato de auditoría
+> **Documento canónico** de la arquitectura del harness (consolidado 2026-07-06 tras
+> ADR-0056; actualizado 2026-07-07 al estado post-ADR-0059, ledger contiguo 0001–0059).
+> La revisión histórica en inglés con formato de auditoría
 > (`ARQUITECTURA-AITL-JS.md`) y los planes de ciclo viven archivados en
 > [`docs/attic/`](attic/); su historial completo está en el ledger de decisiones
 > (colección `decisions`, proyecto `aitl-js`, espejo en [`docs/adr/`](adr/)).
@@ -282,9 +283,9 @@ flowchart LR
 
 ---
 
-## 7. El ciclo harness-v2 (ADRs 0046–0056)
+## 7. El ciclo harness-v2 (ADRs 0046–0059)
 
-El ciclo 2026-07-05/06 convirtió el prototipo en herramienta operativa. Cada pieza tiene su ADR
+El ciclo 2026-07-05/07 convirtió el prototipo en herramienta operativa. Cada pieza tiene su ADR
 (espejo en `docs/adr/`); aquí solo el mapa:
 
 | Capacidad | Qué añade | ADR | Código |
@@ -300,6 +301,9 @@ El ciclo 2026-07-05/06 convirtió el prototipo en herramienta operativa. Cada pi
 | Coordinación mínima | `task_claims` con lock atómico + caducidad; `coord_events`; `aitl coord {claim,release,list,poll}` con cursor incremental | 0054 | `coord/*` |
 | Consejo de planeación | propuestas paralelas → crítica anonimizada con rúbrica ponderada → juez independiente; hosts en solo-lectura | 0055 | `council/*` |
 | Rama «Task» del panel | punto de entrada operativo: Planear (SDD preview confirm-before-persist) / Delegar / Council; MCP + `coord poll` al entrar | 0056 | `interactive/task*.ts`, `specs/pipeline.ts` |
+| Documentación consolidada | este documento como único canónico; histórico en `docs/attic/`; `docs/adr/` espejo completo vía `sync` | 0057 | `docs/*` |
+| Permisos explícitos en hosts | la postura viaja SIEMPRE en el argv (`writeArgs`/`resolveHostSpec` en capas; readonly del council gana al final); `run-host --permission-mode/--allowed-tools`; seam `AITL_HOST_ARGS_<NAME>` | 0058 | `hosts/base.ts` |
+| Compresión rodante de memoria | `synthesize --compact`: `compacted_into` (fuera de hydrate/trigger sin borrar), plegado incremental, map-reduce sin truncado, guardián anti-síntesis-vacía | 0059 | `memory/synthesizer.ts`, `memory/store.ts` |
 
 Contrato transversal de **degradación**: sin Mongo los flujos corren con un aviso y no persisten;
 sin modelo, las rutas con LLM caen a su alternativa determinista o se deshabilitan con la razón

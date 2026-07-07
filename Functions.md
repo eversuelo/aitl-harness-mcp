@@ -39,8 +39,13 @@ Las firmas son las reales del código; las descripciones, en español.
 ### Clase `Classifier` — taxonomía por proyecto
 `classifyText(text, opts?)` · `classifyMemory(doc)` · `classifyMessage(msg)`.
 
-### Clase `Synthesizer`
-`synthesize(project, opts?)` — compacta la memoria cuando excede el límite de tamaño/tokens.
+### Clase `Synthesizer` (compresión rodante, ADR-0059)
+`synthesize(project, {force?, commitSha?, compact?})` → `SynthesisReport {written, compacted, categories[]}` —
+comprime la memoria cuando excede el límite de tamaño/tokens: pliega la síntesis previa de cada
+categoría + solo los docs vivos nuevos; resumen map-reduce por lotes (`chunkTexts`, exportada;
+nada se trunca en silencio; respuesta vacía del modelo cae al extractivo). Con `compact: true`
+las fuentes absorbidas se marcan `compacted_into` y salen de la memoria viva (hydrate + trigger)
+sin borrarse — siguen versionadas y buscables (`MemoryStore.markCompacted`).
 
 ---
 
@@ -201,10 +206,19 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 
 `interactive` · `check-db` · `init-db` · `ingest [--repo]` · `search` · **`run [--bare] [--verify-cmd] [--roles]`** ·
 **`chat [--model auto] [--ask] [--mcp]`** · **`models [--json]`** · **`sdd`** ·
-**`run-host`** · **`orchestrate`** · `run-show <runId>` · `intervene <runId>` · `synthesize` · `repomap [--repo]` ·
-`index-repo` · `adr-sync` · `adr history` · `memory history` · `export` · `mcp` ·
-`config {…}` · `ui` · `prompt {add,list,search}` · `hydrate` · `capture-session` ·
-`init {agent,claude}` · `migrate-atlas`.
+**`run-host [--permission-mode] [--allowed-tools]`** · **`orchestrate`** · **`council --hosts a,b [--judge]`** ·
+`run-show <runId>` · `intervene <runId>` · **`synthesize [--force] [--compact] [--at <ref>]`** ·
+`repomap [--repo] [--modules]` · `module-brief <dir>` · `index-repo` · `adr-sync` ·
+`adr {history,deprecate}` · `memory history` · **`sync [--pull|--push] --project`** · `export` · `mcp` ·
+`config {…}` · `ui` · `prompt {add,list,search}` · `coord {claim,release,list,poll}` ·
+`user {bootstrap,register,…}` · `hydrate` · `capture-session` ·
+**`init [agent|claude]`** (a pelo = onboarding idempotente del repo, ADR-0052) · `migrate-atlas`.
+
+> **Ciclo harness-v2 (ADRs 0046–0059):** `sync` = espejo markdown bidireccional (ADR-0051);
+> `coord` = coordinación mínima multi-agente con claims TTL + eventos (ADR-0054); `council` =
+> plan-council con crítica anonimizada, rúbrica y juez independiente, hosts en solo-lectura
+> (ADR-0055); `run-host` lleva los permisos SIEMPRE explícitos en el argv (ADR-0058);
+> `synthesize --compact` = compresión rodante del knowledge (ADR-0059).
 
 > **Chat y providers (ADR-0044):** `aitl chat` = REPL estilo Claude Code sobre el loop
 > (`src/repl/chat.ts`): streaming, traza viva de tool calls (hook `onTool`), slash commands

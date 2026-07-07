@@ -11,12 +11,12 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [providers/](providers/) | Puerto LLM agnostico multi-provider (ADR-0044): `anthropic` directo (SDK oficial) + `openrouter`/`lmstudio`/`openai-compat` via `OpenAIProvider`, con `FallbackProvider` (`--model auto`). |
 | [repl/](repl/) | `aitl chat`: REPL estilo Claude Code sobre el loop (streaming, traza de tools, slash commands). ADR-0003/0044. |
 | [orchestration/](orchestration/) | Loop agente, checkpointing y rollup de telemetria por run. |
-| [memory/](memory/) | Schemas, store, clasificador, sintetizador, versionado (`versioning.ts`/`history.ts`). |
+| [memory/](memory/) | Schemas, store, clasificador, sintetizador (compresión rodante `--compact`, ADR-0059), versionado (`versioning.ts`/`history.ts`). |
 | [auth/](auth/) | RBAC + usuarios + auditoria (ADR-0024/0026). |
 | [softwares/](softwares/) · [repos/](repos/) · [branches/](branches/) | Jerarquia software→projects→repos + grafo de ramas (ADR-0028/0031). |
 | [roles/](roles/) | **Roles de ingenieria (H11)**: schema/store/engine/seed (review/pair/gate). ADR-0033. |
 | [specs/](specs/) | **SDD (Pilar 4)**: `classify.ts` (auto-detección de specs ES/EN, sin flags) + `synthesis.ts` (síntesis spec↔tarea con métricas). ADR-0034. |
-| [hosts/](hosts/) | HostAdapters (claude-code/codex/antigravity). `claude-code` mide tokens/costo/turnos vía `--output-format json`; `run.ts` persiste el run, el prompt y la síntesis de specs. ADR-0020/0034. |
+| [hosts/](hosts/) | HostAdapters (claude-code/codex/antigravity). `claude-code` mide tokens/costo/turnos vía `--output-format json`; permisos SIEMPRE explícitos en el argv (`resolveHostSpec`, ADR-0058); `run.ts` persiste el run, el prompt y la síntesis de specs. ADR-0020/0034/0058. |
 | [builder/](builder/) · [indexing/](indexing/) | Constructora de skills/agentes e indexador maestro (ADR-0030). |
 | [graph/](graph/) | `graphify` puro + knowledge map multi-entidad (ADR-0025/0029). |
 | [db/](db/) | Cliente Mongo e indices. |
@@ -30,7 +30,13 @@ Mapa de modulos de `src/` para leer el harness desde GitHub.
 | [adapters/](adapters/) | Export a Cursor, Copilot, Antigravity, Kiro, Trae y AGENTS.md. |
 | [mcpserver/](mcpserver/) | Servidor MCP stdio + HTTP. |
 | [server/](server/) | API HTTP y launcher de UI web (incluye knowledge map). |
-| [interactive/](interactive/) | Panel `aitl -i`; ver [ADR-0008](../docs/adr/0008-interactive-control-panel.md). |
+| [interactive/](interactive/) | Panel `aitl -i` + rama «Task» (Planear/Delegar/Council, ADR-0056); ver [ADR-0008](../docs/adr/0008-interactive-control-panel.md). |
+| [council/](council/) | Plan-council (ADR-0055): propuestas paralelas, crítica anonimizada con rúbrica, juez independiente; hosts en solo-lectura. |
+| [coord/](coord/) | Coordinación mínima multi-agente (ADR-0054): task claims con TTL + eventos durables + polling incremental. |
+| [sync/](sync/) | Sync markdown bidireccional Mongo ⇄ `.aitl/` + `docs/adr/` (ADR-0051). |
+| [init/](init/) | `aitl init`: onboarding idempotente de un repo (ADR-0052) + guías `agent`/`claude`. |
+| [mcpclient/](mcpclient/) | Cliente MCP: monta servidores de `.mcp.json` como tools `mcp__<server>__<tool>` (ADR-0041). |
+| [models/](models/) | Modelos Mongoose — única fuente de shape/validación (ADR-0036). |
 | [util/](util/) | Helpers sin dominio (`git.ts`, `branches.ts`, `diff.ts`, `retry.ts`, `optional.ts`). |
 
 ## Flujos de lectura
