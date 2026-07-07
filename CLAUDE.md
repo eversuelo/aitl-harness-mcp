@@ -94,8 +94,19 @@ spelling — those fragment the history. Verify the hash above matches
 > (AITL_CLAIM_TTL_MS), `coord_events`, tools MCP claim_task/release_task/poll_events
 > (recurso RBAC `coordination`), CLI `aitl coord {claim,release,list,poll}` con cursor
 > incremental; `record_decision` emite evento decision best-effort; `aitl init`
-> instala el hook Stop `coord poll --quiet`. Ledger ahora contiguo **0001–0054**;
-> next free **0055**.
+> instala el hook Stop `coord poll --quiet`. Ledger ahora contiguo **0001–0054**.
+> 0055 (2026-07-06): plan-council (ADR-0003 de la tesis, rebanada v1) — `src/council/`
+> {ports,rubric,adapters,orchestrator}: Zod PlanProposal/PlanCritique/CouncilVerdict,
+> HostClientAdapter en SOLO LECTURA (`readonlyArgs` por spec: claude-code
+> `--permission-mode plan`, codex `--sandbox read-only`) + ProviderClientAdapter
+> (jsonSchema), rúbrica ponderada determinista, rondas proponer-paralelo →
+> criticar-anonimizado (nunca la propia) → juez ≠ proponentes, 1 retry citando el
+> error Zod → sin-voto con quórum ≥2, presupuesto duro N×R; telemetría run kind
+> `council` + eventos `council_*` + veredicto como memoria `design` (best-effort,
+> degrada sin backend); CLI `aitl council "<task>" --hosts a,b [--judge] [--rounds]
+> [--json]`; E2E con hosts fake vía `AITL_HOST_CMD_*`. OJO: `aitl sync` sin
+> `--project` cae al basename del cwd (`AITL-Harness-JS`) y ve Mongo vacío — usar
+> siempre `--project aitl-js`. Ledger ahora contiguo **0001–0055**; next free **0056**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
