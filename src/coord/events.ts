@@ -155,7 +155,7 @@ export function formatCoordEvent(evt: CoordEvent): string {
     }
     case "expire_reclaim": {
       const prev = str(p.reclaimed_from);
-      return `[expire_reclaim] ${who} reclamó ${task}${prev ? ` (antes ${prev},` : " ("}expira ${hhmm(p.expires_at as Date | string | undefined)})`;
+      return `[expire_reclaim] ${who} reclamó ${task} (${prev ? `antes ${prev}, ` : ""}expira ${hhmm(p.expires_at as Date | string | undefined)})`;
     }
     case "release":
       return `[release] ${who} soltó ${task} (${str(p.outcome) ?? "done"})`;

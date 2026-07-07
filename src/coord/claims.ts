@@ -98,7 +98,7 @@ const mongoClaimStore: ClaimStore = {
     return (await TaskClaimModel.findOneAndUpdate(
       { project, task_key: taskKey, owner_id: ownerId, released: false },
       { $set: set },
-      { new: true },
+      { returnDocument: "after" },
     ).lean()) as TaskClaim | null;
   },
   async releaseExpired(project, taskKey, now) {
@@ -106,7 +106,7 @@ const mongoClaimStore: ClaimStore = {
     return (await TaskClaimModel.findOneAndUpdate(
       { project, task_key: taskKey, released: false, expires_at: { $lte: now } },
       { $set: { released: true, released_at: now } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean()) as TaskClaim | null;
   },
   async releaseOwn(project, taskKey, ownerId, releasedAt) {
@@ -116,7 +116,7 @@ const mongoClaimStore: ClaimStore = {
     return (await TaskClaimModel.findOneAndUpdate(
       filter,
       { $set: { released: true, released_at: releasedAt } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean()) as TaskClaim | null;
   },
   async list(project) {

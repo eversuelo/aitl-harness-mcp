@@ -225,7 +225,10 @@ test("heartbeat: the owner extends expires_at/heartbeat_at; strangers and missin
   const t0 = new Date("2026-07-06T12:00:00Z");
   const t1 = new Date("2026-07-06T12:05:00Z");
   const claims = fakeClaimStore();
-  await claimTask({ project: P, taskKey: T, ownerId: "alice", ttlMs: 10 * 60_000 }, { claims, now: () => t0 });
+  // NOTE: tests must ALWAYS inject `events` — omitting it selects the real Mongo store
+  // (production default), which would open a live connection from a unit test.
+  const events = fakeEventStore();
+  await claimTask({ project: P, taskKey: T, ownerId: "alice", ttlMs: 10 * 60_000 }, { claims, events, now: () => t0 });
 
   const hb = await heartbeat({ project: P, taskKey: T, ownerId: "alice", ttlMs: 10 * 60_000 }, { claims, now: () => t1 });
   assert.ok(hb.ok);

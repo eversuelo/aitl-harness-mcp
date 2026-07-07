@@ -363,6 +363,8 @@ export async function initRepo(opts: InitRepoOpts, services?: InitServices): Pro
     const specs: HookSpec[] = [
       { event: "UserPromptSubmit", command: `${aitl} hydrate --project ${shq(project)} --no-vector`, marker: "hydrate" },
       { event: "Stop", command: `${aitl} capture-session --project ${shq(project)}`, marker: "capture-session" },
+      // Coordination poll (P7): --quiet prints only when there are new events and always exits 0.
+      { event: "Stop", command: `${aitl} coord poll --project ${shq(project)} --quiet`, marker: "coord poll" },
     ];
     try {
       const merged = mergeClaudeSettings(await readIfExists(settingsPath), specs);
