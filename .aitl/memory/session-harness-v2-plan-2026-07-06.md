@@ -1,12 +1,12 @@
 ---
 name: session-harness-v2-plan-2026-07-06
 description: >-
-  Sesión harness-v2 (corte post-P6, prompts archivados): cerrados P0-P6 + P3.5
-  (ADRs 0046-0053, ledger contiguo 0001-0053, next free 0054), tesis al día (T2
-  5/6, T5, bitácora IMPL-0053 «cincuenta y tres»), 11 prompts de la sesión en el
-  prompt-log (tag session-2026-07-06); P7 coordinación EN VUELO (reanudado tras
-  límite de API); cola P8 council → P9 TUI → P10-harness docs → P11 remate
-  tesis.
+  Sesión harness-v2 (corte post-P8, cambio de cuenta): cerrados P0-P8 + P3.5
+  (ADRs 0046-0055, ledger contiguo 0001-0055, next free 0056, verify 249/249),
+  bitácora IMPL-0055 «cincuenta y cinco», To Do al día; P9 (TUI rama Task) con
+  spec YA registrado en el prompt-log (tag phase:P9) pero SIN lanzar; cola P9 →
+  P10 docs → P11 remate tesis. Hallazgo operativo: aitl sync SIEMPRE con
+  --project aitl-js.
 type: project
 category: task
 tags:
@@ -14,34 +14,30 @@ tags:
   - plan
   - feat/harness-v2
   - estado-sesion
-  - adr-0052
-  - adr-0053
+  - adr-0055
   - 'component:thesis-harnesss'
-version: 5
-updated_at: 2026-07-07T01:31:34.713Z
+version: 6
+updated_at: 2026-07-07T02:57:16.248Z
 branch: feat/harness-v2
+commit_sha: fed0f95bd3d8b88eea9c0af722915c86a0699d20
 ---
-ESTADO AUTORITATIVO de la sesión harness-v2 (actualiza v4; historial completo en versiones anteriores vía list_memory_versions). To Do vivo: thesis-harnesss/To Do.md. Espejo local: /home/eversuelo/Code/thesis-harness/PLAN-HARNESS-V2.md (desactualizado desde P5; este cuerpo manda). Prompts de la sesión: 11 en el prompt-log, tag `session-2026-07-06` (kickoff del usuario + specs P1-P7/T2/T3 + planeación, cada spec anotado con los hallazgos de su ejecución).
+ESTADO AUTORITATIVO de la sesión harness-v2 (actualiza v5; historial vía list_memory_versions). Corte 2026-07-07 ~02:50 por CAMBIO DE CUENTA del usuario. To Do vivo: thesis-harnesss/To Do.md. Espejo local PLAN-HARNESS-V2.md desactualizado desde P5; este cuerpo manda. project="aitl-js" SIEMPRE.
 
-== CERRADO (ledger contiguo 0001-0053, next free 0054) ==
-- P1 ADR-0046 auth web (cd76417): sessions opacas TTL, 401/403 split, delegated web, CORS allowlist, LoginDialog.
-- P2 ADRs 0047-0048 (d0e34e1): LangGraph fuera (runAgent único), conexión única Mongoose (getDb no autoconecta), factories async validate(), quiet.ts fuera, eval retirado (C0/C2), mongodb@7 dedupe.
-- P3 ADR-0049 (9ea12b5+9e93ad5): commit_sha en memoria/ADRs + estampado en stores + synthesize --at; lifecycle ADR (deprecated+reason+superseded_by+review_after TTL suave+components[]); deprecate_decision + aitl adr deprecate; hydrate excluye y reporta needs_review; proposeDeprecations solo-propone; branch sync --reindex. Fix: consequences default:"" (Mongoose rechaza "" en required).
-- P3.5 ADR-0050 (c8a1459): signup self-service (únicos username/email, 409 distinguible, AITL_WEB_ALLOW_SIGNUP, primer real→admin), aitl user register; config web (GET /api/config/status, PUT /api/config, config_secrets admin:delegated) con espejo automático a .env (envfile.ts) + aitl config set --env + ConfigView.
-- P4 ADR-0051 (eddf9fa): aitl sync bidireccional — espejo .aitl/{memory,skills,agents}/ + docs/adr/ COMPLETO 0001-0050+ (0 manuscritos tocados), manifiesto dos hashes (vs propia línea base), conflictos exit 2 sin merge, borrados no se propagan; export --adapter markdown. 2 docs legados id-malformado en Mongo solo reportados.
-- P5 ADR-0052 (ab66c31): aitl init un-comando idempotente ([ok|skip|done]: DB→jerarquía→indexRepo→seeds→guías merge→.mcp.json→hooks claude-code→post-merge→--memory-only→próximos pasos; enablePositionalOptions fix de commander) + degradación (auto = getProviderWithFallback también en run; NO_BACKEND_MESSAGE; synthesize extractivo con aviso).
-- P6 ADR-0053 (22e49c0): repomap --modules (view/back/mixed/infra, umbral 70%, override .aitl/modules.json, descenso >80% → 37 módulos en el harness) + module-brief <dir> (módulo + ADRs por components[] + memorias component:<dir>, hint de etiquetado) + tools MCP get_module_map/get_module_brief. verify 206/206.
-- Espejos ADR 0052/0053 escritos por `aitl sync` (dogfooding operativo).
-- TESIS (master): limpieza 0634583 · renumeración H1-H11 9dacf3d · cap2 frameworks f7481c2 · cap3 alineado (5/6 puntos) a192e00 · \crefname fix dcdaad9 · THESIS-STATE regenerado 7400605 · bitácora IMPL-0038..0053 con párrafos temáticos, prosa «cincuenta y tres» (314fa0d último) · To Do.md vivo con P2-P6+P3.5 marcados.
+== CERRADO (ledger contiguo 0001-0055, next free 0056) ==
+- P1-P6 + P3.5 + P7: sin cambios desde v5 (ADRs 0046-0054; ver v5 para el detalle).
+- P7 coordinación CERRADO: ADR-0054, verify 226/226, commits 897db82+d7b0348+8e7e2ae; bitácora IMPL-0054 «cincuenta y cuatro» (f378e15); To Do marcado.
+- P8 council CERRADO (esta sesión): ADR-0055 registrado en Mongo + espejo docs/adr/0055-consejo-de-planeacion-*.md. Commits harness: 3448244 (feat council) + fed0f95 (docs mirror + ledger next free 0056). verify 249/249 (23 tests nuevos). Implementación: src/council/{ports,rubric,adapters,orchestrator}.ts + src/util/json.ts (extractor JSON balanceado factorizado de decomposeTasks) + fixtures test/fixtures/council/fake-*.mjs; HostClientAdapter readonly (hosts/base.ts ganó readonlyArgs: claude-code --permission-mode plan, codex --sandbox read-only; antigravity SIN flag readonly conocido) + ProviderClientAdapter jsonSchema con enum dinámico de etiquetas; rúbrica correctness .30/completeness .20/risk .20/simplicity .15/verifiability .15; proponer-paralelo→criticar-anonimizado (nunca la propia; etiquetas A/B/C aleatorias estables)→juez≠proponentes (≥3: el último solo juzga; 2 sin --judge: error); 1 retry citando error Zod→sin-voto con quórum ≥2; presupuesto N×R; telemetría run kind council + eventos council_* + veredicto como memoria design (best-effort, degrada sin backend); CLI aitl council --hosts a,b [--judge host|provider[:modelo]] [--rounds 2] [--json] en NO_DB_COMMANDS. Tesis: bitácora IMPL-0055 fila + párrafo «Deliberación previa a la ejecución» en sec:impl-vivo + rango IMPL-0038→0055 + prosa «cincuenta y cinco»; To Do P8 marcado (commit tesis 4a28855, rama main).
 
-== EN VUELO ==
-P7 coordinación (agente REANUDADO tras límite de API; ya dejó taskClaim/coordEvent models + src/coord/ + cambios rbac/indexes/client): claims atómicos con índice parcial único, heartbeat/expiración, coord_events, MCP claim_task/release_task/poll_events, CLI aitl coord (poll --quiet con cursor ~/.aitl/coord-cursor-*.json), record_decision emite coord_event decision best-effort. Al cerrar: verify (206+) → commit → ADR 0054 → sync espejo → ledger CLAUDE.md → fila IMPL-0054 bitácora + conteo «cincuenta y cuatro» → To Do.
+== HALLAZGO OPERATIVO CRÍTICO ==
+`aitl sync` sin --project resuelve el proyecto como basename del cwd (AITL-Harness-JS) → ve Mongo VACÍO y reporta TODO como «borrado en Mongo» (por diseño no propaga borrados, no hubo daño). USAR SIEMPRE `aitl sync --project aitl-js` (o exportar AITL_PROJECT=aitl-js en .env — pendiente decidir si se añade). Nota ya escrita en el ledger de CLAUDE.md.
 
-== COLA ==
-P8 council (spec completa en el prompt-log tag phase:P8 pendiente de redactar al lanzar; diseño = ADR-0003 tesis: src/council/{ports,adapters,rubric,orchestrator}.ts, Zod PlanProposal/PlanCritique, HostClientAdapter sobre CliHostAdapter/HOST_SPECS+AITL_HOST_CMD_*, ProviderClientAdapter jsonSchema, rondas proponer-paralelo-readonly→criticar-anonimizado→juez≠proponentes, sin-voto tras 1 retry, presupuesto NxR, telemetría events+runs, aitl council <task> --hosts a,b [--judge][--rounds 2], E2E hosts fake) → P9 TUI rama Task (Planear→runSddPipeline preview, Delegar→run-host, Council si ≥2 hosts, MCP service al entrar, coord poll al entrar) → P10-harness (consolidar docs/ARQUITECTURA*.md post-P8, archivar docs/thesis+sessions) → P11 tesis: T2-v2 (cap3 L497-711: ADR-0002→implementado parcial claims+poll cita IMPL-0054, ADR-0003→implementado cita IMPL del council), bitácora 0054+, T6 humanizar prosa nueva + latexmk + conteo final.
+== EN COLA (nada en vuelo) ==
+- P9 TUI rama «Task»: spec COMPLETO ya registrado en el prompt-log (tag session-2026-07-06 + phase:P9, id 6a4c6824cf60766ef06ab963, 2026-07-07T02:44Z). El agente NO se llegó a lanzar (el usuario interrumpió para cambiar de cuenta). Al reanudar: recuperar ese prompt y lanzar el agente implementador con él (añadiendo: no commits, no MCP, no tocar pnpm-lock.yaml sucio; mirar src/tui/ y src/council/ como referencia; cuidar stdin suspend()/resume de ADR-0045). Cierre: verify 249+ → commit feat/harness-v2 → ADR 0056 → aitl sync --project aitl-js → ledger CLAUDE.md → fila IMPL-0056 + «cincuenta y seis» → To Do.
+- P10-harness: consolidar docs/ARQUITECTURA*.md post-P8/P9; archivar docs/thesis/* y docs/sessions/* (la historia vive en Mongo).
+- P11 tesis: T2-v2 (cap3 L497-711: ADR-0002→«implementado parcial (claims+poll)» cita IMPL-0054; ADR-0003→«implementado (plan-council)» cita IMPL-0055), bitácora 0056+ si aplica, T6 humanizar prosa nueva (skill academic-thesis-humanizer) + latexmk limpio + conteo prosa final. Al cerrar P11: actualizar esta memoria a estado final de sesión.
 
 == PENDIENTES SUELTOS ==
-Rotar password Atlas + borrar e2e-admin tras piloto; decidir borrado de 2 docs id-malformado; pnpm-lock.yaml sucio pre-sesión NO commitear; reiniciar el server MCP local (build viejo: sin tools nuevas ni components de P3); snapshot legado repo:null en symbols de aitl-js (limpieza de datos); medición del usuario en ../metricas (raytracer listo, schoolmx/sdd vacío).
+Rotar password Atlas + borrar e2e-admin tras piloto; decidir borrado de 2 docs id-malformado (0036-mongoose-data-layer / 0037-branch-aware-repomap — sync los reporta skipped); pnpm-lock.yaml sucio pre-sesión NO commitear; probar telemetría del council contra Mongo vivo (tests usan seams fake); snapshot legado repo:null en symbols; medición del usuario en ../metricas; SINTESIS-AITL-2026-07-01.md está VACÍO (el usuario lo señaló; ¿redactarlo?); INFORME-AITL-HARNESS-2026-07-06.md leído como contexto de posicionamiento (committeado en 6d1231f).
 
 == CONVENCIONES ==
-Por fase: verify verde + E2E + record_decision next-free + espejo vía aitl sync + commit feat/harness-v2 + fila bitácora + conteo prosa + prompt de la fase al prompt-log. Tesis: skill academic-thesis-humanizer. project="aitl-js" siempre. Relacionado: [[thesis-drift-analysis-2026-07-05]], [[product-positioning]], [[project-identity]].
+Por fase: verify verde + E2E + record_decision next-free + espejo vía `aitl sync --project aitl-js` + commit feat/harness-v2 + fila bitácora + conteo prosa + prompt de la fase al prompt-log (tags session-2026-07-06 + phase:PN). Tesis en español, skill academic-thesis-humanizer, no commitear book.pdf. Relacionado: [[thesis-drift-analysis-2026-07-05]], [[product-positioning]], [[project-identity]].

@@ -107,6 +107,17 @@ spelling — those fragment the history. Verify the hash above matches
 > [--json]`; E2E con hosts fake vía `AITL_HOST_CMD_*`. OJO: `aitl sync` sin
 > `--project` cae al basename del cwd (`AITL-Harness-JS`) y ve Mongo vacío — usar
 > siempre `--project aitl-js`. Ledger ahora contiguo **0001–0055**; next free **0056**.
+> 0056 (2026-07-06): rama «Task» del panel interactivo (P9) — entrada de primer nivel
+> (atajo `t`) en el supervisor readline: al entrar arranca el MCP best-effort y lanza
+> `coord poll --quiet` como notificaciones no bloqueantes; disponibilidad como
+> funciones puras (`src/interactive/taskLogic.ts`: sonda PATH + override
+> `AITL_HOST_CMD_*`, `planCouncilSeats` ≥2 proponentes + juez distinto,
+> `computeTaskActions` con razón legible); flujos in-process bajo `suspend()`
+> (`task.ts`, TaskIO inyectable): Planear = `runSddPipelinePreview`
+> (confirm-before-persist, `BufferMemoryStore`), Delegar = wrap `runOnHost` (degrada a
+> host directo sin Mongo), Council = `runCouncil` + handoff «delegar el plan ganador».
+> Degradación F9: sin Mongo corre sin persistir con aviso. 19 tests nuevos (268).
+> Ledger ahora contiguo **0001–0056**; next free **0057**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
