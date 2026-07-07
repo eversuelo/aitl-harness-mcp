@@ -46,6 +46,8 @@ export const COLLECTIONS = [
   "softwares",
   "repos",
   "branches",
+  "task_claims",
+  "coord_events",
 ] as const;
 
 export { activeUri, candidateUris, redactMongoUri };

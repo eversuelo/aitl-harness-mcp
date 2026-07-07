@@ -255,6 +255,9 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   delete_branch: { resource: "branches", action: "delete" },
   write_role: { resource: "agents_skills", action: "create" },
   seed_roles: { resource: "agents_skills", action: "create" },
+  // Coordination (ADR-0002 v1): claims mutate durable state; poll_events stays read-only (ungated).
+  claim_task: { resource: "coordination", action: "create" },
+  release_task: { resource: "coordination", action: "update" },
 };
 
 /**
@@ -694,6 +697,16 @@ export function buildServer(): McpServer {
         const adr = await makeADR({ project, id, title, context, decision, consequences, status, review_after: reviewAfter, components: components ?? [] });
         const a = mcpActor();
         await new ADRStore().upsert(adr, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
+        // Coordination broadcast (ADR-0002 v1): peers polling this project's coord_events
+        // learn about the new ADR without change streams. Best-effort by contract —
+        // `recordCoordNote` swallows storage failures and the explicit catch also covers
+        // a failed dynamic import: NEVER blocks the ADR write.
+        try {
+          const { recordCoordNote } = await import("../coord/events.js");
+          await recordCoordNote(project, "decision", { id: adr.id, title: adr.title }, { actorId: a.id });
+        } catch {
+          // best-effort: a coordination hiccup must never break record_decision
+        }
         return text({ id: adr.id, title: adr.title, status: adr.status, version: adr.version });
       });
     },
@@ -1177,6 +1190,66 @@ export function buildServer(): McpServer {
         if (fmt === "dot") return text(graphToDot(graphs));
         if (project) return text(per[project]);
         return text({ projects: per, counts: { projects: Object.keys(graphs).length, nodes: totalNodes, edges: totalEdges } });
+      });
+    },
+  );
+
+  // ── coordination (ADR-0002 v1): task claims + events + polling ────────────────
+  // The claim owner is THIS server's actor (mcpActor → AITL_MCP_ACTOR_ID or
+  // agent:aitl-server), so two collaborating servers present distinct owners.
+  server.tool(
+    "claim_task",
+    "Claim a task for coordination (atomic; ONE active claim per project+task_key). Conflict returns { ok:false, heldBy, expiresAt }. Claims ALWAYS expire (default 30 min / AITL_CLAIM_TTL_MS); re-claiming your own task renews it, an expired claim is taken over (emits expire_reclaim).",
+    {
+      project: z.string(),
+      task_key: z.string(),
+      scope: z.string().optional(),
+      ttl_ms: z.number().int().positive().optional(),
+    },
+    async ({ project, task_key, scope, ttl_ms }) => {
+      return runLogged("claim_task", { project, task_key, scope, ttl_ms }, async () => {
+        await ensureMongoose();
+        const { claimTask } = await import("../coord/claims.js");
+        const a = mcpActor();
+        const res = await claimTask({ project, taskKey: task_key, scope, ownerId: a.id, ttlMs: ttl_ms });
+        return text(jsonable(res));
+      });
+    },
+  );
+
+  server.tool(
+    "release_task",
+    "Release YOUR active claim on a task (emits a release event with the outcome). Only the owner may release; returns { ok:false, reason, heldBy? } otherwise.",
+    {
+      project: z.string(),
+      task_key: z.string(),
+      outcome: z.enum(["done", "abandoned"]).default("done"),
+    },
+    async ({ project, task_key, outcome }) => {
+      return runLogged("release_task", { project, task_key, outcome }, async () => {
+        await ensureMongoose();
+        const { releaseTask } = await import("../coord/claims.js");
+        const a = mcpActor();
+        const res = await releaseTask({ project, taskKey: task_key, ownerId: a.id, outcome, role: a.role });
+        return text(jsonable(res));
+      });
+    },
+  );
+
+  server.tool(
+    "poll_events",
+    "Poll coordination events (claim/release/expire_reclaim/decision/task_done/note) strictly newer than `since` (ISO), ascending. Returns { events, cursor, count }; pass `cursor` back as the next `since` for incremental polling. Read-only.",
+    {
+      project: z.string(),
+      since: z.string().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+    },
+    async ({ project, since, limit }) => {
+      return runLogged("poll_events", { project, since, limit }, async () => {
+        await ensureMongoose();
+        const { pollEvents } = await import("../coord/events.js");
+        const res = await pollEvents(project, { since, limit });
+        return text(jsonable(res));
       });
     },
   );

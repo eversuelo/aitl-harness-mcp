@@ -31,6 +31,7 @@ export const RESOURCES = [
   "branches",
   "config_secrets",
   "indexes",
+  "coordination",
 ] as const;
 export type Resource = (typeof RESOURCES)[number];
 
@@ -108,6 +109,13 @@ const MATRIX: Record<string, Partial<Record<Action, Partial<Record<Role, Perm>>>
   },
   indexes: {
     execute: { root: "allow" },
+  },
+  // Coordination (ADR-0002 v1): task claims + coord events. Same trust model as
+  // memory/decisions — agents write directly, admins only via the delegating server.
+  coordination: {
+    create: { root: "allow", admin: "delegated", agent: "allow" },
+    update: { root: "allow", admin: "delegated", agent: "allow" },
+    delete: { root: "allow", admin: "delegated", agent: "allow" },
   },
 };
 

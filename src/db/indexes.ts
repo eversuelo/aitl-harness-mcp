@@ -70,6 +70,16 @@ export async function ensureScalarIndexes(db: Db): Promise<void> {
   // Branch catalog (ADR-0031).
   await db.collection("branches").createIndex({ project: 1, repo: 1, name: 1 }, { unique: true });
   await db.collection("branches").createIndex({ project: 1, repo: 1, kind: 1 });
+  // Coordination (ADR-0002 v1). ONE active claim per (project, task_key): the partial
+  // unique index only covers `released:false` docs, so released claims accumulate as
+  // history while racing inserts for the active slot lose with E11000 (claims.ts).
+  await db.collection("task_claims").createIndex(
+    { project: 1, task_key: 1 },
+    { unique: true, partialFilterExpression: { released: false } },
+  );
+  await db.collection("task_claims").createIndex({ project: 1, claimed_at: -1 });
+  // Poll cursor: coord events are read ascending by created_at per project.
+  await db.collection("coord_events").createIndex({ project: 1, created_at: 1 });
 }
 
 export async function ensureTextIndexes(db: Db): Promise<void> {

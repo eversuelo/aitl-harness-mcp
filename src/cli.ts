@@ -1295,6 +1295,125 @@ branch
     await closeClient();
   });
 
+// ── coordination (ADR-0002 v1): task claims + eventos + polling ───────────────
+const coord = program
+  .command("coord")
+  .description("Minimal multi-agent coordination over the shared DB: task claims (heartbeat + TTL) + durable events + polling.");
+
+coord
+  .command("claim")
+  .argument("<task_key>", "Task key: SDD task slug, path, or short description.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--scope <text>", "Declared work scope (free text, e.g. \"schoolar backend\").")
+  .option("--ttl <minutes>", "Claim TTL in minutes (fractional ok; default: AITL_CLAIM_TTL_MS or 30 min).")
+  .description("Claim a task (atomic). Conflicts report who holds it; re-claiming your own task renews it.")
+  .action(async (taskKey, opts) => {
+    const { claimTask, coordOwnerId } = await import("./coord/claims.js");
+    let ttlMs: number | undefined;
+    if (opts.ttl !== undefined) {
+      const mins = Number(opts.ttl);
+      if (!Number.isFinite(mins) || mins <= 0) {
+        console.error(`[aitl coord claim] invalid --ttl '${opts.ttl}' (minutes > 0).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+      ttlMs = Math.round(mins * 60_000);
+    }
+    const owner = coordOwnerId();
+    const res = await claimTask({ project: opts.project, taskKey, scope: opts.scope, ownerId: owner, ttlMs });
+    if (res.ok) {
+      const kind = res.renewed ? "renovado" : res.reclaimed ? "reclamado (el anterior expiró)" : "OK";
+      console.log(`Claim ${kind}: "${taskKey}" → ${owner} (expira ${new Date(res.claim.expires_at).toISOString()}).`);
+    } else {
+      console.error(`Conflicto: "${taskKey}" lo tiene ${res.heldBy} (expira ${res.expiresAt.toISOString()}).`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+coord
+  .command("release")
+  .argument("<task_key>", "Task key of YOUR active claim.")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--outcome <outcome>", "done | abandoned.", "done")
+  .description("Release your active claim on a task (emits a release event).")
+  .action(async (taskKey, opts) => {
+    const { RELEASE_OUTCOMES, coordOwnerId, releaseTask } = await import("./coord/claims.js");
+    if (!(RELEASE_OUTCOMES as readonly string[]).includes(opts.outcome)) {
+      console.error(`[aitl coord release] invalid --outcome '${opts.outcome}' (use: ${RELEASE_OUTCOMES.join(" | ")}).`);
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
+    const owner = coordOwnerId();
+    const res = await releaseTask({ project: opts.project, taskKey, ownerId: owner, outcome: opts.outcome });
+    if (res.ok) {
+      console.log(`Released: "${taskKey}" (${res.outcome}) por ${owner}.`);
+    } else if (res.reason === "not_owner") {
+      console.error(`No liberado: "${taskKey}" lo tiene ${res.heldBy}, no ${owner}.`);
+      process.exitCode = 1;
+    } else {
+      console.error(`No liberado: no hay claim activo para "${taskKey}".`);
+      process.exitCode = 1;
+    }
+    await closeClient();
+  });
+
+coord
+  .command("list")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--all", "Include released and expired claims (full history).")
+  .description("List the project's task claims (active ones by default).")
+  .action(async (opts) => {
+    const { listClaims } = await import("./coord/claims.js");
+    const rows = await listClaims(opts.project, { active: !opts.all });
+    const now = Date.now();
+    for (const c of rows) {
+      const state = c.released
+        ? `released ${c.released_at ? new Date(c.released_at).toISOString() : ""}`.trimEnd()
+        : new Date(c.expires_at).getTime() > now
+          ? `expira ${new Date(c.expires_at).toISOString()}`
+          : `EXPIRADO ${new Date(c.expires_at).toISOString()}`;
+      console.log(`- ${c.task_key}  → ${c.owner_id}${c.scope ? `  [${c.scope}]` : ""}  (${state})`);
+    }
+    if (!rows.length) console.log(opts.all ? "(no claims)" : "(no active claims)");
+    await closeClient();
+  });
+
+coord
+  .command("poll")
+  .requiredOption("--project <project>", "Project scope.")
+  .option("--since <iso>", "Only events after this ISO timestamp (overrides the stored cursor).")
+  .option("--quiet", "Print ONLY when there are new events (for hooks); always exit 0.")
+  .description("Poll coordination events (one compact line each). Incremental: the cursor persists in ~/.aitl/coord-cursor-<hash>.json.")
+  .action(async (opts) => {
+    const { formatCoordEvent, pollEvents } = await import("./coord/events.js");
+    const { loadCursor, saveCursor } = await import("./coord/cursor.js");
+    let since: Date;
+    if (opts.since) {
+      since = new Date(opts.since);
+      if (Number.isNaN(since.getTime())) {
+        console.error(`[aitl coord poll] invalid --since '${opts.since}' (use ISO, e.g. 2026-07-06T12:00:00Z).`);
+        process.exitCode = 1;
+        await closeClient();
+        return;
+      }
+    } else {
+      // Stored cursor → incremental between invocations; first run: last 60 min.
+      since = loadCursor(opts.project) ?? new Date(Date.now() - 60 * 60 * 1000);
+    }
+    const { events, cursor } = await pollEvents(opts.project, { since });
+    for (const e of events) console.log(formatCoordEvent(e));
+    if (!events.length && !opts.quiet) console.log("Sin eventos nuevos.");
+    // Only advance the cursor when something was seen (an explicit old --since must not
+    // rewind the stored cursor, and an empty first poll keeps the 60-min default).
+    if (events.length && cursor) saveCursor(opts.project, cursor);
+    await closeClient();
+    // Hook-friendly: polling never signals failure via exit code.
+    process.exitCode = 0;
+  });
+
 // ── engineering roles (H11): asisten al Software Engineer a decidir con criterio ──
 const role = program.command("role").description("Engineering roles (review/pair/gate) that assist the engineer's decision.");
 
@@ -2153,6 +2272,46 @@ Examples:
 
 Notes:
   Deterministic veto for a path (no model). Useful in CI/pre-commit.`,
+
+  // ── coord subcommands (ADR-0002 v1) ──
+  "coord claim": `
+Examples:
+  aitl coord claim "T3-tenant-isolation" --project schoolar --scope "schoolar backend"
+  aitl coord claim src/auth/rbac.ts --project aitl-js --ttl 15
+  AITL_COORD_OWNER=alice aitl coord claim T3 --project demo   # explicit owner identity
+
+Notes:
+  Atomic: ONE active claim per (project, task_key) — a partial unique index arbitrates
+  races. Conflicts exit 1 and report the holder + expiry. Claims ALWAYS expire (default
+  30 min, AITL_CLAIM_TTL_MS); re-claiming your own task renews it (heartbeat), and an
+  expired claim is taken over (emits expire_reclaim). Owner identity: AITL_COORD_OWNER,
+  else AITL_MCP_ACTOR_ID, else cli:<os-user>@<host>.`,
+  "coord release": `
+Examples:
+  aitl coord release "T3-tenant-isolation" --project schoolar
+  aitl coord release "T3-tenant-isolation" --project schoolar --outcome abandoned
+
+Notes:
+  Only the owner may release (same identity rules as coord claim). Emits a release
+  event with the outcome so peers see "[release] ... (done|abandoned)" on their poll.`,
+  "coord list": `
+Examples:
+  aitl coord list --project schoolar
+  aitl coord list --project schoolar --all      # include released/expired history`,
+  "coord poll": `
+Examples:
+  aitl coord poll --project schoolar
+  aitl coord poll --project schoolar --since 2026-07-06T12:00:00Z
+  aitl coord poll --project schoolar --quiet    # hook-friendly: silent when idle
+
+Notes:
+  One compact line per event: "[claim] alice tomó T3 (expira 12:45)", "[decision] nuevo
+  ADR 0054: ...". Incremental without flags: the last cursor persists in
+  ~/.aitl/coord-cursor-<projecthash>.json (base dir honours AITL_HOME); first ever poll
+  defaults to the last 60 minutes. --quiet prints ONLY when there are new events and
+  always exits 0 — wire it as a Claude Code hook, e.g. in .claude/settings.json:
+    { "hooks": { "Stop": [ { "hooks": [ { "type": "command",
+      "command": "aitl coord poll --project <p> --quiet" } ] } ] } }`,
 
   // ── build subcommands ──
   "build skill": `
