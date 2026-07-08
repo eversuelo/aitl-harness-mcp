@@ -1195,8 +1195,38 @@ program
   .option("--api-port <n>", "Port for the memory-admin API server.", "4317")
   .option("--web-port <n>", "Port for the Vite dev server.", "5317")
   .option("--no-web", "Start only the API (skip the Vite dev server).")
+  .option(
+    "--watch-restart",
+    "Supervise the UI and respawn it when it exits with the restart code (75) — enables the web UI's 'restart now' button (ADR-0061).",
+    false,
+  )
   .description("Launch the memory-admin UI: the HTTP API and the Vite dev server together.")
   .action(async (opts) => {
+    if (opts.watchRestart) {
+      // Supervisor: respawn this same CLI invocation (minus the flag) while the
+      // child exits with the restart code; any other exit code is final.
+      const { spawn } = await import("node:child_process");
+      const { shouldRespawn } = await import("./server/ui.js");
+      const childArgs = [
+        ...process.execArgv,
+        ...process.argv.slice(1).filter((a) => a !== "--watch-restart"),
+      ];
+      for (;;) {
+        const code: number | null = await new Promise((resolve) => {
+          const child = spawn(process.execPath, childArgs, {
+            stdio: "inherit",
+            env: { ...process.env, AITL_UI_SUPERVISED: "1" },
+          });
+          child.on("exit", (c) => resolve(c));
+          child.on("error", (err) => {
+            console.error(`[ui] supervisor failed to spawn: ${err.message}`);
+            resolve(1);
+          });
+        });
+        if (!shouldRespawn(code)) process.exit(code ?? 0);
+        console.log(`[ui] restart requested (exit ${code}) — respawning…`);
+      }
+    }
     const { startUi } = await import("./server/ui.js");
     await startUi({
       apiPort: Number(opts.apiPort),
