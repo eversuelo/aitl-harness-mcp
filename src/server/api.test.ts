@@ -14,6 +14,13 @@ function makeFakes() {
   const audits: AuditRecord[] = [];
   const registered: { username: string; email: string }[] = [];
   const configCalls: Record<string, string | null>[] = [];
+  const restarts: number[] = [];
+  // Default: healthy DB with users → setup closed (individual tests mutate it).
+  let setupState: { setup_required: boolean; mongo: { ok: boolean; error?: string; db?: string }; has_real_users: boolean | null } = {
+    setup_required: false,
+    mongo: { ok: true, db: "fake" },
+    has_real_users: true,
+  };
   let seq = 0;
   const deps: Partial<ApiDeps> = {
     resolveSession: async (token) => {
@@ -46,8 +53,30 @@ function makeFakes() {
       audits.push(ev);
     },
     upsertMemory: async (body) => ({ slug: String(body.slug ?? ""), project: String(body.project ?? "") }),
+    // ── setup + admin fakes (ADR-0061) ────────────────────────────────────
+    setupStatus: async () => setupState,
+    createSetupRoot: async (seed) => {
+      if (setupState.has_real_users) {
+        const err = new Error("setup closed");
+        err.name = "SetupClosedError";
+        throw err;
+      }
+      if (seed.password.length < 12) throw new Error("password must be at least 12 characters.");
+      registered.push({ username: seed.username, email: seed.email });
+      setupState = { setup_required: false, mongo: setupState.mongo, has_real_users: true };
+      return { username: seed.username, role: "root" };
+    },
+    probeMongo: async (uri, db) =>
+      uri.startsWith("mongodb://ok") ? { ok: true, db } : { ok: false, error: "unreachable", db },
+    requestRestart: () => {
+      restarts.push(1);
+    },
+    runInitDb: async () => ({ db: "fake", collections: ["users"], vector: { ok: true } }),
   };
-  return { deps, sessions, audits, registered, configCalls };
+  const setSetupState = (next: { setup_required: boolean; mongo: { ok: boolean; error?: string; db?: string }; has_real_users: boolean | null }) => {
+    setupState = next;
+  };
+  return { deps, sessions, audits, registered, configCalls, restarts, setSetupState };
 }
 
 async function startServer(deps: Partial<ApiDeps>): Promise<{ base: string; close: () => Promise<void> }> {
@@ -411,6 +440,312 @@ test("GET /api/config/status as admin includes profile, providers and the signup
     assert.ok(body.profile);
     assert.ok(Array.isArray(body.providers?.providers));
     assert.equal(typeof body.signup_enabled, "boolean");
+  } finally {
+    await close();
+  }
+});
+
+/* ── Setup mode + profiles + admin (ADR-0061) ─────────────────────────────── */
+
+test("GET /api/setup/status needs no auth and reports the loopback flag", async () => {
+  const { deps, setSetupState } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: true, db: "fake" }, has_real_users: false });
+  const { base, close } = await startServer(deps);
+  try {
+    const res = await fetch(`${base}/api/setup/status`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { setup_required?: boolean; loopback?: boolean; mongo?: { ok?: boolean } };
+    assert.equal(body.setup_required, true);
+    assert.equal(body.loopback, true); // test client connects via 127.0.0.1
+    assert.equal(body.mongo?.ok, true);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/setup/root: creates THE root with a session, then hard-closes", async () => {
+  const { deps, setSetupState } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: true, db: "fake" }, has_real_users: false });
+  const { base, close } = await startServer(deps);
+  try {
+    const res = await fetch(`${base}/api/setup/root`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "eversuelo", email: "e@x.com", password: "correct-horse-battery" }),
+    });
+    assert.equal(res.status, 200);
+    const session = (await res.json()) as { token?: string; role?: string; id?: string };
+    assert.ok(session.token);
+    assert.equal(session.role, "root");
+    assert.equal(session.id, "user:eversuelo");
+
+    // The fake flipped has_real_users → setup is closed for good.
+    const again = await fetch(`${base}/api/setup/root`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "other", email: "o@x.com", password: "correct-horse-battery" }),
+    });
+    assert.equal(again.status, 409);
+    assert.equal(((await again.json()) as { error?: string }).error, "setup_closed");
+  } finally {
+    await close();
+  }
+});
+
+test("setup endpoints reject non-loopback callers with setup_local_only", async () => {
+  const { deps, setSetupState } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: true, db: "fake" }, has_real_users: false });
+  deps.isLoopback = () => false; // simulate a LAN caller
+  const { base, close } = await startServer(deps);
+  try {
+    const res = await fetch(`${base}/api/setup/root`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "evil", email: "e@lan.com", password: "correct-horse-battery" }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal(((await res.json()) as { error?: string }).error, "setup_local_only");
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/setup/root with Mongo down → 409 mongo_down", async () => {
+  const { deps, setSetupState } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: false, error: "unreachable" }, has_real_users: null });
+  const { base, close } = await startServer(deps);
+  try {
+    const res = await fetch(`${base}/api/setup/root`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "u", email: "e@x.com", password: "correct-horse-battery" }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { error?: string }).error, "mongo_down");
+  } finally {
+    await close();
+  }
+});
+
+test("PUT /api/setup/connection: only while Mongo is down, and only MONGODB_* keys", async () => {
+  const { deps, setSetupState, configCalls } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: true, db: "fake" }, has_real_users: false });
+  const { base, close } = await startServer(deps);
+  try {
+    // Mongo healthy → the unauthenticated connection write is refused.
+    const healthy = await fetch(`${base}/api/setup/connection`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ updates: { MONGODB_URI: "mongodb://ok-local" } }),
+    });
+    assert.equal(healthy.status, 409);
+    assert.equal(((await healthy.json()) as { error?: string }).error, "mongo_already_ok");
+
+    setSetupState({ setup_required: true, mongo: { ok: false, error: "unreachable" }, has_real_users: null });
+    const rejected = await fetch(`${base}/api/setup/connection`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ updates: { ANTHROPIC_API_KEY: "sk-ant-nope" } }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal(((await rejected.json()) as { error?: string }).error, "unknown_keys");
+
+    const ok = await fetch(`${base}/api/setup/connection`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ updates: { MONGODB_URI: "mongodb://ok-local", MONGODB_DB: "aitl" } }),
+    });
+    assert.equal(ok.status, 200);
+    const body = (await ok.json()) as { keys?: string[]; pending_restart?: string[] };
+    assert.deepEqual(body.keys?.sort(), ["MONGODB_DB", "MONGODB_URI"]);
+    assert.ok(Array.isArray(body.pending_restart));
+    assert.deepEqual(configCalls[0], { MONGODB_URI: "mongodb://ok-local", MONGODB_DB: "aitl" });
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/setup/test-connection probes with the ephemeral client fake", async () => {
+  const { deps, setSetupState } = makeFakes();
+  setSetupState({ setup_required: true, mongo: { ok: false, error: "down" }, has_real_users: null });
+  const { base, close } = await startServer(deps);
+  try {
+    const good = await fetch(`${base}/api/setup/test-connection`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ uri: "mongodb://ok-host", db: "aitl" }),
+    });
+    assert.deepEqual(await good.json(), { ok: true, db: "aitl" });
+    const bad = await fetch(`${base}/api/setup/test-connection`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ uri: "mongodb://bad-host" }),
+    });
+    assert.equal(((await bad.json()) as { ok?: boolean }).ok, false);
+  } finally {
+    await close();
+  }
+});
+
+test("profiles CRUD: 401 anonymous, 403 plain user, full cycle as root", async (t) => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "aitl-api-profiles-"));
+  const prevHome = process.env.AITL_HOME;
+  const prevProfile = process.env.AITL_PROFILE;
+  process.env.AITL_HOME = dir;
+  delete process.env.AITL_PROFILE;
+  t.after(async () => {
+    if (prevHome === undefined) delete process.env.AITL_HOME;
+    else process.env.AITL_HOME = prevHome;
+    if (prevProfile !== undefined) process.env.AITL_PROFILE = prevProfile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const { deps, sessions } = makeFakes();
+  const { base, close } = await startServer(deps);
+  try {
+    const anon = await fetch(`${base}/api/profiles`);
+    assert.equal(anon.status, 401);
+
+    sessions.set("user-token", { id: "user:plain", role: "user" });
+    const denied = await fetch(`${base}/api/profiles/trabajo`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: "Bearer user-token" },
+      body: JSON.stringify({ updates: { MONGODB_DB: "x" } }),
+    });
+    assert.equal(denied.status, 403);
+
+    sessions.set("root-token", { id: "user:root", role: "root" });
+    const auth = { "content-type": "application/json", authorization: "Bearer root-token" };
+
+    const put = await fetch(`${base}/api/profiles/trabajo`, {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ updates: { MONGODB_DB: "aitl_work", ANTHROPIC_API_KEY: "sk-ant-secret-9999" } }),
+    });
+    assert.equal(put.status, 200);
+    const view = (await put.json()) as Record<string, string>;
+    assert.equal(view.MONGODB_DB, "aitl_work");
+    assert.equal(view.ANTHROPIC_API_KEY, "••••9999"); // masked view
+
+    const unknown = await fetch(`${base}/api/profiles/trabajo`, {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ updates: { NOT_A_KEY: "x" } }),
+    });
+    assert.equal(unknown.status, 400);
+    assert.equal(((await unknown.json()) as { error?: string }).error, "unknown_keys");
+
+    const list = await fetch(`${base}/api/profiles`, { headers: auth });
+    const listBody = (await list.json()) as { active: string | null; profiles: { name: string }[] };
+    assert.equal(listBody.active, null);
+    assert.deepEqual(listBody.profiles.map((p) => p.name), ["trabajo"]);
+
+    const activate = await fetch(`${base}/api/profiles/active`, {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ name: "trabajo" }),
+    });
+    assert.equal(activate.status, 200);
+    const activated = (await activate.json()) as { active?: string | null; pending_restart?: string[] };
+    assert.equal(activated.active, "trabajo");
+    assert.ok(Array.isArray(activated.pending_restart));
+
+    const missing = await fetch(`${base}/api/profiles/active`, {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ name: "nope" }),
+    });
+    assert.equal(missing.status, 400);
+
+    // Deleting the active profile is refused; deactivate first, then delete.
+    const delActive = await fetch(`${base}/api/profiles/trabajo`, { method: "DELETE", headers: auth });
+    assert.equal(delActive.status, 409);
+    assert.equal(((await delActive.json()) as { error?: string }).error, "profile_active");
+
+    await fetch(`${base}/api/profiles/active`, { method: "PUT", headers: auth, body: JSON.stringify({ name: null }) });
+    const del = await fetch(`${base}/api/profiles/trabajo`, { method: "DELETE", headers: auth });
+    assert.equal(del.status, 200);
+    assert.deepEqual(await del.json(), { deleted: true, name: "trabajo" });
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/admin/restart: RBAC-guarded when healthy; loopback exception when Mongo is down", async () => {
+  const { deps, sessions, restarts, setSetupState } = makeFakes();
+  const { base, close } = await startServer(deps);
+  try {
+    const anon = await fetch(`${base}/api/admin/restart`, { method: "POST" });
+    assert.equal(anon.status, 401); // healthy DB → guard applies
+
+    sessions.set("root-token", { id: "user:root", role: "root" });
+    const res = await fetch(`${base}/api/admin/restart`, {
+      method: "POST",
+      headers: { authorization: "Bearer root-token" },
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { restarting?: boolean; will_respawn?: boolean };
+    assert.equal(body.restarting, true);
+    assert.equal(typeof body.will_respawn, "boolean");
+    await new Promise((r) => setTimeout(r, 200)); // requestRestart fires after the response
+    assert.equal(restarts.length, 1);
+
+    // Mongo down → the loopback caller may restart without a session (setup flow).
+    setSetupState({ setup_required: true, mongo: { ok: false, error: "down" }, has_real_users: null });
+    const setupRestart = await fetch(`${base}/api/admin/restart`, { method: "POST" });
+    assert.equal(setupRestart.status, 202);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(restarts.length, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /api/admin/init-db returns the report to root and denies plain users", async () => {
+  const { deps, sessions } = makeFakes();
+  const { base, close } = await startServer(deps);
+  try {
+    sessions.set("user-token", { id: "user:plain", role: "user" });
+    const denied = await fetch(`${base}/api/admin/init-db`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+    });
+    assert.equal(denied.status, 403);
+
+    sessions.set("root-token", { id: "user:root", role: "root" });
+    const res = await fetch(`${base}/api/admin/init-db`, {
+      method: "POST",
+      headers: { authorization: "Bearer root-token" },
+    });
+    assert.equal(res.status, 200);
+    const report = (await res.json()) as { db?: string; vector?: { ok?: boolean } };
+    assert.equal(report.db, "fake");
+    assert.equal(report.vector?.ok, true);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /api/config/status now reports sources, profiles and pending_restart", async () => {
+  const { deps, sessions } = makeFakes();
+  const { base, close } = await startServer(deps);
+  try {
+    sessions.set("root-token", { id: "user:root", role: "root" });
+    const res = await fetch(`${base}/api/config/status`, { headers: { authorization: "Bearer root-token" } });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      sources?: Record<string, string>;
+      profiles?: { active: string | null; names: string[] };
+      pending_restart?: string[];
+      mongo?: { ok?: boolean; db?: string };
+    };
+    assert.equal(typeof body.sources, "object");
+    assert.ok(Array.isArray(body.profiles?.names));
+    assert.ok(Array.isArray(body.pending_restart));
+    assert.equal(typeof body.mongo?.ok, "boolean");
   } finally {
     await close();
   }

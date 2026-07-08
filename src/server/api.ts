@@ -13,8 +13,18 @@
  *   POST   /api/auth/logout                  (Bearer) revoke session → 204
  *   GET    /api/auth/me                      resolved actor identity (+ signup flag)
  *   GET    /api/config                      effective profile (secrets masked)
- *   GET    /api/config/status               profile + provider status + signup flag
+ *   GET    /api/config/status               profile + sources + providers + profiles + pending_restart
  *   PUT    /api/config                       {updates:{KEY: value|null}} → profile + .env mirror
+ *   GET    /api/setup/status                 (no auth) setup mode + mongo probe + loopback flag
+ *   POST   /api/setup/root                   (setup+loopback) create THE root → session
+ *   POST   /api/setup/test-connection        (setup+loopback) probe a candidate URI (ephemeral client)
+ *   PUT    /api/setup/connection             (mongo down+loopback) persist MONGODB_* keys only
+ *   GET    /api/profiles                     named profiles list + active
+ *   PUT    /api/profiles/active              {name|null} → {active, pending_restart}
+ *   GET/PUT/DELETE /api/profiles/:name       one profile (masked view / upsert / delete)
+ *   POST   /api/admin/restart                clean exit-75 shutdown (respawned by `aitl ui --watch-restart`)
+ *   POST   /api/admin/init-db                idempotent collections/indexes bootstrap → report
+ *   POST   /api/admin/test-connection        authenticated mirror of setup/test-connection
  *   GET    /api/projects
  *   GET    /api/memory?project=&category=&type=&limit=
  *   GET    /api/memory/search?project=&q=&limit=
@@ -33,6 +43,8 @@ import { makeMemoryDoc } from "../models/memory.model.js";
 import { recordAudit } from "../auth/audit.js";
 import { createSession, resolveSession, revokeSession } from "../auth/sessions.js";
 import type { VerifyUserResult } from "../auth/users.js";
+import { resolvedEnv } from "../config/store.js";
+import { isLoopback, type MongoProbe, type SetupStatus } from "./setup.js";
 import {
   type AccessContext,
   type Action,
@@ -59,11 +71,28 @@ export interface ApiDeps {
   applyConfigUpdates: (updates: Record<string, string | null>) => Promise<{ profilePath: string; envPath: string; keys: string[] }>;
   audit: typeof recordAudit;
   upsertMemory: (body: Record<string, unknown>, actor?: Actor) => Promise<Record<string, unknown>>;
+  // ── First-boot setup + guided restart (ADR-0061) ──────────────────────────
+  /** Probe the ACTIVE connection + real-user count (setup mode detection). */
+  setupStatus: () => Promise<SetupStatus>;
+  /** Create THE root account while no real user exists (throws SetupClosedError after). */
+  createSetupRoot: (seed: { username: string; email: string; password: string }) => Promise<{ username: string; role: string }>;
+  /** Try a candidate URI with an ephemeral client (never the live connection). */
+  probeMongo: (uri: string, db?: string) => Promise<MongoProbe>;
+  /** Loopback check for the unauthenticated setup surface. */
+  isLoopback: (req: IncomingMessage) => boolean;
+  /** Ask the host process for a clean exit-75 shutdown (wired by `aitl ui`). */
+  requestRestart: () => void;
+  /** Idempotent collections/indexes bootstrap (POST /api/admin/init-db). */
+  runInitDb: () => Promise<unknown>;
 }
 
-/** Self-service signup gate: on by default; AITL_WEB_ALLOW_SIGNUP="false"/"0" turns it off. */
+/**
+ * Self-service signup gate: on by default; AITL_WEB_ALLOW_SIGNUP="false"/"0" turns it
+ * off. Read through the layered resolution (ADR-0061) so profiles/config.json apply
+ * without needing the key in the real env.
+ */
 function signupEnabled(): boolean {
-  return !/^(false|0)$/i.test((process.env.AITL_WEB_ALLOW_SIGNUP ?? "").trim());
+  return !/^(false|0)$/i.test((resolvedEnv("AITL_WEB_ALLOW_SIGNUP") ?? "").trim());
 }
 
 /**
@@ -160,7 +189,7 @@ async function guard(
 function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin;
   if (!origin) return {};
-  const allowed = (process.env.AITL_WEB_ORIGINS ?? DEFAULT_WEB_ORIGINS)
+  const allowed = (resolvedEnv("AITL_WEB_ORIGINS") ?? DEFAULT_WEB_ORIGINS)
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -245,6 +274,111 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
 
   if (method === "OPTIONS") return send(req, res, 204, {});
   if (pathname === "/api/health") return send(req, res, 200, { ok: true });
+
+  // ── First-boot setup surface (ADR-0061) — unauthenticated, loopback-only ────
+  // Sessions live in Mongo, so a fresh (or unreachable) DB has nothing to log in
+  // with; this minimal surface lets the local operator bootstrap. It hard-closes
+  // as soon as a real user exists (`setup_closed`).
+  const requireSetupMode = async (opts: { requireMongoDown?: boolean } = {}): Promise<SetupStatus> => {
+    if (!deps.isLoopback(req)) {
+      throw new HttpError(403, "setup endpoints are restricted to loopback callers", {
+        error: "setup_local_only",
+      });
+    }
+    const status = await deps.setupStatus();
+    if (!status.setup_required) {
+      throw new HttpError(409, "setup already completed: a real user exists", { error: "setup_closed" });
+    }
+    if (opts.requireMongoDown && status.mongo.ok) {
+      throw new HttpError(409, "connection already works; use the authenticated config API", {
+        error: "mongo_already_ok",
+      });
+    }
+    return status;
+  };
+
+  if (pathname === "/api/setup/status" && method === "GET") {
+    const status = await deps.setupStatus();
+    return send(req, res, 200, { ...status, loopback: deps.isLoopback(req) });
+  }
+
+  if (pathname === "/api/setup/root" && method === "POST") {
+    const status = await requireSetupMode();
+    if (!status.mongo.ok) {
+      throw new HttpError(409, "MongoDB is unreachable; configure the connection first", {
+        error: "mongo_down",
+        mongo: status.mongo,
+      });
+    }
+    const body = await readJson(req);
+    let created: { username: string; role: string };
+    try {
+      created = await deps.createSetupRoot({
+        username: String(body.username ?? ""),
+        email: String(body.email ?? ""),
+        password: String(body.password ?? ""),
+      });
+    } catch (err) {
+      // Structural detection so injected fakes don't need the exact classes.
+      if ((err as { name?: string }).name === "SetupClosedError") {
+        throw new HttpError(409, "setup already completed: a real user exists", { error: "setup_closed" });
+      }
+      const conflict = (err as { conflict?: string }).conflict;
+      if (conflict === "username" || conflict === "email") {
+        throw new HttpError(409, `${conflict} taken`, { error: `${conflict}_taken` });
+      }
+      throw new HttpError(400, err instanceof Error ? err.message : String(err), { error: "invalid_setup" });
+    }
+    if (!isRole(created.role)) throw new HttpError(500, "setup user has an invalid role");
+    // Same shape as login: the wizard continues authenticated as this root.
+    const userId = `user:${created.username}`;
+    const session = await deps.createSession(userId, created.role);
+    return send(req, res, 200, {
+      token: session.token,
+      id: userId,
+      role: created.role,
+      expires_at: session.expiresAt.toISOString(),
+    });
+  }
+
+  if (pathname === "/api/setup/test-connection" && method === "POST") {
+    await requireSetupMode();
+    const body = await readJson(req);
+    const uri = String(body.uri ?? "");
+    if (!uri) throw new HttpError(400, "`uri` is required.");
+    return send(req, res, 200, await deps.probeMongo(uri, body.db ? String(body.db) : undefined));
+  }
+
+  // Step 0 of the wizard (Mongo unreachable): persist ONLY the connection keys so
+  // the guided restart can boot against the fixed URI. Audited best-effort (the
+  // audit trail itself needs Mongo).
+  if (pathname === "/api/setup/connection" && method === "PUT") {
+    await requireSetupMode({ requireMongoDown: true });
+    const body = await readJson(req);
+    const raw = body.updates;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpError(400, "`updates` object is required: { KEY: value | null }.");
+    }
+    const MONGO_KEYS = ["MONGODB_URI", "MONGODB_URI_FALLBACK", "MONGODB_DB"];
+    const updates: Record<string, string | null> = {};
+    const rejected: string[] = [];
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!MONGO_KEYS.includes(k)) rejected.push(k);
+      else updates[k] = v == null ? null : String(v);
+    }
+    if (rejected.length) {
+      throw new HttpError(400, `Only connection keys are allowed here: ${MONGO_KEYS.join(", ")}`, {
+        error: "unknown_keys",
+        unknown: rejected,
+        known: MONGO_KEYS,
+      });
+    }
+    if (!Object.keys(updates).length) throw new HttpError(400, "`updates` is empty.");
+    await deps.applyConfigUpdates(updates);
+    console.warn(`[api] setup: connection keys written from loopback (${Object.keys(updates).join(", ")})`);
+    const { pendingRestartKeys } = await import("../config/store.js");
+    return send(req, res, 200, { keys: Object.keys(updates), pending_restart: pendingRestartKeys() });
+  }
 
   if (pathname === "/api/auth/login" && method === "POST") {
     const body = await readJson(req);
@@ -341,15 +475,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
     return send(req, res, 200, resolveProfile());
   }
 
-  // Config panel snapshot: masked profile + which LLM backends are usable + signup flag.
+  // Config panel snapshot: masked profile + provider status + signup flag, plus
+  // (ADR-0061) per-key provenance, named profiles, pending-restart diff and a
+  // cheap Mongo state (readyState only — the wizard uses /api/setup/status for
+  // the authoritative probe).
   if (pathname === "/api/config/status" && method === "GET") {
     await guard(deps, actor, "config_secrets", "read");
-    const { resolveProfile } = await import("../config/store.js");
+    const { resolveProfile, resolveProfileSources, pendingRestartKeys, activeProfileName } =
+      await import("../config/store.js");
+    const { listProfiles } = await import("../config/profiles.js");
     const { providerStatus } = await import("../providers/base.js");
+    const { settings } = await import("../config.js");
+    const mongoose = (await import("mongoose")).default;
     return send(req, res, 200, {
       profile: resolveProfile(),
+      sources: resolveProfileSources(),
       providers: providerStatus(),
       signup_enabled: signupEnabled(),
+      profiles: { active: activeProfileName(), names: listProfiles().map((p) => p.name) },
+      pending_restart: pendingRestartKeys(),
+      mongo: { ok: mongoose.connection.readyState === 1, db: settings.mongodbDb },
     });
   }
 
@@ -387,6 +532,136 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
       reason: `keys=${Object.keys(updates).join(",")}`,
     });
     return send(req, res, 200, resolveProfile());
+  }
+
+  // ── Named profiles (ADR-0061) — same trust as config_secrets ───────────────
+  if (pathname === "/api/profiles" && method === "GET") {
+    await guard(deps, actor, "config_secrets", "read");
+    const { listProfiles } = await import("../config/profiles.js");
+    const { activeProfileName } = await import("../config/store.js");
+    return send(req, res, 200, { active: activeProfileName(), profiles: listProfiles() });
+  }
+
+  if (pathname === "/api/profiles/active" && method === "PUT") {
+    await guard(deps, actor, "config_secrets", "update");
+    const body = await readJson(req);
+    const name = body.name == null || body.name === "" ? null : String(body.name);
+    const { setActiveProfile } = await import("../config/profiles.js");
+    const { activeProfileName, pendingRestartKeys } = await import("../config/store.js");
+    try {
+      await setActiveProfile(name);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err), { error: "invalid_profile" });
+    }
+    await deps.audit({
+      actor_id: actor.id,
+      actor_role: actor.role,
+      source: "web",
+      action: "config.profile_activate",
+      resource: "config_secrets",
+      ok: true,
+      reason: `name=${name ?? "(none)"}`,
+    });
+    return send(req, res, 200, { active: activeProfileName(), pending_restart: pendingRestartKeys() });
+  }
+
+  const profileRoute = /^\/api\/profiles\/([^/]+)$/.exec(pathname);
+  if (profileRoute && method === "GET") {
+    await guard(deps, actor, "config_secrets", "read");
+    const { resolveProfileView } = await import("../config/profiles.js");
+    try {
+      return send(req, res, 200, resolveProfileView(decodeURIComponent(profileRoute[1])));
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err), { error: "invalid_profile" });
+    }
+  }
+  if (profileRoute && method === "PUT") {
+    await guard(deps, actor, "config_secrets", "update");
+    const name = decodeURIComponent(profileRoute[1]);
+    const body = await readJson(req);
+    const raw = body.updates;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpError(400, "`updates` object is required: { KEY: value | null }.");
+    }
+    const updates: Record<string, string | null> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      updates[k] = v == null ? null : String(v);
+    }
+    const { writeProfile, resolveProfileView } = await import("../config/profiles.js");
+    try {
+      await writeProfile(name, updates); // validates name + keys (unknown keys throw)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const { ENV_KEYS } = await import("../config/store.js");
+      if (/Unknown config key/.test(message)) {
+        throw new HttpError(400, message, { error: "unknown_keys", known: [...ENV_KEYS] });
+      }
+      throw new HttpError(400, message, { error: "invalid_profile" });
+    }
+    await deps.audit({
+      actor_id: actor.id,
+      actor_role: actor.role,
+      source: "web",
+      action: "config.profile_update",
+      resource: "config_secrets",
+      ok: true,
+      reason: `name=${name} keys=${Object.keys(updates).join(",")}`,
+    });
+    return send(req, res, 200, resolveProfileView(name));
+  }
+  if (profileRoute && method === "DELETE") {
+    await guard(deps, actor, "config_secrets", "update");
+    const name = decodeURIComponent(profileRoute[1]);
+    const { deleteProfile } = await import("../config/profiles.js");
+    let deleted: boolean;
+    try {
+      deleted = await deleteProfile(name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/is active/.test(message)) throw new HttpError(409, message, { error: "profile_active" });
+      throw new HttpError(400, message, { error: "invalid_profile" });
+    }
+    await deps.audit({
+      actor_id: actor.id,
+      actor_role: actor.role,
+      source: "web",
+      action: "config.profile_delete",
+      resource: "config_secrets",
+      ok: true,
+      reason: `name=${name} deleted=${deleted}`,
+    });
+    return send(req, res, deleted ? 200 : 404, { deleted, name });
+  }
+
+  // ── Process admin: guided restart + explicit init-db (ADR-0061) ────────────
+  if (pathname === "/api/admin/restart" && method === "POST") {
+    const status = await deps.setupStatus();
+    // Exception: with Mongo down there is nothing to authenticate against
+    // (sessions live in Mongo) — a loopback caller in setup mode may restart
+    // after fixing the connection. Everyone else goes through RBAC.
+    if (status.mongo.ok || !deps.isLoopback(req)) {
+      await guard(deps, actor, "server_admin", "execute");
+    } else {
+      console.warn("[api] restart requested from loopback in setup mode (mongo down)");
+    }
+    const willRespawn = process.env.AITL_UI_SUPERVISED === "1";
+    send(req, res, 202, { restarting: true, will_respawn: willRespawn });
+    // Response is flushed; the graceful shutdown waits for in-flight requests.
+    setTimeout(() => deps.requestRestart(), 100);
+    return;
+  }
+
+  if (pathname === "/api/admin/init-db" && method === "POST") {
+    await guard(deps, actor, "server_admin", "execute");
+    return send(req, res, 200, await deps.runInitDb());
+  }
+
+  if (pathname === "/api/admin/test-connection" && method === "POST") {
+    await guard(deps, actor, "server_admin", "execute");
+    const body = await readJson(req);
+    const uri = String(body.uri ?? "");
+    if (!uri) throw new HttpError(400, "`uri` is required.");
+    return send(req, res, 200, await deps.probeMongo(uri, body.db ? String(body.db) : undefined));
   }
 
   const { MemoryStore } = await import("../memory/store.js");
@@ -658,6 +933,27 @@ const DEFAULT_DEPS: ApiDeps = {
   },
   audit: recordAudit,
   upsertMemory: upsertMemoryDoc,
+  setupStatus: async () => {
+    const { getSetupStatus } = await import("./setup.js");
+    return getSetupStatus();
+  },
+  createSetupRoot: async (seed) => {
+    const { createSetupRoot } = await import("../auth/users.js");
+    return createSetupRoot(seed, { source: "web" });
+  },
+  probeMongo: async (uri, db) => {
+    const { probeMongo } = await import("./setup.js");
+    return probeMongo(uri, db);
+  },
+  isLoopback,
+  // `aitl ui` overrides this with the exit-75 shutdown; standalone embedders get a warning.
+  requestRestart: () => {
+    console.warn("[api] restart requested but no supervisor is wired (start via `aitl ui`)");
+  },
+  runInitDb: async () => {
+    const { initDb } = await import("../db/init.js");
+    return initDb();
+  },
 };
 
 /** Build the memory-admin API server (not yet listening). Deps are injectable for tests. */

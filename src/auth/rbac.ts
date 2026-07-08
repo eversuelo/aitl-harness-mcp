@@ -30,6 +30,7 @@ export const RESOURCES = [
   "repos",
   "branches",
   "config_secrets",
+  "server_admin",
   "indexes",
   "coordination",
 ] as const;
@@ -106,6 +107,12 @@ const MATRIX: Record<string, Partial<Record<Action, Partial<Record<Role, Perm>>>
   config_secrets: {
     read: { root: "allow", admin: "delegated" },
     update: { root: "allow", admin: "delegated" },
+  },
+  // ADR-0061: process-level operations exposed to the web UI (guided restart,
+  // explicit init-db). Same trust model as config_secrets: root direct, admin
+  // only via the delegating server.
+  server_admin: {
+    execute: { root: "allow", admin: "delegated" },
   },
   indexes: {
     execute: { root: "allow" },

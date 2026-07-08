@@ -100,8 +100,16 @@ AITL_BOOTSTRAP_ROLE=root and run aitl check-db again.
 | memory | create/edit/delete | yes | via AITL Server | no | yes | no |
 | decisions | create/edit/delete | yes | via AITL Server | no | yes | no |
 | agents/skills | create/edit/delete | yes | via AITL Server | no | yes | no |
-| config/secrets | read/write | yes | no | no | no | no |
+| config/secrets | read/write | yes | via AITL Server | no | no | no |
+| server_admin (restart/init-db/test-connection) | execute | yes | via AITL Server | no | no | no |
 | indexes/init-db | run | yes | no | no | no | no |
+
+> `config_secrets` gained admin "via AITL Server" (delegated) in ADR-0050 so the
+> first-registered-user→admin flow can configure the harness from the web UI;
+> `server_admin` (ADR-0061: guided restart, explicit init-db, connection probe)
+> follows the same trust model. Setup-mode endpoints (`/api/setup/*`) are
+> unauthenticated by design but restricted to loopback callers and hard-close as
+> soon as a real user exists.
 
 ## Policy for regular users
 

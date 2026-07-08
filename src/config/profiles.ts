@@ -24,8 +24,11 @@ import {
   writeProfilesManifest,
 } from "./store.js";
 
-/** Names that would collide with the base config files inside ~/.aitl. */
-const RESERVED_NAMES = new Set(["config", "profiles"]);
+/**
+ * Names that would collide with the base config files inside ~/.aitl, or with
+ * the `/api/profiles/active` route.
+ */
+const RESERVED_NAMES = new Set(["config", "profiles", "active"]);
 
 export function validateProfileName(name: string): void {
   if (!PROFILE_NAME_RE.test(name) || RESERVED_NAMES.has(name)) {
