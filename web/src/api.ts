@@ -137,6 +137,8 @@ export interface ProviderStatusEntry {
 export interface ConfigStatus {
   /** Effective config profile with secrets masked. */
   profile: Record<string, string>;
+  /** Which layer produced each key: env | profile | dotenv | file (ADR-0061). */
+  sources?: Record<string, string>;
   providers: {
     providers: ProviderStatusEntry[];
     active: string | null;
@@ -144,6 +146,44 @@ export interface ConfigStatus {
     aitl_api_key?: string;
   };
   signup_enabled: boolean;
+  /** Named profiles overview (ADR-0061). */
+  profiles?: { active: string | null; names: string[] };
+  /** Keys whose on-disk value differs from the running process (restart applies them). */
+  pending_restart?: string[];
+  mongo?: { ok: boolean; db?: string };
+}
+
+/* ── First-boot setup + named profiles (ADR-0061) ─────────────────────────── */
+
+export interface SetupStatus {
+  setup_required: boolean;
+  mongo: { ok: boolean; error?: string; db?: string };
+  has_real_users: boolean | null;
+  /** Whether THIS client reaches the API via loopback (setup surface requires it). */
+  loopback: boolean;
+}
+
+export interface ProfileSummary {
+  name: string;
+  keys: string[];
+  active: boolean;
+}
+
+export interface ProfilesInfo {
+  active: string | null;
+  profiles: ProfileSummary[];
+}
+
+export interface RestartResponse {
+  restarting: boolean;
+  /** True when `aitl ui --watch-restart` supervises the process (auto-respawn). */
+  will_respawn: boolean;
+}
+
+export interface DbInitReport {
+  collections: string[];
+  vector: { ok: boolean; error?: string };
+  bootstrap: { status: string; username?: string };
 }
 
 const TOKEN_KEY = "aitl.session";
@@ -229,6 +269,87 @@ export const api = {
       headers: authHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ updates }),
     }).then(json<Record<string, string>>),
+
+  /* ── setup wizard (no auth; server restricts to loopback + setup mode) ──── */
+
+  setupStatus: () => fetch("/api/setup/status").then(json<SetupStatus>),
+
+  setupRoot: async (username: string, email: string, password: string): Promise<Session> => {
+    const res = await fetch("/api/setup/root", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, email, password }),
+    });
+    const session = await json<Session>(res);
+    setToken(session.token); // the wizard continues authenticated as this root
+    return session;
+  },
+
+  setupTestConnection: (uri: string, db?: string) =>
+    fetch("/api/setup/test-connection", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ uri, db }),
+    }).then(json<{ ok: boolean; error?: string; db?: string }>),
+
+  setupConnection: (updates: Record<string, string | null>) =>
+    fetch("/api/setup/connection", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ updates }),
+    }).then(json<{ keys: string[]; pending_restart: string[] }>),
+
+  /* ── named profiles (root/admin via config_secrets) ─────────────────────── */
+
+  profiles: () => fetch("/api/profiles", { headers: authHeaders() }).then(json<ProfilesInfo>),
+
+  profile: (name: string) =>
+    fetch(`/api/profiles/${encodeURIComponent(name)}`, { headers: authHeaders() }).then(
+      json<Record<string, string>>,
+    ),
+
+  saveProfile: (name: string, updates: Record<string, string | null>) =>
+    fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ updates }),
+    }).then(json<Record<string, string>>),
+
+  deleteProfile: (name: string) =>
+    fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }).then(json<{ deleted: boolean; name: string }>),
+
+  activateProfile: (name: string | null) =>
+    fetch("/api/profiles/active", {
+      method: "PUT",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ name }),
+    }).then(json<{ active: string | null; pending_restart: string[] }>),
+
+  /* ── process admin (guided restart, explicit init-db) ───────────────────── */
+
+  restart: () =>
+    fetch("/api/admin/restart", { method: "POST", headers: authHeaders() }).then(json<RestartResponse>),
+
+  initDb: () =>
+    fetch("/api/admin/init-db", { method: "POST", headers: authHeaders() }).then(json<DbInitReport>),
+
+  /** Poll /api/health until the (re)started server answers, or time out. */
+  waitForHealth: async (timeoutMs = 60_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        if (res.ok) return;
+      } catch {
+        /* server still down — keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    throw new Error("el servidor no volvió a responder (¿hay que relanzar `aitl ui` a mano?)");
+  },
 
   projects: () => fetch("/api/projects", { headers: authHeaders() }).then(json<string[]>),
 

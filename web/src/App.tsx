@@ -19,6 +19,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/Markdown";
 import { AuthBadge, LoginDialog } from "@/components/LoginView";
 import { ConfigView } from "@/components/ConfigView";
+import { RestartBanner } from "@/components/RestartBanner";
+import { SetupWizard } from "@/components/SetupWizard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -40,6 +42,7 @@ import {
   type PromptDoc,
   type RunDetail,
   type RunDoc,
+  type SetupStatus,
   UnauthorizedError,
   api,
 } from "./api.js";
@@ -64,6 +67,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  // First-boot wizard gate (ADR-0061) + pending-restart banner refresh signal.
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
+  const [configVersion, setConfigVersion] = useState(0);
 
   // Central error sink: a 401 on a write opens the login dialog instead of a red banner.
   const reportError = useCallback((e: unknown) => {
@@ -86,6 +92,12 @@ export function App() {
 
   useEffect(() => {
     refreshMe();
+    // Setup gate: while the DB has no real user (or is unreachable) the wizard
+    // replaces the app. Failure to fetch the status just skips the gate.
+    api
+      .setupStatus()
+      .then(setSetup)
+      .catch(() => setSetup(null));
     api
       .projects()
       .then((ps) => {
@@ -105,6 +117,23 @@ export function App() {
   useEffect(() => {
     if (tab === "config" && !canConfig) setTab("memory");
   }, [tab, canConfig]);
+
+  // First boot: the wizard takes over the whole screen until it hands back.
+  if (setup?.setup_required) {
+    return (
+      <SetupWizard
+        status={setup}
+        onError={reportError}
+        onDone={() => {
+          refreshMe();
+          api
+            .setupStatus()
+            .then(setSetup)
+            .catch(() => setSetup(null));
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -176,6 +205,8 @@ export function App() {
         }}
       />
 
+      <RestartBanner canConfig={canConfig} refreshKey={configVersion} onError={reportError} />
+
       {error && (
         <div className="flex items-center justify-between gap-2 border-b border-destructive/40 bg-destructive/15 px-5 py-2 text-sm text-destructive">
           <span>{error}</span>
@@ -192,7 +223,9 @@ export function App() {
         {tab === "runs" && <RunsView project={project} onError={reportError} />}
         {tab === "graph" && <GraphView project={project} onError={reportError} />}
         {tab === "knowledge" && <KnowledgeMapView project={project} onError={reportError} />}
-        {tab === "config" && canConfig && <ConfigView onError={reportError} />}
+        {tab === "config" && canConfig && (
+          <ConfigView onError={reportError} onConfigChanged={() => setConfigVersion((v) => v + 1)} />
+        )}
       </div>
     </div>
   );
