@@ -40,6 +40,14 @@ program
 // probes Mongo itself and DEGRADES to non-persistent deliberation when it is down.
 const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models", "council"]);
 
+// Commands that still do useful work WITHOUT Mongo: the host agent runs and only the
+// durable telemetry is skipped. For these a DB outage DEGRADES (warn + continue) instead
+// of aborting — losing a whole run to a transient outage is worse than losing its metrics.
+// This is exactly what corrupted the raytracer measurement (false gate-fails + lost work
+// when Atlas timed out mid-course). `run` (native loop) is NOT here: it persists every
+// iteration, so it keeps requiring Mongo rather than stalling mid-loop.
+const DEGRADABLE_COMMANDS = new Set(["run-host"]);
+
 // Resolve the working MongoDB URI (primary → fallback) once, before any DB command runs,
 // so every subcommand inherits the resilient local-and/or-Atlas connection.
 program.hook("preAction", async (_thisCommand, actionCommand) => {
@@ -55,6 +63,16 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
       console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
     }
   } catch (err) {
+    // A degradable command runs WITHOUT persistence (agent still executes; telemetry
+    // skipped). Signal it downstream via env and continue instead of aborting.
+    for (let cmd: Command | null = actionCommand; cmd; cmd = cmd.parent) {
+      if (DEGRADABLE_COMMANDS.has(cmd.name())) {
+        process.env.AITL_DB_DEGRADED = "1";
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error("[aitl] Mongo no disponible — corriendo SIN persistir telemetría (run degradado).");
+        return;
+      }
+    }
     // Fail fast with one clear message. Letting the command proceed just moves the
     // failure to the first DB access, where it surfaces as a confusing stall/stack.
     console.error(err instanceof Error ? err.message : String(err));

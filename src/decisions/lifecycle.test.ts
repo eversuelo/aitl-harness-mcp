@@ -183,6 +183,44 @@ test("hydrate excludes deprecated/superseded/lapsed ADRs and reports needs_revie
   assert.match(res.preamble, /pendientes de revisión.*0004/);
 });
 
+test("hydrate unions the most-recent ADRs so a freshly recorded decision is injected (not capped at 4)", async () => {
+  // textSearch ranks the four founding ADRs; 0007/0006/0005 are only reachable by
+  // recency. The union must surface them AND lift the old hard cap of 4.
+  const relevantHits = [
+    { id: "0001", title: "Founding A", decision: "a", status: "accepted" },
+    { id: "0002", title: "Founding B", decision: "b", status: "accepted" },
+    { id: "0003", title: "Founding C", decision: "c", status: "accepted" },
+    { id: "0004", title: "Founding D", decision: "d", status: "accepted" },
+  ];
+  const recentHits = [
+    { id: "0007", title: "Fresh G", decision: "g", status: "accepted" },
+    { id: "0006", title: "Fresh F", decision: "f", status: "accepted" },
+    { id: "0005", title: "Fresh E", decision: "e", status: "accepted" },
+  ];
+  const chain = (rows: Record<string, unknown>[]) => {
+    const o: Record<string, unknown> = {};
+    o.sort = () => o;
+    o.limit = () => o;
+    o.toArray = async () => rows;
+    return o;
+  };
+  const fakeStore = {
+    vectorSearch: async () => [],
+    textSearch: async (collection: string) => (collection === "decisions" ? relevantHits : []),
+    db: {
+      // The recency query filters by {project}; the lapsed query carries review_after.
+      collection: () => ({ find: (query: Record<string, unknown>) => chain("review_after" in query ? [] : recentHits) }),
+    },
+  } as unknown as MemoryStore;
+
+  const res = await hydrate("p", "which api style?", {
+    store: fakeStore, memory: false, conventions: false, repomap: false, vector: false,
+  });
+  assert.match(res.preamble, /ADR 0007 — Fresh G/); // the freshest ADR is now injected
+  assert.match(res.preamble, /ADR 0005 — Fresh E/);
+  assert.ok(res.sections.decisions > 4); // the hard cap of 4 is lifted
+});
+
 // ── curation proposals ────────────────────────────────────────────────────────
 
 test("isReviewOverdue: past → true, future/null/garbage → false", () => {

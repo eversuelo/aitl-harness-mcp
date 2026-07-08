@@ -250,9 +250,33 @@ export async function hydrate(
     sections.memory = sec.count;
   }
   if (opts.decisions !== false) {
-    // Over-fetch, then drop deprecated/superseded and soft-TTL-lapsed ADRs (F4).
-    const hits = await relevant(store, "decisions", project, prompt, 8, useVector);
-    const split = partitionDecisions(hits);
+    // Rank by relevance (over-fetch), then ALWAYS union the most-recent ADRs so a
+    // freshly recorded decision is considered even when lexical/vector search ranked
+    // older ones first — relevant() stops at the first non-empty tier and may never
+    // reach its recency fallback. Recent-first + dedupe by id keeps new ADRs visible.
+    // Then drop deprecated/superseded and soft-TTL-lapsed ADRs (F4).
+    const decLimit = opts.limit ?? 6;
+    const ranked = await relevant(store, "decisions", project, prompt, Math.max(decLimit * 2, 8), useVector);
+    let recent: Record<string, unknown>[] = [];
+    try {
+      recent = await store.db
+        .collection("decisions")
+        .find({ project }, { projection: { embedding: 0 } })
+        .sort({ updated_at: -1 })
+        .limit(decLimit)
+        .toArray();
+    } catch {
+      // recency is best-effort; the ranked hits already cover the common case
+    }
+    const seen = new Set<string>();
+    const merged: Record<string, unknown>[] = [];
+    for (const d of [...recent, ...ranked]) {
+      const id = String(d.id ?? "");
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      merged.push(d);
+    }
+    const split = partitionDecisions(merged);
     needsReview = split.needsReview;
     // Best-effort: lapsed ADRs are surfaced even when retrieval didn't rank them.
     try {
@@ -273,7 +297,7 @@ export async function hydrate(
     } catch {
       // The retrieved-hits partition already covers the common case.
     }
-    const sec = renderDecisions(split.active.slice(0, 4), 1800);
+    const sec = renderDecisions(split.active.slice(0, decLimit), 1800);
     if (sec.text) parts.push(sec.text);
     sections.decisions = sec.count;
     if (needsReview.length) {
