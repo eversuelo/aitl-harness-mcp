@@ -1073,13 +1073,119 @@ config
 config
   .command("unset")
   .argument("<key>", "ENV-style key to remove.")
+  .option("--env", "Also comment the key out in ./.env (drops the old value).", false)
   .description("Remove a single key from the user-level config profile.")
-  .action(async (key) => {
-    const { readConfigFile, writeConfigFile } = await import("./config/store.js");
+  .action(async (key, opts) => {
+    const { ENV_KEYS, readConfigFile, writeConfigFile } = await import("./config/store.js");
+    if (!(ENV_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`Unknown key '${key}'. Known: ${ENV_KEYS.join(", ")}`);
+    }
     const profile = readConfigFile();
     delete (profile as Record<string, unknown>)[key];
     const path = await writeConfigFile(profile, { merge: false });
     console.log(`Unset ${key} in ${path}.`);
+    if (opts.env) {
+      const { updateEnvFile } = await import("./config/envfile.js");
+      const { join } = await import("node:path");
+      const envPath = join(process.cwd(), ".env");
+      await updateEnvFile(envPath, { [key]: null });
+      console.log(`Commented ${key} out in ${envPath}.`);
+    }
+  });
+
+// ── config profile (named overlays for work/personal contexts; ADR-0061) ────────
+const configProfile = config
+  .command("profile")
+  .description(
+    "Named config profiles (~/.aitl/profiles/<name>.json) overlaying the base config. " +
+      "Activation applies on the next process start; AITL_PROFILE overrides the manifest.",
+  );
+
+configProfile
+  .command("list")
+  .description("List profiles (active one marked with *).")
+  .action(async () => {
+    const { listProfiles } = await import("./config/profiles.js");
+    const rows = listProfiles();
+    if (!rows.length) {
+      console.log("(no profiles — create one with: aitl config profile create <name>)");
+      return;
+    }
+    for (const p of rows) {
+      console.log(`${p.active ? "*" : " "} ${p.name}  [${p.keys.join(", ") || "empty"}]`);
+    }
+  });
+
+configProfile
+  .command("create")
+  .argument("<name>", "Profile name (lowercase letters/digits/._-).")
+  .option("--from-current", "Seed the profile with a copy of the base config.json.", false)
+  .description("Create a profile (empty overlay by default).")
+  .action(async (name, opts) => {
+    const { readConfigFile } = await import("./config/store.js");
+    const { writeProfile } = await import("./config/profiles.js");
+    const seed = opts.fromCurrent ? (readConfigFile() as Record<string, string>) : {};
+    const path = await writeProfile(name, seed, { merge: false });
+    console.log(`Created profile '${name}' at ${path}${opts.fromCurrent ? " (seeded from config.json)" : ""}.`);
+  });
+
+configProfile
+  .command("set")
+  .argument("<name>", "Profile name.")
+  .argument("<key>", "ENV-style key (e.g. MONGODB_DB).")
+  .argument("<value>", "Value.")
+  .description("Set a single key in a profile (creates the profile when missing).")
+  .action(async (name, key, value) => {
+    const { writeProfile } = await import("./config/profiles.js");
+    const path = await writeProfile(name, { [key]: value });
+    console.log(`Set ${key} in profile '${name}' (${path}).`);
+  });
+
+configProfile
+  .command("show")
+  .argument("<name>", "Profile name.")
+  .option("--secrets", "Reveal secret values instead of masking them.", false)
+  .description("Print a profile's stored keys (secrets masked by default).")
+  .action(async (name, opts) => {
+    const { resolveProfileView } = await import("./config/profiles.js");
+    console.log(JSON.stringify(resolveProfileView(name, { includeSecrets: opts.secrets }), null, 2));
+  });
+
+configProfile
+  .command("use")
+  .argument("[name]", "Profile to activate.")
+  .option("--none", "Deactivate any profile (fall back to the base config).", false)
+  .description("Activate a profile (or --none). Changes apply on the next process start.")
+  .action(async (name, opts) => {
+    if ((name == null) === !opts.none) {
+      throw new Error("Pass a profile name or --none (exactly one).");
+    }
+    const { captureBootProfile, pendingRestartKeys } = await import("./config/store.js");
+    const { setActiveProfile } = await import("./config/profiles.js");
+    captureBootProfile(); // snapshot BEFORE switching → diff = keys that change
+    await setActiveProfile(opts.none ? null : name);
+    const diff = pendingRestartKeys();
+    console.log(`Active profile: ${opts.none ? "(none)" : name}.`);
+    if (process.env.AITL_PROFILE != null) {
+      console.warn(
+        `Note: AITL_PROFILE=${process.env.AITL_PROFILE || "(empty)"} is set in this environment and overrides the manifest.`,
+      );
+    }
+    if (diff.length) {
+      console.log(`Changed keys: ${diff.join(", ")} — restart running aitl processes to apply.`);
+    } else {
+      console.log("Effective config unchanged.");
+    }
+  });
+
+configProfile
+  .command("rm")
+  .argument("<name>", "Profile to delete.")
+  .description("Delete a profile (refuses to delete the active one).")
+  .action(async (name) => {
+    const { deleteProfile } = await import("./config/profiles.js");
+    const deleted = await deleteProfile(name);
+    console.log(deleted ? `Deleted profile '${name}'.` : `Profile '${name}' not found.`);
   });
 
 // ── ui (memory-admin: HTTP API + Vite dev server, launched together) ─────────────

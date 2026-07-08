@@ -6,9 +6,10 @@
  * from here so configuration stays in one place and is validated by zod.
  */
 
-import "dotenv/config";
 import { z } from "zod";
-import { type EnvKey, readConfigFile } from "./config/store.js";
+// NOTE: importing store.js also loads `.env` (dotenv moved there for provenance,
+// ADR-0061) — keep this import first-ish so settings see the same layers.
+import { type EnvKey, resolvedEnv } from "./config/store.js";
 
 function normalizeMongoUri(uri: string | undefined): string | undefined {
   if (uri === undefined) return undefined;
@@ -89,14 +90,10 @@ const SettingsSchema = z.object({
 export type Settings = z.infer<typeof SettingsSchema> & { adapters: string[] };
 
 function loadSettings(): Settings {
-  // Layered resolution: process.env > ~/.aitl/config.json > zod defaults.
-  const file = readConfigFile();
-  // An empty env var (e.g. a blank `GEMINI_API_KEY=` line in .env) must NOT shadow a
-  // value stored in the profile, so treat "" as unset for layering purposes.
-  const env = (key: EnvKey): string | undefined => {
-    const fromEnv = process.env[key];
-    return fromEnv != null && fromEnv !== "" ? fromEnv : file[key];
-  };
+  // Layered resolution (ADR-0061): real env > active named profile > `.env` >
+  // ~/.aitl/config.json > zod defaults. `resolvedEnv` owns the layering and
+  // treats "" as unset at every layer (see config/store.ts).
+  const env = (key: EnvKey): string | undefined => resolvedEnv(key);
 
   const parsed = SettingsSchema.parse({
     mongodbUri: normalizeMongoUri(env("MONGODB_URI")),
