@@ -405,7 +405,7 @@ erDiagram
 
 `connectWithFallback()` (`db/client.ts:95`) prueba el URI primario y, si falla, el de respaldo —
 permite migrar local ↔ Atlas sin tocar código (ADR-0002). La config se resuelve por capas
-(`config.ts:62`): `process.env > ~/.aitl/config.json > defaults de zod`.
+(ADR-0061, `config/store.ts`): `env real > perfil activo > .env > ~/.aitl/config.json > defaults de zod`.
 
 ```mermaid
 flowchart TB
@@ -419,8 +419,30 @@ flowchart TB
 ```
 
 > Nota operativa: si el `.env` no se carga en el shell (p. ej. arrancar el MCP sin él), el URI cae
-> al default `mongodb://localhost:27017` y la conexión a Atlas no ocurre. `src/config.ts` hace
-> `import 'dotenv/config'` y `normalizeMongoUri()` (`config.ts:13`) repara URIs JSON-escapados.
+> al default `mongodb://localhost:27017` y la conexión a Atlas no ocurre. `config/store.ts` carga el
+> dotenv con detección de procedencia (ADR-0061) y `normalizeMongoUri()` (`config.ts`) repara URIs
+> JSON-escapados.
+
+### 9.1 Perfiles con nombre + reinicio guiado + modo setup (ADR-0061)
+
+Un **perfil** (`~/.aitl/profiles/<name>.json` + manifiesto `profiles.json`) es un *overlay* de claves
+ENV sobre el `config.json` base — el caso de uso es un contexto **trabajo/personal**: mismo catálogo
+de proveedores, distinta BD (`MONGODB_URI`/`MONGODB_DB`). Dentro de cada BD se mantiene el
+multi-proyecto por campo `project` (ADR-0028). Selección: `AITL_PROFILE` (env) > manifiesto.
+
+Como `settings` es un singleton congelado al importar y la conexión Mongoose fija su `dbName` al
+arranque (ADR-0048), **los cambios de conexión solo aplican con reinicio**: la UI muestra un banner
+con `pending_restart` (diff entre la resolución fresca y el snapshot de boot, `captureBootProfile`)
+y `POST /api/admin/restart` apaga limpio con **exit 75**; `aitl ui --watch-restart` respawnea.
+Nunca hay hot-switch de la conexión viva (`probeMongo` usa un MongoClient efímero).
+
+Primer arranque (**modo setup**): mientras la BD activa no tenga ningún usuario real (el
+`local-root` de ADR-0026 no cuenta), `/api/setup/*` expone una superficie mínima **solo loopback**:
+el paso 1 del wizard crea EL usuario **root** (`createSetupRoot`, eleva la regla
+primer-usuario→admin de ADR-0050) y abre sesión; el resto del wizard va autenticado. Con Mongo
+caído hay un paso 0 de conexión (solo claves `MONGODB_*`). `startUi` corre `initDb` idempotente al
+detectar BD virgen (colecciones núcleo ausentes). Recurso RBAC nuevo: `server_admin`
+(execute: root allow / admin delegated).
 
 ---
 
