@@ -163,27 +163,49 @@ export class MemoryStore {
   }
 
   // ── stats (used by the synthesizer trigger) ──────────────────────────
+  // Trigger and iteration measure the LIVE memory only: docs absorbed into a synthesis
+  // (`compacted_into` set, ADR-0059) no longer count — that is what makes synthesis an
+  // actual compression instead of an additive summary. `compacted_into: null` matches
+  // both explicit null and pre-migration docs missing the field.
   async memoryDocCount(project: string): Promise<number> {
     await ensureMongoose();
-    return MemoryModel.countDocuments({ project });
+    return MemoryModel.countDocuments({ project, compacted_into: null });
   }
 
-  /** Rough token estimate (~4 chars/token) over a project's memory bodies. */
+  /** Rough token estimate (~4 chars/token) over a project's LIVE memory bodies. */
   async memoryTokenEstimate(project: string): Promise<number> {
     await ensureMongoose();
     const agg = (await MemoryModel.aggregate([
-      { $match: { project } },
+      { $match: { project, compacted_into: null } },
       { $group: { _id: null, chars: { $sum: { $strLenCP: { $ifNull: ["$body", ""] } } } } },
     ])) as { chars?: number }[];
     const chars = agg.length ? (agg[0].chars as number) : 0;
     return Math.floor(chars / 4);
   }
 
-  async iterMemory(project: string, opts: { category?: string } = {}): Promise<Document[]> {
+  async iterMemory(
+    project: string,
+    opts: { category?: string; includeCompacted?: boolean } = {},
+  ): Promise<Document[]> {
     await ensureMongoose();
     const filter: Record<string, unknown> = { project };
     if (opts.category !== undefined) filter.category = opts.category;
+    if (!opts.includeCompacted) filter.compacted_into = null;
     return MemoryModel.find(filter).lean() as unknown as Promise<Document[]>;
+  }
+
+  /**
+   * Mark docs as absorbed by a synthesis (ADR-0059). Lifecycle metadata, not content:
+   * no version bump — the docs' bodies are untouched and remain fully recoverable.
+   */
+  async markCompacted(project: string, slugs: string[], intoSlug: string): Promise<number> {
+    if (!slugs.length) return 0;
+    await ensureMongoose();
+    const res = await MemoryModel.updateMany(
+      { project, slug: { $in: slugs } },
+      { $set: { compacted_into: intoSlug, updated_at: new Date() } },
+    );
+    return res.modifiedCount ?? 0;
   }
 
   // ── single-doc reads/deletes (used by the memory-admin UI/API) ───────────

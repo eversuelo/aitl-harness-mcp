@@ -5,6 +5,10 @@ de cada run.
 
 Decision relacionada: [ADR-0007](../docs/adr/0007-memory-admin-web-ui.md).
 
+Autenticación (ADR-0046): sesiones opacas en Mongo (solo hash + TTL), `POST /api/auth/login`,
+cascada sesión → `AITL_WEB_TOKENS` → anónimo; un 401 en escritura abre el diálogo de login y
+las escrituras autenticadas se registran como `delegated`.
+
 ## Pestañas
 
 | Pestaña | Contenido |
@@ -14,6 +18,7 @@ Decision relacionada: [ADR-0007](../docs/adr/0007-memory-admin-web-ui.md).
 | Prompts | Historial de prompts (incl. los `spec` capturados por `run-host`). |
 | **Runs** | Métricas por run: tokens (in/out/total), costo, iters/turnos, tool_calls, gate_denials, duración, desglose de caché, roles, eventos y supervisión humana. Cabecera con rollup agregado (Σ tokens, Σ costo). |
 | Graph | Grafo force-directed de memoria/símbolos. |
+| **Config** | Configuración del harness desde la UI (solo root/admin, RBAC `config_secrets`); espejo automático al `.env` (ADR-0050). |
 | Knowledge Map | Grafo multi-entidad software→repos→branches→memoria/decisiones. |
 
 ## Ejecutar

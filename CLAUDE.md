@@ -124,6 +124,36 @@ spelling — those fragment the history. Verify the hash above matches
 > docs/adr/README.md ya no mantiene tabla a mano (el directorio es espejo completo del
 > ledger vía `aitl sync --project aitl-js`). Ledger ahora contiguo **0001–0057**;
 > next free **0058**.
+> 0058 (2026-07-07): permisos explícitos en el argv de los hosts — la postura de permisos
+> viaja SIEMPRE en el argv (nunca settings/trust del cwd destino): `CliHostSpec.writeArgs`
+> (claude-code `--permission-mode acceptEdits` por defecto en corridas delegadas),
+> resolución pura `resolveHostSpec` en capas (args → writeArgs → `AITL_HOST_ARGS_<NAME>`
+> → extraArgs → readonlyArgs AL FINAL: el solo-lectura del council siempre gana),
+> CLI `run-host --permission-mode/--allowed-tools`. 12 tests nuevos (280).
+> Ledger ahora contiguo **0001–0058**; next free **0059**.
+> 0059 (2026-07-07): compresión rodante del knowledge en `synthesize` — campo
+> `compacted_into` en memoria (ciclo de vida suave à la 0049: fuera de hydrate/trigger,
+> nunca borrado, buscable por recall explícito), plegado incremental de la síntesis
+> previa + solo docs nuevos, resumen map-reduce por lotes (`chunkTexts`, sin truncado
+> silencioso; respuesta vacía del modelo cae al extractivo — síntesis jamás en blanco),
+> `markCompacted` en el store, CLI `synthesize --compact` + reporte chars antes→después,
+> evento `synthesis` con stats. 10 tests nuevos (290); E2E vivo contra Atlas.
+> Ledger ahora contiguo **0001–0059**; next free **0060**.
+> 0060 (2026-07-07): modo degradado sin Mongo en run-host + hydrate que inyecta ADRs
+> frescos — fixes destapados por la medición del raytracer (verify 292).
+> 0061 (2026-07-08): perfiles de configuración con nombre (overlay
+> `~/.aitl/profiles/<name>.json` + manifiesto, override `AITL_PROFILE`; precedencia
+> env real > perfil > .env > config.json > defaults — dotenv cargado en
+> config/store.ts con procedencia), reinicio guiado (`POST /api/admin/restart` →
+> exit 75; `aitl ui --watch-restart` respawnea; banner web con `pending_restart`
+> vía snapshot de boot), modo setup de primer arranque loopback-only
+> (`/api/setup/*`: paso 1 crea EL root con sesión — eleva la regla de ADR-0050;
+> paso 0 conexión solo con Mongo caído; 409 `setup_closed` al existir usuario
+> real), auto-`initDb` en `startUi` para BD virgen, recurso RBAC `server_admin`,
+> SetupWizard/RestartBanner/ConfigView con las 35 ENV_KEYS + Card de perfiles,
+> CLI `aitl config profile {list,create,set,show,use,rm}`. 27 tests nuevos (319);
+> E2E vivo contra atlas-local (dos BDs por perfil, respawn ~2s).
+> Ledger ahora contiguo **0001–0061**; next free **0062**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero

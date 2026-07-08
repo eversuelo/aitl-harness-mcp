@@ -26,6 +26,11 @@ export interface RunOnHostOpts {
   host: string | HostAdapter;
   cwd?: string;
   timeoutMs?: number;
+  /**
+   * Extra argv for the host CLI (e.g. explicit `--allowedTools`/`--permission-mode` for
+   * claude-code). Ignored when `host` is a pre-built adapter.
+   */
+  hostArgs?: string[];
   /** Inject the project's durable context into the prompt (default true). */
   hydrate?: boolean;
   /** Persist the prompt to the durable prompt history (default true). */
@@ -58,8 +63,28 @@ export async function runOnHost(
   opts: RunOnHostOpts,
 ): Promise<RunOnHostResult> {
   const store = opts.store ?? new MemoryStore();
-  const host = typeof opts.host === "string" ? getHost(opts.host) : opts.host;
+  const host =
+    typeof opts.host === "string" ? getHost(opts.host, { extraArgs: opts.hostArgs }) : opts.host;
   const spec = classifySpec(prompt);
+
+  // Degraded mode (ADR-0060): Mongo was unreachable at startup (AITL_DB_DEGRADED set by
+  // the CLI preAction hook). Run the host directly and persist NOTHING — the agent still
+  // does its work and the caller still gets the output + measured tokens; only the durable
+  // run record, hydration and prompt history are skipped. Losing a run to a DB outage is
+  // worse than losing its telemetry (mirrors the interactive Delegar flow, task.ts).
+  if (process.env.AITL_DB_DEGRADED === "1") {
+    const res = await host.runTask(prompt, { cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+    return {
+      run_id: "",
+      host: host.name,
+      final_text: res.text,
+      exit_code: res.exitCode,
+      status: res.exitCode === 0 ? "done" : "error",
+      token_usage: res.usage ?? { input: 0, output: 0 },
+      meta: res.meta ?? null,
+      spec: spec.isSpec,
+    };
+  }
 
   const runId = randomUUID();
   const run = await makeRun({

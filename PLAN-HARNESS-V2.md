@@ -1,11 +1,14 @@
 # Plan harness-v2 — espejo local del estado de sesión
 
-> Corte: 2026-07-06 (sesión pausada; P3 en wip 9ea12b5, reanudar por To Do.md §0). Fuente autoritativa: memoria MCP `aitl-js`, slug
-> `session-harness-v2-plan-2026-07-06` (v2). Plan aprobado completo:
-> `~/.claude/plans/necesitamos-dise-ar-la-t-sis-merry-babbage.md`.
-> To Do vivo: `thesis-harnesss/To Do.md`. Rama del harness: `feat/harness-v2`.
-> Ledger de ADRs: contiguo **0001–0048**, next free **0049** (leer next-free con
+> Corte: 2026-07-07 — **plan P0–P11 COMPLETO** (sesión cerrada) + ciclos post-sesión
+> **ADR-0058** (permisos explícitos en el argv de los hosts) y **ADR-0059** (compresión
+> rodante del knowledge en `synthesize`) cerrados. Fuente autoritativa: memoria MCP
+> `aitl-js`, slug `session-harness-v2-plan-2026-07-06` (v10, historial vía
+> `list_memory_versions`). To Do vivo: `thesis-harnesss/To Do.md`. Rama del harness:
+> `feat/harness-v2` (merge a main pendiente de decisión del usuario).
+> Ledger de ADRs: contiguo **0001–0059**, next free **0060** (leer next-free con
 > `list_decisions` antes de registrar; nunca fijar el número en docs).
+> Lo de abajo se conserva como registro histórico del plan.
 
 ## Decisiones confirmadas por el usuario
 - Alcance completo por fases: fixes → features F1–F9 → limpieza → tesis al final.

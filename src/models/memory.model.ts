@@ -37,6 +37,10 @@ const memoryDocSchema = new Schema(
     category: { type: String, default: null },
     tags: { type: [String], default: [] },
     version: { type: Number, default: 1 }, // bumped on each content change; history in memory_history
+    // Slug of the synthesis doc that absorbed this one (ADR-0059). A compacted doc leaves
+    // the LIVE memory (hydrate preamble + synthesizer trigger/inputs) but is never deleted:
+    // it stays searchable, versioned and mirrored — the soft-lifecycle pattern of ADR-0049.
+    compacted_into: { type: String, default: null },
     actor_id: { type: String, default: null }, // who authored the current version (provenance)
     actor_role: { type: String, default: null },
     branch: { type: String, default: null }, // git branch this version was authored on (ADR-0028)

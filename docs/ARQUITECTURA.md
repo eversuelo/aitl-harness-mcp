@@ -1,7 +1,8 @@
 # Arquitectura de AITL-Harness-JS
 
-> **Documento canónico** de la arquitectura del harness (consolidado 2026-07-06, tras
-> ADR-0056). La revisión histórica en inglés con formato de auditoría
+> **Documento canónico** de la arquitectura del harness (consolidado 2026-07-06 tras
+> ADR-0056; actualizado 2026-07-07 al estado post-ADR-0059, ledger contiguo 0001–0059).
+> La revisión histórica en inglés con formato de auditoría
 > (`ARQUITECTURA-AITL-JS.md`) y los planes de ciclo viven archivados en
 > [`docs/attic/`](attic/); su historial completo está en el ledger de decisiones
 > (colección `decisions`, proyecto `aitl-js`, espejo en [`docs/adr/`](adr/)).
@@ -272,15 +273,19 @@ flowchart LR
 - **`host: model`** → el harness conduce el loop con `model` vía uno de los providers crudos
   (`anthropic`/`openrouter`/`lmstudio`/`openai-compat`, con fallback entre ellos — ADR-0044);
   queda el modelo exacto en el run.
-- **`host: claude-code|codex|antigravity`** → `CliHostAdapter` (`hosts/base.ts:50`) lanza el CLI
-  (`HOST_SPECS`, `hosts/base.ts:43`; override por env `AITL_HOST_CMD_<NAME>`). El harness aporta la
-  capa durable alrededor (hidratación de contexto, evento `spawn`, captura de la transcripción).
+- **`host: claude-code|codex|antigravity`** → `CliHostAdapter` (`hosts/base.ts`) lanza el CLI
+  (`HOST_SPECS`; override por env `AITL_HOST_CMD_<NAME>`, argv extra por
+  `AITL_HOST_ARGS_<NAME>`). El harness aporta la capa durable alrededor (hidratación de
+  contexto, evento `spawn`, captura de la transcripción). Los **permisos viajan explícitos en
+  el argv** (ADR-0058): claude-code corre con `--permission-mode acceptEdits` por defecto (o
+  `--permission-mode plan` en readonly/council), y `run-host --allowed-tools` pre-aprueba
+  herramientas — nunca se depende de settings/trust del directorio destino.
 
 ---
 
-## 7. El ciclo harness-v2 (ADRs 0046–0056)
+## 7. El ciclo harness-v2 (ADRs 0046–0059)
 
-El ciclo 2026-07-05/06 convirtió el prototipo en herramienta operativa. Cada pieza tiene su ADR
+El ciclo 2026-07-05/07 convirtió el prototipo en herramienta operativa. Cada pieza tiene su ADR
 (espejo en `docs/adr/`); aquí solo el mapa:
 
 | Capacidad | Qué añade | ADR | Código |
@@ -296,6 +301,9 @@ El ciclo 2026-07-05/06 convirtió el prototipo en herramienta operativa. Cada pi
 | Coordinación mínima | `task_claims` con lock atómico + caducidad; `coord_events`; `aitl coord {claim,release,list,poll}` con cursor incremental | 0054 | `coord/*` |
 | Consejo de planeación | propuestas paralelas → crítica anonimizada con rúbrica ponderada → juez independiente; hosts en solo-lectura | 0055 | `council/*` |
 | Rama «Task» del panel | punto de entrada operativo: Planear (SDD preview confirm-before-persist) / Delegar / Council; MCP + `coord poll` al entrar | 0056 | `interactive/task*.ts`, `specs/pipeline.ts` |
+| Documentación consolidada | este documento como único canónico; histórico en `docs/attic/`; `docs/adr/` espejo completo vía `sync` | 0057 | `docs/*` |
+| Permisos explícitos en hosts | la postura viaja SIEMPRE en el argv (`writeArgs`/`resolveHostSpec` en capas; readonly del council gana al final); `run-host --permission-mode/--allowed-tools`; seam `AITL_HOST_ARGS_<NAME>` | 0058 | `hosts/base.ts` |
+| Compresión rodante de memoria | `synthesize --compact`: `compacted_into` (fuera de hydrate/trigger sin borrar), plegado incremental, map-reduce sin truncado, guardián anti-síntesis-vacía | 0059 | `memory/synthesizer.ts`, `memory/store.ts` |
 
 Contrato transversal de **degradación**: sin Mongo los flujos corren con un aviso y no persisten;
 sin modelo, las rutas con LLM caen a su alternativa determinista o se deshabilitan con la razón
@@ -397,7 +405,7 @@ erDiagram
 
 `connectWithFallback()` (`db/client.ts:95`) prueba el URI primario y, si falla, el de respaldo —
 permite migrar local ↔ Atlas sin tocar código (ADR-0002). La config se resuelve por capas
-(`config.ts:62`): `process.env > ~/.aitl/config.json > defaults de zod`.
+(ADR-0061, `config/store.ts`): `env real > perfil activo > .env > ~/.aitl/config.json > defaults de zod`.
 
 ```mermaid
 flowchart TB
@@ -411,8 +419,30 @@ flowchart TB
 ```
 
 > Nota operativa: si el `.env` no se carga en el shell (p. ej. arrancar el MCP sin él), el URI cae
-> al default `mongodb://localhost:27017` y la conexión a Atlas no ocurre. `src/config.ts` hace
-> `import 'dotenv/config'` y `normalizeMongoUri()` (`config.ts:13`) repara URIs JSON-escapados.
+> al default `mongodb://localhost:27017` y la conexión a Atlas no ocurre. `config/store.ts` carga el
+> dotenv con detección de procedencia (ADR-0061) y `normalizeMongoUri()` (`config.ts`) repara URIs
+> JSON-escapados.
+
+### 9.1 Perfiles con nombre + reinicio guiado + modo setup (ADR-0061)
+
+Un **perfil** (`~/.aitl/profiles/<name>.json` + manifiesto `profiles.json`) es un *overlay* de claves
+ENV sobre el `config.json` base — el caso de uso es un contexto **trabajo/personal**: mismo catálogo
+de proveedores, distinta BD (`MONGODB_URI`/`MONGODB_DB`). Dentro de cada BD se mantiene el
+multi-proyecto por campo `project` (ADR-0028). Selección: `AITL_PROFILE` (env) > manifiesto.
+
+Como `settings` es un singleton congelado al importar y la conexión Mongoose fija su `dbName` al
+arranque (ADR-0048), **los cambios de conexión solo aplican con reinicio**: la UI muestra un banner
+con `pending_restart` (diff entre la resolución fresca y el snapshot de boot, `captureBootProfile`)
+y `POST /api/admin/restart` apaga limpio con **exit 75**; `aitl ui --watch-restart` respawnea.
+Nunca hay hot-switch de la conexión viva (`probeMongo` usa un MongoClient efímero).
+
+Primer arranque (**modo setup**): mientras la BD activa no tenga ningún usuario real (el
+`local-root` de ADR-0026 no cuenta), `/api/setup/*` expone una superficie mínima **solo loopback**:
+el paso 1 del wizard crea EL usuario **root** (`createSetupRoot`, eleva la regla
+primer-usuario→admin de ADR-0050) y abre sesión; el resto del wizard va autenticado. Con Mongo
+caído hay un paso 0 de conexión (solo claves `MONGODB_*`). `startUi` corre `initDb` idempotente al
+detectar BD virgen (colecciones núcleo ausentes). Recurso RBAC nuevo: `server_admin`
+(execute: root allow / admin delegated).
 
 ---
 
@@ -428,11 +458,22 @@ flowchart LR
     SUM --> CLS["Classifier<br/>reglas → LLM<br/>memory/classifier.ts"]
     CLS --> EMB["embedOne()<br/>384d"]
     EMB --> UP["upsertMemory(type=project)"]
-    UP --> TRIG{"¿supera límites?<br/>memoryMaxDocs=500<br/>memoryMaxTokens=200k"}
-    TRIG -- sí --> SYN["Synthesizer<br/>agrupa por category<br/>memory/synthesizer.ts"]
-    SYN --> UP2["upsertMemory(type=synthesis)<br/>logEvent('synthesis')"]
+    UP --> TRIG{"¿supera límites?<br/>memoryMaxDocs=500<br/>memoryMaxTokens=200k<br/>(solo memoria VIVA)"}
+    TRIG -- sí --> SYN["Synthesizer<br/>agrupa por category<br/>pliega la síntesis previa<br/>memory/synthesizer.ts"]
+    SYN --> UP2["upsertMemory(type=synthesis)<br/>logEvent('synthesis' + stats)"]
+    UP2 --> CMP["--compact: fuentes<br/>compacted_into ← slug<br/>(fuera de hydrate/trigger,<br/>nunca borradas)"]
     TRIG -- no --> END["fin"]
 ```
+
+**Compresión rodante (ADR-0059).** `aitl synthesize` comprime de verdad, no solo resume:
+cada corrida pliega la síntesis previa de la categoría más los docs nuevos (no re-lee todo el
+banco); con modelo, el resumen es map-reduce sobre lotes acotados (nada se trunca en silencio;
+una respuesta vacía del modelo cae al extractivo — una síntesis jamás queda en blanco); con
+`--compact`, las fuentes absorbidas se estampan con `compacted_into` y salen de la memoria viva
+(preámbulo de hydrate + trigger de crecimiento) **sin borrarse**: siguen versionadas, espejadas
+por `sync` y alcanzables por búsqueda explícita (recall profundo) — el mismo ciclo de vida
+suave de los ADRs (ADR-0049). El evento `synthesis` registra chars antes→después por categoría
+(métrica #8, memoria).
 
 ### Cascada de recuperación (en `hydrate` y en búsqueda)
 
@@ -505,7 +546,7 @@ flowchart TB
 |---|---|
 | Bootstrap | `init` (repo en un comando, ADR-0052), `init agent`, `init claude` |
 | DB | `check-db`, `init-db`, `migrate-atlas <uri>` |
-| Memoria | `ingest`, `search`, `synthesize [--at <ref>]`, `memory history` |
+| Memoria | `ingest`, `search`, `synthesize [--at <ref>] [--compact]`, `memory history` |
 | Ejecución | `run [--stream\|--ask\|--mcp\|--verify-cmd\|--bare]`, `chat`, `run-host --host`, `orchestrate --max`, `sdd`, `council --hosts a,b [--judge]`, `models`, `run-show`, `intervene` |
 | Repo/ADR | `repomap [--modules]`, `module-brief <dir>`, `index-repo`, `adr-sync`, `adr {history,deprecate}`, `branch {sync,list,rm}`, `software`/`repo` (catálogo) |
 | Coordinación | `coord {claim,release,list,poll}` (cursor incremental en `~/.aitl/`) |

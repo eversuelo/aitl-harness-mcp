@@ -42,8 +42,13 @@ async function relevant(
 ): Promise<Record<string, unknown>[]> {
   // Optional repo sub-scope (ADR-0028): applied as a post-filter on the vector/text
   // paths (whose backends only filter by project) and natively in the recency query.
+  // Memory docs absorbed into a synthesis (`compacted_into`, ADR-0059) are excluded from
+  // the hydrate preamble — their synthesis represents them; explicit search tools still
+  // reach them for deep recall.
   const byRepo = (rows: Record<string, unknown>[]) =>
-    repo === undefined ? rows : rows.filter((r) => (r.repo ?? null) === repo);
+    (repo === undefined ? rows : rows.filter((r) => (r.repo ?? null) === repo)).filter(
+      (r) => !r.compacted_into,
+    );
 
   // The vector branch loads the embedding model (seconds on first use). A fast caller
   // (e.g. a per-prompt hook) can skip it with useVector=false and go straight to the
@@ -63,7 +68,9 @@ async function relevant(
     // fall through to recency
   }
   try {
-    const query: Record<string, unknown> = { project };
+    // `compacted_into: null` also matches docs without the field, so the filter is a
+    // no-op on collections that don't carry the lifecycle flag (decisions, etc.).
+    const query: Record<string, unknown> = { project, compacted_into: null };
     if (repo !== undefined) query.repo = repo;
     return await store.db
       .collection(collection)
@@ -243,9 +250,33 @@ export async function hydrate(
     sections.memory = sec.count;
   }
   if (opts.decisions !== false) {
-    // Over-fetch, then drop deprecated/superseded and soft-TTL-lapsed ADRs (F4).
-    const hits = await relevant(store, "decisions", project, prompt, 8, useVector);
-    const split = partitionDecisions(hits);
+    // Rank by relevance (over-fetch), then ALWAYS union the most-recent ADRs so a
+    // freshly recorded decision is considered even when lexical/vector search ranked
+    // older ones first — relevant() stops at the first non-empty tier and may never
+    // reach its recency fallback. Recent-first + dedupe by id keeps new ADRs visible.
+    // Then drop deprecated/superseded and soft-TTL-lapsed ADRs (F4).
+    const decLimit = opts.limit ?? 6;
+    const ranked = await relevant(store, "decisions", project, prompt, Math.max(decLimit * 2, 8), useVector);
+    let recent: Record<string, unknown>[] = [];
+    try {
+      recent = await store.db
+        .collection("decisions")
+        .find({ project }, { projection: { embedding: 0 } })
+        .sort({ updated_at: -1 })
+        .limit(decLimit)
+        .toArray();
+    } catch {
+      // recency is best-effort; the ranked hits already cover the common case
+    }
+    const seen = new Set<string>();
+    const merged: Record<string, unknown>[] = [];
+    for (const d of [...recent, ...ranked]) {
+      const id = String(d.id ?? "");
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      merged.push(d);
+    }
+    const split = partitionDecisions(merged);
     needsReview = split.needsReview;
     // Best-effort: lapsed ADRs are surfaced even when retrieval didn't rank them.
     try {
@@ -266,7 +297,7 @@ export async function hydrate(
     } catch {
       // The retrieved-hits partition already covers the common case.
     }
-    const sec = renderDecisions(split.active.slice(0, 4), 1800);
+    const sec = renderDecisions(split.active.slice(0, decLimit), 1800);
     if (sec.text) parts.push(sec.text);
     sections.decisions = sec.count;
     if (needsReview.length) {

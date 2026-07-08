@@ -184,9 +184,12 @@ Run `aitl --help` (or `aitl <group> --help`) for full options. Top-level command
 | `aitl sdd` | SDD phase D: spec → design doc → task decomposition, persisted as linked memory artifacts. |
 | `aitl intervene` | Record a human intervention on a run (human-supervision metric). |
 | `aitl run-show` | Show a run's measurable totals: tokens, iterations, tool calls, gate denials, hydrate. |
-| `aitl run-host` | Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry. |
+| `aitl run-host` | Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry. Permissions travel explicitly on the argv (`--permission-mode`, `--allowed-tools`; `AITL_HOST_ARGS_<NAME>` for any host) — never via the target dir's settings/trust. |
 | `aitl orchestrate` | Decompose a task, run sub-agents in parallel, and synthesize the result. |
-| `aitl synthesize` | Compact a project's memory when it exceeds the configured limit. |
+| `aitl council` | Plan-council: several clients PROPOSE a plan, CRITIQUE each other anonymously against a weighted rubric, and an independent judge issues the verdict — before executing anything. Hosts run read-only. |
+| `aitl synthesize` | Rolling memory compression: fold the previous synthesis + only the new docs per category (map-reduce, nothing silently truncated). `--compact` archives absorbed sources out of the live memory (hydrate/trigger) without deleting them. |
+| `aitl sync` | Bidirectional markdown sync: Mongo ⇄ `.aitl/{memory,skills,agents}` + `docs/adr` (manifest-based; conflicts reported, never clobbered). |
+| `aitl module-brief` | Render a module's brief: module-map block + ACTIVE ADRs whose `components[]` match the dir + memories tagged `component:<dir>`. |
 | `aitl repomap` | Build the tree-sitter + PageRank repo map and print the top symbols. |
 | `aitl index-repo` | Master indexer: build repo map + ingest memory + sync ADRs in one pass. |
 | `aitl adr-sync` | Mirror Nygard-format ADRs from a directory into the `decisions` collection. |
@@ -201,10 +204,10 @@ Sub-command groups:
 
 | Group | Commands | Purpose |
 |---|---|---|
-| `aitl user` | `bootstrap`, `verify`, `list`, `create`, `set-role`, `disable` | Manage RBAC users (root-only mutations; audited). |
+| `aitl user` | `bootstrap`, `register`, `verify`, `list`, `create`, `set-role`, `disable` | Manage RBAC users (`register` is self-service; first real user becomes admin; audited). |
 | `aitl config` | `path`, `show`, `export`, `import`, `set`, `unset` | Manage the user-level config profile. |
 | `aitl prompt` | `add`, `list`, `search` | Durable prompt history (shared with the MCP). |
-| `aitl adr` | `history <id>` | Inspect ADR revision history (`--diff`). |
+| `aitl adr` | `history <id>`, `deprecate <id>` | Inspect ADR revision history (`--diff`); deprecate with a reason / `superseded_by` (soft lifecycle — excluded from hydrate, never deleted). |
 | `aitl memory` | `history <slug>` | Inspect memory revision history (`--diff`). |
 | `aitl software` | `add`, `list`, `get`, `rm` | Manage software (software → projects → repos). |
 | `aitl repo` | `add`, `list`, `get`, `rm` | Manage repos (the leaf of software → projects → repos). |
@@ -212,7 +215,8 @@ Sub-command groups:
 | `aitl role` | `seed`, `list`, `rm`, `gate-check` | Engineering roles (review/pair/gate) that assist the engineer's decision. |
 | `aitl review <target>` | — | Have engineering roles review a target → DecisionBrief. |
 | `aitl build` | `skill`, `agent`, `seed` | Construct skills/agents and seed the master skills. |
-| `aitl init` | `agent`, `claude` | Scaffold `AGENTS.md` / `CLAUDE.md` that wire an agent to this MCP. |
+| `aitl coord` | `claim`, `release`, `list`, `poll` | Minimal multi-agent coordination: task claims (heartbeat + TTL) + durable events + incremental polling. |
+| `aitl init` | *(bare)*, `agent`, `claude` | Onboard a repo into the harness in one idempotent command (DB + catalog + index + guides + hooks), or scaffold single guides. |
 
 ### Experimental comparison (thesis conditions)
 
@@ -223,18 +227,21 @@ skills, no gates) — vs **C2** — the default full harness. Compare the measur
 
 ## MCP tools
 
-`aitl mcp` registers roughly 40 tools, grouped by domain:
+`aitl mcp` registers 46 tools, grouped by domain:
 
 - **Memory** — `search_memory`, `write_memory`, `ingest_path`, `save_mcp_context`,
   `list_mcp_context`, `search_mcp_context`.
 - **Prompts** — `record_prompt`, `list_prompts`, `search_prompts`.
-- **Decisions (ADR)** — `list_decisions`, `record_decision`, `list_decision_versions`,
-  `get_decision_version`.
+- **Decisions (ADR)** — `list_decisions`, `record_decision`, `deprecate_decision`,
+  `list_decision_versions`, `get_decision_version`.
 - **Memory versions** — `list_memory_versions`, `get_memory_version`.
 - **Agents & skills** — `write_agent`, `get_agent`, `list_agents`, `search_agents`,
   `delete_agent`, and the same surface for skills (`write_skill`, `get_skill`,
   `list_skills`, `search_skills`, `delete_skill`).
-- **Repo map & graph** — `get_repomap`, `graphify`, `index_repo`, `build_definition`.
+- **Repo map & graph** — `get_repomap`, `get_module_map`, `get_module_brief`, `graphify`,
+  `index_repo`, `build_definition`.
+- **Coordination** — `claim_task`, `release_task`, `poll_events` (task claims with TTL +
+  durable events, RBAC resource `coordination`).
 - **Software / repo catalog** — `write_software`, `get_software`, `list_softwares`,
   `search_softwares`, `delete_software`, `write_repo`, `get_repo`, `list_repos`,
   `delete_repo`.

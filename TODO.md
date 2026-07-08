@@ -1,34 +1,34 @@
 # TODO — Anti-regresión de ADRs por módulo
 
+> Estado 2026-07-07: las capas 1 y 2 quedaron CONSTRUIDAS (ADR-0049 `components[]` +
+> ADR-0053 `module-brief`/mapa de módulos). Solo la capa 3 (guardia sobre el diff)
+> sigue abierta.
+
 Objetivo: que al diseñar o implementar un módulo se sumaricen las ADRs que lo
 restringen, para que el desarrollo no contradiga decisiones previas (*decision amnesia*).
 
-**Causa raíz:** hoy `hydrate` filtra las ADRs solo por `project` y cae a recencia
-(`renderDecisions`, `src/memory/lifecycle.ts`), así que puede omitir justo la ADR que
-restringe el módulo en curso. Las ADRs no tienen scope de componente: `record_decision`
-no expone `tags`/`components`.
+**Causa raíz (histórica):** `hydrate` filtraba las ADRs solo por `project` y caía a recencia
+(`renderDecisions`, `src/memory/lifecycle.ts`), así que podía omitir justo la ADR que
+restringe el módulo en curso.
 
 ---
 
-## 1. Dar scope de componente a las ADRs  *(base — desbloquea 2 y 3)*
+## 1. Dar scope de componente a las ADRs  *(CERRADA — ADR-0049)*
 
-- [ ] Añadir `components: string[]` al schema de `decisions` (`src/memory/schemas.ts`).
-- [ ] Exponerlo en el CLI/MCP `record_decision`.
-- [ ] Backfill de las ADRs existentes con sus componentes (`src/providers`, `src/orchestration`, …).
-- [ ] Registrar como una ADR propia, tomando el **next-free real** del ledger al hacer BUILD
-      (no se pinnea: el `0024` que este TODO reservaba ya lo tomó la ADR de RBAC; este trabajo de
-      component-scope tomará el id que toque cuando se escriba).
+- [x] `components: string[]` en el modelo de `decisions` (`src/models/decision.model.ts`).
+- [x] Expuesto en CLI/MCP `record_decision` (+ `aitl adr deprecate` con lifecycle).
+- [x] Backfill: los ADRs del ciclo v2 llevan `components`; los legados se completan al tocarlos.
+- [x] Registrado como ADR propia (0049, junto con anclaje a commit y ciclo de vida).
 
 > Con la recall semántica en español débil hasta el índice vectorial de Atlas (ADR-0010),
 > el match exacto por tag es lo fiable hoy → esta capa es tag-based, no semántica.
 
-## 2. Comando `aitl module-brief <dir|nombre>`  *(bloqueada por #1)*
+## 2. Comando `aitl module-brief <dir|nombre>`  *(CERRADA — ADR-0053)*
 
-- [ ] Jalar las ADRs + memoria-de-componente ligadas a un módulo (vía el campo `components`).
-- [ ] Renderizar como **checklist de invariantes** (haz/no hagas), no texto crudo: reducir
-      cada ADR a su decisión + consecuencia.
-- [ ] Reusar `relevant()` (`src/memory/lifecycle.ts`) filtrado por tag.
-- [ ] Opción: exponerlo también como sección extra de `hydrate --component`.
+- [x] ADRs ACTIVAS + memorias `component:<dir>` ligadas al módulo (prefix match por `components`).
+- [x] Render como bloque de invariantes del módulo (decisión + consecuencia, no texto crudo).
+- [x] Tools MCP `get_module_map` / `get_module_brief`; CLI `aitl module-brief <dir>`.
+- [x] `repomap --modules` (view/back/mixed/infra con override `.aitl/modules.json`).
 
 Ejemplo de salida:
 
@@ -40,7 +40,7 @@ Ejemplo de salida:
 - [ADR-0005] chatStream() es opcional y aditivo — no romper el fallback a chat().
 ```
 
-## 3. Guardia de regresión sobre el diff  *(bloqueada por #1)*
+## 3. Guardia de regresión sobre el diff  *(ABIERTA — ya desbloqueada por 0049/0053)*
 
 > La parte que de verdad **previene** regresión; las capas 1-2 solo informan.
 

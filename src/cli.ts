@@ -40,6 +40,14 @@ program
 // probes Mongo itself and DEGRADES to non-persistent deliberation when it is down.
 const NO_DB_COMMANDS = new Set(["interactive", "menu", "config", "init", "help", "check-db", "models", "council"]);
 
+// Commands that still do useful work WITHOUT Mongo: the host agent runs and only the
+// durable telemetry is skipped. For these a DB outage DEGRADES (warn + continue) instead
+// of aborting — losing a whole run to a transient outage is worse than losing its metrics.
+// This is exactly what corrupted the raytracer measurement (false gate-fails + lost work
+// when Atlas timed out mid-course). `run` (native loop) is NOT here: it persists every
+// iteration, so it keeps requiring Mongo rather than stalling mid-loop.
+const DEGRADABLE_COMMANDS = new Set(["run-host"]);
+
 // Resolve the working MongoDB URI (primary → fallback) once, before any DB command runs,
 // so every subcommand inherits the resilient local-and/or-Atlas connection.
 program.hook("preAction", async (_thisCommand, actionCommand) => {
@@ -55,6 +63,16 @@ program.hook("preAction", async (_thisCommand, actionCommand) => {
       console.error(`[aitl] primary MongoDB unreachable; using fallback: ${result.uri}`);
     }
   } catch (err) {
+    // A degradable command runs WITHOUT persistence (agent still executes; telemetry
+    // skipped). Signal it downstream via env and continue instead of aborting.
+    for (let cmd: Command | null = actionCommand; cmd; cmd = cmd.parent) {
+      if (DEGRADABLE_COMMANDS.has(cmd.name())) {
+        process.env.AITL_DB_DEGRADED = "1";
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error("[aitl] Mongo no disponible — corriendo SIN persistir telemetría (run degradado).");
+        return;
+      }
+    }
     // Fail fast with one clear message. Letting the command proceed just moves the
     // failure to the first DB access, where it surfaces as a confusing stall/stack.
     console.error(err instanceof Error ? err.message : String(err));
@@ -428,15 +446,39 @@ program
   .requiredOption("--host <host>", "Agent host to run over: claude-code | codex | antigravity")
   .option("--cwd <dir>", "Working directory for the host process.")
   .option("--timeout <ms>", "Kill the host after N ms.")
+  .option(
+    "--permission-mode <mode>",
+    "Explicit permission mode for the host CLI (claude-code: acceptEdits|plan|bypassPermissions; default acceptEdits).",
+  )
+  .option(
+    "--allowed-tools <list>",
+    'Tools to pre-approve, comma-separated (claude-code --allowedTools), e.g. "Bash(make:*),Bash(python3:*)".',
+  )
   .option("--no-record-prompt", "Do not persist the prompt to the durable history.")
   .option("--no-spec-synthesis", "Do not synthesize spec-classified runs into durable memory.")
   .description("Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry.")
   .action(async (task, opts) => {
     const { runOnHost } = await import("./hosts/run.js");
+    // Permission flags travel explicitly on the argv so the host never depends on the
+    // target directory's settings or folder trust (headless runs in an untrusted cwd
+    // would otherwise silently deny every tool). The two flags are claude-code syntax;
+    // other hosts take raw extra argv via AITL_HOST_ARGS_<NAME>.
+    const hostArgs: string[] = [];
+    if (opts.permissionMode) hostArgs.push("--permission-mode", opts.permissionMode);
+    if (opts.allowedTools) hostArgs.push("--allowedTools", opts.allowedTools);
+    if (hostArgs.length && opts.host !== "claude-code") {
+      console.error(
+        `[aitl run-host] --permission-mode/--allowed-tools are claude-code flags; for '${opts.host}' pass raw argv via AITL_HOST_ARGS_${opts.host.toUpperCase().replace(/-/g, "_")}.`,
+      );
+      process.exitCode = 1;
+      await closeClient();
+      return;
+    }
     const result = await runOnHost(task, opts.project, {
       host: opts.host,
       cwd: opts.cwd,
       timeoutMs: opts.timeout ? Number(opts.timeout) : undefined,
+      hostArgs: hostArgs.length ? hostArgs : undefined,
       recordPrompt: opts.recordPrompt, // commander sets false for --no-record-prompt
       synthesizeSpec: opts.specSynthesis, // commander sets false for --no-spec-synthesis
     });
@@ -579,6 +621,11 @@ program
   .requiredOption("--project <project>", "Project scope.")
   .option("--force", "Synthesize even if under the limit.", false)
   .option("--at <ref>", "Stamp the synthesis docs with this git ref's commit (provenance only, no historical rebuild).")
+  .option(
+    "--compact",
+    "Archive the absorbed sources out of the live memory (compacted_into ← synthesis slug): they leave hydrate and the growth trigger but stay searchable and versioned — nothing is deleted.",
+    false,
+  )
   .description("Compact a project's memory when it exceeds the configured limit.")
   .action(async (opts) => {
     let commitSha: string | undefined;
@@ -605,11 +652,23 @@ program
     }
     const { Synthesizer } = await import("./memory/synthesizer.js");
     const { MemoryStore } = await import("./memory/store.js");
-    const written = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
+    const report = await new Synthesizer(new MemoryStore(), llm).synthesize(opts.project, {
       force: opts.force,
+      compact: opts.compact,
       ...(commitSha !== undefined ? { commitSha } : {}),
     });
-    console.log(`Synthesis docs written: ${written.length ? written.join(", ") : "(none — under limit)"}`);
+    console.log(
+      `Synthesis docs written: ${report.written.length ? report.written.join(", ") : "(none — under limit)"}`,
+    );
+    for (const c of report.categories) {
+      const ratio = c.chars_before > 0 ? ` (${Math.round((100 * c.chars_after) / c.chars_before)}%)` : "";
+      console.log(
+        `  - ${c.category}: ${c.sources} source${c.sources === 1 ? "" : "s"}${c.folded ? " + previous synthesis" : ""}, ${c.chars_before} → ${c.chars_after} chars${ratio}`,
+      );
+    }
+    if (opts.compact && report.written.length) {
+      console.log(`Compacted sources (excluded from hydrate/trigger, never deleted): ${report.compacted}`);
+    }
     // Curation (F4): PROPOSE stale-ADR deprecations — never applied automatically.
     const { proposeDeprecations } = await import("./decisions/lifecycle.js");
     const proposals = await proposeDeprecations(opts.project);
@@ -1014,13 +1073,119 @@ config
 config
   .command("unset")
   .argument("<key>", "ENV-style key to remove.")
+  .option("--env", "Also comment the key out in ./.env (drops the old value).", false)
   .description("Remove a single key from the user-level config profile.")
-  .action(async (key) => {
-    const { readConfigFile, writeConfigFile } = await import("./config/store.js");
+  .action(async (key, opts) => {
+    const { ENV_KEYS, readConfigFile, writeConfigFile } = await import("./config/store.js");
+    if (!(ENV_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`Unknown key '${key}'. Known: ${ENV_KEYS.join(", ")}`);
+    }
     const profile = readConfigFile();
     delete (profile as Record<string, unknown>)[key];
     const path = await writeConfigFile(profile, { merge: false });
     console.log(`Unset ${key} in ${path}.`);
+    if (opts.env) {
+      const { updateEnvFile } = await import("./config/envfile.js");
+      const { join } = await import("node:path");
+      const envPath = join(process.cwd(), ".env");
+      await updateEnvFile(envPath, { [key]: null });
+      console.log(`Commented ${key} out in ${envPath}.`);
+    }
+  });
+
+// ── config profile (named overlays for work/personal contexts; ADR-0061) ────────
+const configProfile = config
+  .command("profile")
+  .description(
+    "Named config profiles (~/.aitl/profiles/<name>.json) overlaying the base config. " +
+      "Activation applies on the next process start; AITL_PROFILE overrides the manifest.",
+  );
+
+configProfile
+  .command("list")
+  .description("List profiles (active one marked with *).")
+  .action(async () => {
+    const { listProfiles } = await import("./config/profiles.js");
+    const rows = listProfiles();
+    if (!rows.length) {
+      console.log("(no profiles — create one with: aitl config profile create <name>)");
+      return;
+    }
+    for (const p of rows) {
+      console.log(`${p.active ? "*" : " "} ${p.name}  [${p.keys.join(", ") || "empty"}]`);
+    }
+  });
+
+configProfile
+  .command("create")
+  .argument("<name>", "Profile name (lowercase letters/digits/._-).")
+  .option("--from-current", "Seed the profile with a copy of the base config.json.", false)
+  .description("Create a profile (empty overlay by default).")
+  .action(async (name, opts) => {
+    const { readConfigFile } = await import("./config/store.js");
+    const { writeProfile } = await import("./config/profiles.js");
+    const seed = opts.fromCurrent ? (readConfigFile() as Record<string, string>) : {};
+    const path = await writeProfile(name, seed, { merge: false });
+    console.log(`Created profile '${name}' at ${path}${opts.fromCurrent ? " (seeded from config.json)" : ""}.`);
+  });
+
+configProfile
+  .command("set")
+  .argument("<name>", "Profile name.")
+  .argument("<key>", "ENV-style key (e.g. MONGODB_DB).")
+  .argument("<value>", "Value.")
+  .description("Set a single key in a profile (creates the profile when missing).")
+  .action(async (name, key, value) => {
+    const { writeProfile } = await import("./config/profiles.js");
+    const path = await writeProfile(name, { [key]: value });
+    console.log(`Set ${key} in profile '${name}' (${path}).`);
+  });
+
+configProfile
+  .command("show")
+  .argument("<name>", "Profile name.")
+  .option("--secrets", "Reveal secret values instead of masking them.", false)
+  .description("Print a profile's stored keys (secrets masked by default).")
+  .action(async (name, opts) => {
+    const { resolveProfileView } = await import("./config/profiles.js");
+    console.log(JSON.stringify(resolveProfileView(name, { includeSecrets: opts.secrets }), null, 2));
+  });
+
+configProfile
+  .command("use")
+  .argument("[name]", "Profile to activate.")
+  .option("--none", "Deactivate any profile (fall back to the base config).", false)
+  .description("Activate a profile (or --none). Changes apply on the next process start.")
+  .action(async (name, opts) => {
+    if ((name == null) === !opts.none) {
+      throw new Error("Pass a profile name or --none (exactly one).");
+    }
+    const { captureBootProfile, pendingRestartKeys } = await import("./config/store.js");
+    const { setActiveProfile } = await import("./config/profiles.js");
+    captureBootProfile(); // snapshot BEFORE switching → diff = keys that change
+    await setActiveProfile(opts.none ? null : name);
+    const diff = pendingRestartKeys();
+    console.log(`Active profile: ${opts.none ? "(none)" : name}.`);
+    if (process.env.AITL_PROFILE != null) {
+      console.warn(
+        `Note: AITL_PROFILE=${process.env.AITL_PROFILE || "(empty)"} is set in this environment and overrides the manifest.`,
+      );
+    }
+    if (diff.length) {
+      console.log(`Changed keys: ${diff.join(", ")} — restart running aitl processes to apply.`);
+    } else {
+      console.log("Effective config unchanged.");
+    }
+  });
+
+configProfile
+  .command("rm")
+  .argument("<name>", "Profile to delete.")
+  .description("Delete a profile (refuses to delete the active one).")
+  .action(async (name) => {
+    const { deleteProfile } = await import("./config/profiles.js");
+    const deleted = await deleteProfile(name);
+    console.log(deleted ? `Deleted profile '${name}'.` : `Profile '${name}' not found.`);
   });
 
 // ── ui (memory-admin: HTTP API + Vite dev server, launched together) ─────────────
@@ -1030,8 +1195,38 @@ program
   .option("--api-port <n>", "Port for the memory-admin API server.", "4317")
   .option("--web-port <n>", "Port for the Vite dev server.", "5317")
   .option("--no-web", "Start only the API (skip the Vite dev server).")
+  .option(
+    "--watch-restart",
+    "Supervise the UI and respawn it when it exits with the restart code (75) — enables the web UI's 'restart now' button (ADR-0061).",
+    false,
+  )
   .description("Launch the memory-admin UI: the HTTP API and the Vite dev server together.")
   .action(async (opts) => {
+    if (opts.watchRestart) {
+      // Supervisor: respawn this same CLI invocation (minus the flag) while the
+      // child exits with the restart code; any other exit code is final.
+      const { spawn } = await import("node:child_process");
+      const { shouldRespawn } = await import("./server/ui.js");
+      const childArgs = [
+        ...process.execArgv,
+        ...process.argv.slice(1).filter((a) => a !== "--watch-restart"),
+      ];
+      for (;;) {
+        const code: number | null = await new Promise((resolve) => {
+          const child = spawn(process.execPath, childArgs, {
+            stdio: "inherit",
+            env: { ...process.env, AITL_UI_SUPERVISED: "1" },
+          });
+          child.on("exit", (c) => resolve(c));
+          child.on("error", (err) => {
+            console.error(`[ui] supervisor failed to spawn: ${err.message}`);
+            resolve(1);
+          });
+        });
+        if (!shouldRespawn(code)) process.exit(code ?? 0);
+        console.log(`[ui] restart requested (exit ${code}) — respawning…`);
+      }
+    }
     const { startUi } = await import("./server/ui.js");
     await startUi({
       apiPort: Number(opts.apiPort),
@@ -1998,11 +2193,17 @@ Examples:
   aitl run-host "implement the spec in SPEC.md" --project demo --host claude-code
   aitl run-host "refactor utils" --project demo --host codex --cwd ./packages/core
   aitl run-host "draft notes" --project demo --host claude-code --no-spec-synthesis
+  aitl run-host "build it" --project demo --host claude-code \\
+    --allowed-tools "Bash(make:*),Bash(python3:*)"
 
 Notes:
   Runs the task OVER an external agent host, wrapped with durable context + telemetry.
   Claude Code reports measured tokens/cost/turns (via --output-format json). Spec-shaped
-  prompts are auto-classified, persisted, and synthesized with the outcome. No model key needed.`,
+  prompts are auto-classified, persisted, and synthesized with the outcome. No model key needed.
+  Permissions travel EXPLICITLY on the argv (never via the target dir's settings/trust):
+  claude-code defaults to --permission-mode acceptEdits; pre-approve more tools with
+  --allowed-tools, or override everything with --permission-mode. Any host also accepts
+  raw extra argv via AITL_HOST_ARGS_<NAME> (e.g. AITL_HOST_ARGS_CLAUDE_CODE).`,
 
   "orchestrate": `
 Examples:
@@ -2015,14 +2216,20 @@ Notes:
 Examples:
   aitl synthesize --project demo
   aitl synthesize --project demo --force
+  aitl synthesize --project demo --force --compact     # sources leave the live memory
   aitl synthesize --project demo --force --at v1.2.0   # stamp docs with that ref's commit
 
 Notes:
   Compacts the memory bank by category when it exceeds the configured limit (--force
-  ignores the limit). Never touches ADRs. --at resolves any git ref and stamps its
-  commit_sha on the synthesis docs (provenance only — no historical reconstruction).
-  Afterwards it PROPOSES stale-ADR deprecations (superseded_by set, review_after
-  lapsed, near-duplicate titles); apply them manually with \`aitl adr deprecate\`.`,
+  ignores the limit). Rolling compression: each run folds the previous synthesis plus
+  only the docs that accumulated since. With a model the summary is map-reduced over
+  bounded chunks (nothing silently truncated); without one it degrades to extractive.
+  --compact stamps the absorbed sources with compacted_into so they leave hydrate and
+  the growth trigger — they stay searchable/versioned; NOTHING is deleted. Never
+  touches ADRs. --at resolves any git ref and stamps its commit_sha on the synthesis
+  docs (provenance only — no historical reconstruction). Afterwards it PROPOSES
+  stale-ADR deprecations (superseded_by set, review_after lapsed, near-duplicate
+  titles); apply them manually with \`aitl adr deprecate\`.`,
 
   "repomap": `
 Examples:

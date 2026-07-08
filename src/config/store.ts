@@ -14,7 +14,29 @@
 import { promises as fs, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import dotenv from "dotenv";
 import { updateEnvFile } from "./envfile.js";
+
+// ── dotenv with provenance (ADR-0061) ────────────────────────────────────────
+// `.env` used to load via `import "dotenv/config"` in config.ts, which made
+// repo-local `.env` values indistinguishable from real process env — a `.env`
+// would permanently eclipse any named profile. Loading it here records which
+// keys dotenv ADDED (vs. vars already set by the caller/CI/supervisor), so the
+// layering can slot the active profile ABOVE `.env` but BELOW real env.
+const PRE_DOTENV_KEYS = new Set(Object.keys(process.env));
+dotenv.config();
+const DOTENV_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(process.env).filter((k) => !PRE_DOTENV_KEYS.has(k)),
+);
+
+let _dotenvKeysOverride: ReadonlySet<string> | null = null;
+/** Tests only: override which keys count as dotenv-provided (null restores). */
+export function _setDotenvKeysForTests(keys: ReadonlySet<string> | null): void {
+  _dotenvKeysOverride = keys;
+}
+function dotenvKeys(): ReadonlySet<string> {
+  return _dotenvKeysOverride ?? DOTENV_KEYS;
+}
 
 /** Canonical ENV keys the harness understands (kept in sync with `.env.example`). */
 export const ENV_KEYS = [
@@ -54,6 +76,7 @@ export const ENV_KEYS = [
   // reads it from process.env, so a profile-only change applies on the next start
   // (the .env mirror covers repo-local runs).
   "AITL_WEB_ORIGINS",
+  "AITL_WEB_ALLOW_SIGNUP",
 ] as const;
 
 export type EnvKey = (typeof ENV_KEYS)[number];
@@ -175,17 +198,147 @@ export async function applyConfigUpdates(
   return { profilePath, envPath, keys: Object.keys(normalized) };
 }
 
+// ── Named profiles (ADR-0061) ────────────────────────────────────────────────
+// A profile is an OVERLAY: it only pins the keys it defines (typically the
+// MONGODB_* trio for a work/personal context); everything else falls through to
+// the base config.json. Selection: the AITL_PROFILE env var ("" = explicitly
+// none) wins over the manifest's `active`.
+
+export const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+
+export function profilesDir(): string {
+  return join(configDir(), "profiles");
+}
+
+export function profilesManifestPath(): string {
+  return join(configDir(), "profiles.json");
+}
+
+export interface ProfilesManifest {
+  active: string | null;
+}
+
+/** Read the manifest. `{ active: null }` when missing/malformed (never throws). */
+export function readProfilesManifest(): ProfilesManifest {
+  const path = profilesManifestPath();
+  if (!existsSync(path)) return { active: null };
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const active =
+      typeof parsed.active === "string" && PROFILE_NAME_RE.test(parsed.active) ? parsed.active : null;
+    return { active };
+  } catch {
+    return { active: null };
+  }
+}
+
+export async function writeProfilesManifest(manifest: ProfilesManifest): Promise<string> {
+  const path = profilesManifestPath();
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
+  return path;
+}
+
+export function profileFilePath(name: string): string {
+  return join(profilesDir(), `${name}.json`);
+}
+
+/** Read one profile overlay. `{}` when missing/malformed/invalid name (never throws). */
+export function readProfileFile(name: string): ConfigProfile {
+  if (!PROFILE_NAME_RE.test(name)) return {};
+  const path = profileFilePath(name);
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const out: ConfigProfile = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (ENV_KEY_SET.has(k) && v != null) out[k as EnvKey] = String(v);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** The active profile name: AITL_PROFILE env ("" = explicitly none) > manifest. */
+export function activeProfileName(): string | null {
+  const fromEnv = process.env.AITL_PROFILE;
+  if (fromEnv != null) {
+    const name = fromEnv.trim();
+    return name !== "" && PROFILE_NAME_RE.test(name) ? name : null;
+  }
+  return readProfilesManifest().active;
+}
+
+export function readActiveProfileLayer(): ConfigProfile {
+  const name = activeProfileName();
+  return name ? readProfileFile(name) : {};
+}
+
+// ── Layered resolution ───────────────────────────────────────────────────────
+
+export type ConfigSource = "env" | "profile" | "dotenv" | "file";
+
+export interface ConfigLayers {
+  env: NodeJS.ProcessEnv;
+  dotenvKeys: ReadonlySet<string>;
+  profile: ConfigProfile;
+  file: ConfigProfile;
+}
+
 /**
- * The effective profile = env over file, mapped to ENV keys. Secrets are masked
+ * Pure layered lookup: real env > active profile > `.env` (dotenv) > config.json.
+ * Empty strings are "unset" at every layer (see config.ts).
+ */
+export function layerLookup(
+  key: string,
+  layers: ConfigLayers,
+): { value?: string; source?: ConfigSource } {
+  const fromEnv = layers.env[key];
+  const hasEnv = fromEnv != null && fromEnv !== "";
+  if (hasEnv && !layers.dotenvKeys.has(key)) return { value: fromEnv, source: "env" };
+  const fromProfile = layers.profile[key as EnvKey];
+  if (fromProfile != null && fromProfile !== "") return { value: fromProfile, source: "profile" };
+  if (hasEnv) return { value: fromEnv, source: "dotenv" };
+  const fromFile = layers.file[key as EnvKey];
+  if (fromFile != null && fromFile !== "") return { value: fromFile, source: "file" };
+  return {};
+}
+
+function currentLayers(): ConfigLayers {
+  return {
+    env: process.env,
+    dotenvKeys: dotenvKeys(),
+    profile: readActiveProfileLayer(),
+    file: readConfigFile(),
+  };
+}
+
+/** Effective value for one ENV key across all layers ("" treated as unset). */
+export function resolvedEnv(key: string): string | undefined {
+  return layerLookup(key, currentLayers()).value;
+}
+
+/** Which layer produced each effective key (provenance hints for the web UI). */
+export function resolveProfileSources(): Partial<Record<EnvKey, ConfigSource>> {
+  const layers = currentLayers();
+  const out: Partial<Record<EnvKey, ConfigSource>> = {};
+  for (const key of ENV_KEYS) {
+    const { source } = layerLookup(key, layers);
+    if (source) out[key] = source;
+  }
+  return out;
+}
+
+/**
+ * The effective profile across all layers, mapped to ENV keys. Secrets are masked
  * unless `includeSecrets` is set (so `config export` is safe to share by default).
  */
 export function resolveProfile(opts: { includeSecrets?: boolean } = {}): ConfigProfile {
-  const file = readConfigFile();
+  const layers = currentLayers();
   const out: ConfigProfile = {};
   for (const key of ENV_KEYS) {
-    // Empty env vars don't shadow stored profile values (see config.ts).
-    const fromEnv = process.env[key];
-    const value = fromEnv != null && fromEnv !== "" ? fromEnv : file[key];
+    const { value } = layerLookup(key, layers);
     if (value == null || value === "") continue;
     if (!opts.includeSecrets && SECRET_KEYS.has(key)) out[key] = maskSecret(value);
     else if (!opts.includeSecrets && (key === "MONGODB_URI" || key === "MONGODB_URI_FALLBACK"))
@@ -193,4 +346,29 @@ export function resolveProfile(opts: { includeSecrets?: boolean } = {}): ConfigP
     else out[key] = value;
   }
   return out;
+}
+
+// ── Boot snapshot → pending-restart detection (ADR-0061) ────────────────────
+// `settings` (config.ts) freezes at import and the Mongoose connection pins its
+// URI/dbName at boot (ADR-0048), so "what runs" is exactly the resolution at
+// process start. Diffing a fresh resolution against this snapshot yields the
+// keys whose new values only apply after a restart. Only key NAMES ever leave
+// this module through the API.
+let _bootProfile: ConfigProfile | null = null;
+
+/** Snapshot the effective config at boot (call once, before serving requests). */
+export function captureBootProfile(): void {
+  _bootProfile = resolveProfile({ includeSecrets: true });
+}
+
+/** Keys whose on-disk value now differs from the booted process (names only). */
+export function pendingRestartKeys(): EnvKey[] {
+  const boot = _bootProfile;
+  if (!boot) return [];
+  const now = resolveProfile({ includeSecrets: true });
+  return ENV_KEYS.filter((key) => boot[key] !== now[key]);
+}
+
+export function _resetBootProfileForTests(): void {
+  _bootProfile = null;
 }

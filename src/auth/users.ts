@@ -283,6 +283,81 @@ export async function registerUser(
   return { username, email, role, disabled: false, created_at: now, updated_at: now };
 }
 
+/** Any REAL user yet? (the auto-generated `local-root` bootstrap does not count). */
+export async function hasRealUsers(): Promise<boolean> {
+  await ensureMongoose();
+  return (await UserModel.countDocuments({ username: { $ne: "local-root" } })) > 0;
+}
+
+/** First-boot setup already completed — `POST /api/setup/root` answers 409 with this. */
+export class SetupClosedError extends Error {
+  constructor() {
+    super("setup closed: a real user already exists");
+    this.name = "SetupClosedError";
+  }
+}
+
+/**
+ * First-boot setup (ADR-0061): create THE root account from the web wizard.
+ * Unlike {@link registerUser} (first real user → admin), this runs only while the
+ * DB has no real user at all and grants `root` directly — the API restricts the
+ * endpoint to loopback callers in setup mode. Audited as `setup.root`.
+ */
+export async function createSetupRoot(
+  seed: Omit<UserSeed, "role">,
+  opts: RegisterUserOpts = {},
+): Promise<PublicUser> {
+  const audit = opts.audit ?? recordAudit;
+  const source = opts.source ?? "web";
+  validateUserSeed({ ...seed, role: undefined });
+  const username = normalizeUsername(seed.username);
+  const email = normalizeEmail(seed.email);
+  await ensureMongoose();
+
+  if (await hasRealUsers()) {
+    await audit({
+      actor_id: `user:${username}`,
+      actor_role: "user",
+      source,
+      action: "setup.root",
+      resource: `user:${username}`,
+      ok: false,
+      reason: "setup closed (real users exist)",
+    });
+    throw new SetupClosedError();
+  }
+
+  const now = new Date();
+  try {
+    await UserModel.create({
+      username,
+      email,
+      role: "root",
+      ...hashPassword(seed.password),
+      disabled: false,
+      created_at: now,
+      updated_at: now,
+    });
+  } catch (err) {
+    // E11000 here means a clash with the local-root bootstrap identifiers or a
+    // concurrent setup — map it like registerUser so the wizard can distinguish.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/E11000/.test(msg)) throw new RegistrationConflictError(/email/i.test(msg) ? "email" : "username");
+    throw err;
+  }
+
+  await audit({
+    actor_id: `user:${username}`,
+    actor_role: "root",
+    source,
+    action: "setup.root",
+    resource: `user:${username}`,
+    ok: true,
+    reason: "first-boot root created",
+  });
+  return { username, email, role: "root", disabled: false, created_at: now, updated_at: now };
+}
+
 export async function setUserRole(username: string, role: string): Promise<PublicUser> {
   const newRole = validateRole(role);
   const uname = normalizeUsername(username);

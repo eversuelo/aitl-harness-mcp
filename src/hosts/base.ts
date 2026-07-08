@@ -49,6 +49,14 @@ export interface CliHostSpec {
    */
   readonlyArgs?: string[];
   /**
+   * Explicit permission posture for NORMAL (write-capable) delegated runs, so the host
+   * never depends on per-directory settings or folder trust — headless runs in an
+   * untrusted cwd would otherwise silently deny every tool. Suppressed when the caller
+   * already passes `--permission-mode` (via extraArgs or AITL_HOST_ARGS_<NAME>) and in
+   * readonly mode (readonlyArgs governs there).
+   */
+  writeArgs?: string[];
+  /**
    * Parse the host's stdout into final text + measured token usage + meta. Hosts emit
    * different structured formats (e.g. Claude Code `--output-format json`); when omitted
    * the raw stdout is the final text and no metrics are captured. Best-effort: a throw or
@@ -99,6 +107,9 @@ export const HOST_SPECS: Record<string, CliHostSpec> = {
     promptVia: "stdin",
     parse: parseClaudeJson,
     readonlyArgs: ["--permission-mode", "plan"],
+    // Delegating a coding task implies accepting its edits; Bash and other tools stay
+    // gated unless the caller pre-approves them (--allowed-tools / AITL_HOST_ARGS_*).
+    writeArgs: ["--permission-mode", "acceptEdits"],
   },
   codex: {
     command: "codex",
@@ -109,14 +120,28 @@ export const HOST_SPECS: Record<string, CliHostSpec> = {
   antigravity: { command: "agy", args: ["run"], promptVia: "stdin" },
 };
 
-/** Apply `readonlyArgs` to a spec (inserted before a trailing `-` stdin marker, if any). */
-function withReadonly(spec: CliHostSpec): CliHostSpec {
-  if (!spec.readonlyArgs?.length) return spec;
+/** Insert extra argv into a spec, before a trailing `-` stdin marker if there is one. */
+function insertArgs(spec: CliHostSpec, extra: string[] | undefined): CliHostSpec {
+  if (!extra?.length) return spec;
   const args = [...spec.args];
   const at = args.length > 0 && args[args.length - 1] === "-" ? args.length - 1 : args.length;
-  args.splice(at, 0, ...spec.readonlyArgs);
+  args.splice(at, 0, ...extra);
   return { ...spec, args };
 }
+
+/** Split an `AITL_HOST_ARGS_<NAME>` value into argv, respecting single/double quotes. */
+export function splitHostArgs(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  // biome-ignore lint: assignment-in-condition is the idiomatic regex-exec loop
+  while ((m = re.exec(value)) !== null) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return out;
+}
+
+const hostEnvKey = (name: string, kind: "CMD" | "ARGS"): string =>
+  `AITL_HOST_${kind}_${name.toUpperCase().replace(/-/g, "_")}`;
 
 /** A host backed by a headless CLI invocation. */
 export class CliHostAdapter implements HostAdapter {
@@ -181,16 +206,49 @@ export class CliHostAdapter implements HostAdapter {
   }
 }
 
+export interface GetHostOpts {
+  /** Read-only / plan mode (plan-council, ADR-0003): readonlyArgs are applied LAST so they win. */
+  readonly?: boolean;
+  /** Extra argv for the host CLI (e.g. explicit `--allowedTools` / `--permission-mode`). */
+  extraArgs?: string[];
+}
+
 /**
- * Resolve a known host by name, honoring an `AITL_HOST_CMD_<NAME>` command override.
- * `readonly: true` adds the host's read-only/plan flag (when the spec defines one).
+ * Pure argv resolution for a host invocation (exported for tests). Layering, in order:
+ *
+ *   spec.args → spec.writeArgs (only non-readonly, and only when nothing else already
+ *   sets --permission-mode) → AITL_HOST_ARGS_<NAME> (env) → opts.extraArgs →
+ *   spec.readonlyArgs (only readonly, LAST so read-only always wins — ADR-0055)
+ *
+ * The permission posture thus never depends on the target directory's settings or
+ * folder trust: it always travels explicitly on the argv.
  */
-export function getHost(name: string, opts: { readonly?: boolean } = {}): HostAdapter {
-  let spec = HOST_SPECS[name];
-  if (!spec) {
+export function resolveHostSpec(
+  name: string,
+  opts: GetHostOpts = {},
+  env: NodeJS.ProcessEnv = process.env,
+): CliHostSpec {
+  const base = HOST_SPECS[name];
+  if (!base) {
     throw new Error(`Unknown host '${name}'. Known hosts: ${Object.keys(HOST_SPECS).join(", ")}.`);
   }
-  if (opts.readonly) spec = withReadonly(spec);
-  const override = process.env[`AITL_HOST_CMD_${name.toUpperCase().replace(/-/g, "_")}`];
-  return new CliHostAdapter(name, override ? { ...spec, command: override } : spec);
+  const envArgs = splitHostArgs(env[hostEnvKey(name, "ARGS")]);
+  const extra = opts.extraArgs ?? [];
+  const explicitMode = [...envArgs, ...extra].includes("--permission-mode");
+  let spec = base;
+  if (!opts.readonly && !explicitMode) spec = insertArgs(spec, base.writeArgs);
+  spec = insertArgs(spec, envArgs);
+  spec = insertArgs(spec, extra);
+  if (opts.readonly) spec = insertArgs(spec, base.readonlyArgs);
+  const override = env[hostEnvKey(name, "CMD")];
+  return override ? { ...spec, command: override } : spec;
+}
+
+/**
+ * Resolve a known host by name, honoring `AITL_HOST_CMD_<NAME>` (command override) and
+ * `AITL_HOST_ARGS_<NAME>` (extra argv). `readonly: true` adds the host's read-only/plan
+ * flag (when the spec defines one) after everything else, so it always wins.
+ */
+export function getHost(name: string, opts: GetHostOpts = {}): HostAdapter {
+  return new CliHostAdapter(name, resolveHostSpec(name, opts));
 }
