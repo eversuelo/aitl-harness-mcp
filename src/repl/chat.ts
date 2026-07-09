@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Provider } from "../providers/base.js";
 import { getProvider, getProviderWithFallback, providerStatus } from "../providers/base.js";
+import { listenForEscape } from "./escape.js";
 import { appendHistory, expandFileMentions, historyFile, loadHistory } from "./history.js";
 import { AnsiMarkdownStream, markdownEnabledByDefault, renderMarkdownAnsi } from "./markdown.js";
 
@@ -149,9 +150,40 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
   // Install the default tools + gates NOW (not at the first turn) so /tools shows
   // the real registry and /call works — always through the gates, never around them.
   {
-    const { ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
+    const { EditFileTool, ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
     const { ShellTool } = await import("../tools/shell.js");
-    for (const t of [new ReadFileTool(), new WriteFileTool(), new ShellTool()]) defaultRegistry.register(t);
+    for (const t of [new ReadFileTool(), new EditFileTool(), new WriteFileTool(), new ShellTool()])
+      defaultRegistry.register(t);
+    // The LLM can mount MCP servers itself, LIVE: mounted tools land in this same
+    // registry and the loop re-reads `registry.schemas()` every iteration, so they
+    // are callable from the next turn on — no chat restart (mirrors `/mcp add`).
+    defaultRegistry.register({
+      name: "mcp_add",
+      description:
+        "Mount an MCP server into this chat session (live, no restart): its tools become available " +
+        "as mcp__<name>__<tool> on your NEXT turn. The server is persisted to .mcp.json.",
+      requiresApproval: true, // spawns a child process — subject to --ask (ADR-0040)
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          command: { type: "string" },
+          args: { type: "array", items: { type: "string" } },
+        },
+        required: ["name", "command"],
+      },
+      run: async (args: Record<string, unknown>) => {
+        const name = String(args.name);
+        const spec = {
+          command: String(args.command),
+          args: Array.isArray(args.args) ? args.args.map(String) : [],
+          env: {},
+        };
+        const st = await mcp.mount(name, spec); // si no arranca, no se persiste
+        upsertMcpServer(manifestPath, name, spec);
+        return `mounted '${st.name}' (${st.tools} tools) — call them as mcp__${st.name}__<tool> from your next turn`;
+      },
+    });
     const { installDefaultGates } = await import("../hooks/gates.js");
     installDefaultGates(defaultRegistry); // idempotent per registry
   }
@@ -166,7 +198,7 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
       }${opts.ask ? " · ask ✓" : ""}`,
     ),
   );
-  console.log(dim("  /help para comandos\n"));
+  console.log(dim("  /help para comandos · esc interrumpe el turno\n"));
 
   let runId: string | null = null;
   let ask = Boolean(opts.ask);
@@ -419,9 +451,18 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
       // and a fresh turn never inherits a half-open fence from the previous one.
       const md = new AnsiMarkdownStream({ enabled: mdOn });
       const t0 = Date.now();
+      // ESC aborts THIS turn only (the REPL and the run survive; ^C still kills all).
+      const interrupt = new AbortController();
+      const stopEsc = listenForEscape(() => {
+        if (interrupt.signal.aborted) return;
+        stopSpin();
+        process.stdout.write(`\n${DIM}(esc — interrumpiendo el turno…)${RESET}\n`);
+        interrupt.abort();
+      });
       try {
         const result = await runAgent(prompt, opts.project, {
           provider,
+          signal: interrupt.signal,
           installDefaultTools: true,
           summarize: false, // a summary per REPL turn is noise; run-show has the transcript
           onDelta: (d) => {
@@ -469,9 +510,14 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
             }${result.gate_denials ? ` · ${result.gate_denials} vetos` : ""} · run ${result.run_id.slice(0, 8)}`,
           )}\n\n`,
         );
+        if (result.stop_reason === "interrupted") {
+          process.stdout.write(dim("  (turno interrumpido — escribe para continuar el mismo run)\n\n"));
+        }
       } catch (err) {
         stopSpin();
         console.error(`\n${RED}error:${RESET} ${String(err instanceof Error ? err.message : err)}\n`);
+      } finally {
+        stopEsc(); // detach the ESC listener and restore stdin for the next prompt
       }
     }
   } finally {

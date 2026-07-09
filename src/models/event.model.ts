@@ -39,6 +39,8 @@ const EVENT_TYPES = [
   "stall",
   "budget",
   "reflection",
+  // caller abort (ESC in the chat REPL): the run ended `interrupted`, resumable.
+  "interrupt",
   "error",
   "resume",
   "spawn",

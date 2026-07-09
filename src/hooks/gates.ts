@@ -19,7 +19,7 @@ function globMatch(value: string, pattern: string): boolean {
 /** Deny filesystem writes to any path matching one of `patterns`. */
 export function denyPathsGate(patterns: string[]): SyncPermissionGate {
   return (name, args) => {
-    if (name === "write_file" || name === "shell") {
+    if (name === "write_file" || name === "edit_file" || name === "shell") {
       const path = String(args.path ?? "");
       const target = `${path} ${String(args.command ?? "")}`;
       for (const pat of patterns) {

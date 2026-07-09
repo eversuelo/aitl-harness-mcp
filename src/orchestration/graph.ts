@@ -31,7 +31,7 @@ import {
   resolveLoopPolicy,
 } from "./loopspec.js";
 import { STALL_FEEDBACK, StallTracker, progressSignature, workspaceDigest } from "./stall.js";
-import { consumeStream } from "./stream.js";
+import { consumeStream, StreamInterrupted } from "./stream.js";
 
 export interface RunAgentOpts {
   provider?: Provider;
@@ -107,6 +107,10 @@ export interface RunAgentOpts {
    *  or an inline spec. Explicit opts above override spec fields; the resolved
    *  `loop_spec@version` is stamped into the run's `harness_config` (traceability). */
   loopSpec?: string | LoopSpec;
+  /** Caller abort (ESC in the chat REPL): stops the loop cleanly at the next checkpoint —
+   *  mid-stream, between tool calls, or at the iteration top. The run ends `interrupted`
+   *  with a coherent transcript, so `resume` can continue it. */
+  signal?: AbortSignal;
 }
 
 export interface VerifyCtx {
@@ -127,7 +131,8 @@ export type RunStopReason =
   | "max_iters" // iteration window exhausted; final verification did not pass
   | "verify_exhausted" // all verify rounds spent without passing
   | "stalled" // no progress across iterations, twice
-  | "budget"; // token/wall-clock budget breached (after the wrap-up turn)
+  | "budget" // token/wall-clock budget breached (after the wrap-up turn)
+  | "interrupted"; // caller abort (ESC in the chat REPL); the run stays resumable
 
 export interface RunAgentResult {
   run_id: string;
@@ -234,9 +239,10 @@ export async function runAgent(
   // Default safety gates are on unless explicitly disabled, so `runAgent` is safe even
   // when used as a library (not just via the CLI).
   if (opts.installDefaultTools) {
-    const { ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
+    const { EditFileTool, ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
     const { ShellTool } = await import("../tools/shell.js");
-    for (const t of [new ReadFileTool(), new WriteFileTool(), new ShellTool()]) registry.register(t);
+    for (const t of [new ReadFileTool(), new EditFileTool(), new WriteFileTool(), new ShellTool()])
+      registry.register(t);
   }
   if (opts.gates !== false) {
     installDefaultGates(registry); // idempotent per registry
@@ -470,8 +476,20 @@ export async function runAgent(
     );
   };
 
+  // Caller abort: audit trail for every interrupt checkpoint that fires.
+  const noteInterrupt = async () =>
+    store.logEvent(await makeEvent({ project, run_id: runId, type: "interrupt", payload: { iter: it } }));
+
   try {
     for (; ; it++) {
+      // Interrupt checkpoint (iteration top): the transcript is coherent here, so the
+      // run ends `interrupted` and stays resumable.
+      if (opts.signal?.aborted) {
+        stopReason = "interrupted";
+        await noteInterrupt();
+        break;
+      }
+
       // Budget gate (#3): on breach, ONE final no-tools wrap-up turn instead of a hard cut.
       const breach = budgetBreached(policy.budgets, {
         tokens: tokIn + tokOut,
@@ -537,23 +555,37 @@ export async function runAgent(
       const onDelta = opts.onDelta;
       const doTurn = () =>
         onDelta && provider.chatStream
-          ? consumeStream(provider.chatStream(convo, { tools: registry.schemas(), system }), onDelta)
+          ? consumeStream(provider.chatStream(convo, { tools: registry.schemas(), system }), onDelta, {
+              signal: opts.signal,
+            })
           : provider.chat(convo, { tools: registry.schemas(), system });
-      const turn = await withRetry(
-        doTurn,
-        {
-          retries: opts.retries ?? 3,
-          onRetry: async ({ attempt, delayMs, error }) =>
-            store.logEvent(
-              await makeEvent({
-                project,
-                run_id: runId,
-                type: "retry",
-                payload: { iter: it, attempt, delay_ms: delayMs, error: String(error).slice(0, 200) },
-              }),
-            ),
-        },
-      );
+      let turn: Awaited<ReturnType<typeof doTurn>>;
+      try {
+        turn = await withRetry(
+          doTurn,
+          {
+            retries: opts.retries ?? 3,
+            onRetry: async ({ attempt, delayMs, error }) =>
+              store.logEvent(
+                await makeEvent({
+                  project,
+                  run_id: runId,
+                  type: "retry",
+                  payload: { iter: it, attempt, delay_ms: delayMs, error: String(error).slice(0, 200) },
+                }),
+              ),
+          },
+        );
+      } catch (err) {
+        // Interrupt checkpoint (mid-stream): the in-flight turn is discarded — nothing
+        // of it was persisted — so the transcript stays coherent and resumable.
+        if (err instanceof StreamInterrupted) {
+          stopReason = "interrupted";
+          await noteInterrupt();
+          break;
+        }
+        throw err;
+      }
       idx += 1;
       await store.appendMessage(
         await makeMessage({
@@ -600,7 +632,27 @@ export async function runAgent(
       }
 
       convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
+      let interruptedInTools = false;
       for (const call of turn.tool_calls) {
+        // Interrupt checkpoint (between tool calls): pending calls never execute, but
+        // each still gets a synthetic result — a dangling tool_call would corrupt the
+        // transcript for `resume` and the next provider round-trip.
+        if (opts.signal?.aborted) {
+          interruptedInTools = true;
+          idx += 1;
+          await store.appendMessage(
+            await makeMessage({
+              project,
+              run_id: runId,
+              idx,
+              role: "tool",
+              content: "[interrupted by user — tool not executed]",
+              tool_call_id: call.id ?? null,
+            }),
+          );
+          convo.push({ role: "tool", tool_call_id: call.id, content: "[interrupted by user — tool not executed]" });
+          continue;
+        }
         let denyReason: string | null = null;
         opts.onTool?.({ name: call.name, args: call.input ?? {}, phase: "start" });
         const toolT0 = Date.now();
@@ -658,6 +710,11 @@ export async function runAgent(
           );
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: result });
+      }
+      if (interruptedInTools) {
+        stopReason = "interrupted";
+        await noteInterrupt();
+        break;
       }
 
       // Stall detection (#2): same tool calls + unchanged workspace across consecutive
