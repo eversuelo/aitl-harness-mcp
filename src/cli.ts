@@ -282,6 +282,7 @@ program
   .option("--ask", "Confirm side-effect tools before they run (y/n/always).")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
   .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
+  .option("--no-markdown", "Print model output raw instead of ANSI-rendered markdown.")
   .description("Claude Code–style chat over the agent loop (streams, tool trace, /help; ADR-0003).")
   .action(async (opts) => {
     const { chatRepl } = await import("./repl/chat.js");
@@ -294,6 +295,8 @@ program
         ask: Boolean(opts.ask),
         askPolicy: opts.askFallback === "allow" ? "allow" : "deny",
         mcp: opts.mcp,
+        // `--no-markdown` forces raw; otherwise the REPL auto-detects (TTY && !NO_COLOR).
+        ...(opts.markdown === false ? { markdown: false } : {}),
       });
     } catch (err) {
       // Config errors (no LLM set up) deserve a hint, not a stack trace.
@@ -764,9 +767,9 @@ program
 
 program
   .command("export")
-  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown")
+  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown | tasks")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--root <dir>", "Repo root to write tool files into.", ".")
+  .option("--root <dir>", "Repo root to write tool files into (for 'tasks': the export dir → <root>/tasks/*.md).", ".")
   .description("Project the canonical artifacts into a tool's native format (incremental).")
   .action(async (opts) => {
     const { getAdapter, loadCanon } = await import("./adapters/base.js");

@@ -15,7 +15,7 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createInterface, emitKeypressEvents } from "node:readline";
-import { councilFlow, delegateFlow, planFlow, type TaskIO } from "./task.js";
+import { councilFlow, delegateFlow, exportTasksFlow, planFlow, type TaskIO } from "./task.js";
 import {
   availableHostNames,
   computeTaskActions,
@@ -351,6 +351,11 @@ export async function runInteractive(): Promise<void> {
         const seats = actions.council.seats;
         if (seats) void runTaskFlow((io) => councilFlow(project, io, seats, hosts));
       }),
+      // Always available: only needs Mongo, and the flow degrades with a warning.
+      {
+        label: "Exportar tareas (markdown → <dir>/tasks)",
+        run: () => void runTaskFlow((io) => exportTasksFlow(project, io)),
+      },
     ];
   };
 

@@ -79,6 +79,11 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  /** Remove a tool (e.g. when an MCP server unmounts). Returns whether it existed. */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   /** Look up a registered tool (used by the approval gate to read `requiresApproval`). */
   get(name: string): Tool | undefined {
     return this.tools.get(name);

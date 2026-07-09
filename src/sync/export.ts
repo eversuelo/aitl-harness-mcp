@@ -55,6 +55,9 @@ export const memoryFilePath = (dir: string, slug: string): string =>
 export const definitionFilePath = (dir: string, kind: DefinitionKind, name: string): string =>
   join(dir, kind === "agent" ? "agents" : "skills", `${sanitizeFileName(name)}.md`);
 
+export const taskFilePath = (dir: string, slug: string): string =>
+  join(dir, "tasks", `${sanitizeFileName(slug)}.md`);
+
 // ── renderers (pure, deterministic) ──────────────────────────────────────────
 
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
@@ -83,6 +86,58 @@ export function renderDefinitionMarkdown(rec: DefinitionRecord): string {
   if (metadata && Object.keys(metadata).length) fm.metadata = metadata;
   if (rec.updated_at) fm.updated_at = rec.updated_at;
   return matter.stringify(rec.content ?? "", fm);
+}
+
+/** Fields decomposeTasks embeds as a ```json block inside every task body. */
+export interface TaskJsonFields {
+  id?: string;
+  title?: string;
+  dependsOn?: string[];
+  files?: string[];
+}
+
+/** Best-effort lift of the SddTask JSON block out of a task doc's body. */
+export function extractTaskJson(body: string | undefined): TaskJsonFields | null {
+  if (!body) return null;
+  const m = /```json\s*\n([\s\S]*?)\n```/.exec(body);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[1]) as unknown;
+    if (typeof o !== "object" || o === null || Array.isArray(o)) return null;
+    const r = o as Record<string, unknown>;
+    return {
+      ...(typeof r.id === "string" ? { id: r.id } : {}),
+      ...(typeof r.title === "string" ? { title: r.title } : {}),
+      ...(Array.isArray(r.dependsOn) ? { dependsOn: r.dependsOn.map(String) } : {}),
+      ...(Array.isArray(r.files) ? { files: r.files.map(String) } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One task memory doc → markdown. Same deterministic shape as memory, plus the
+ * SddTask fields lifted into the frontmatter (task_id/title/depends_on/files) so a
+ * task file is machine-readable without parsing the embedded JSON block.
+ */
+export function renderTaskMarkdown(doc: MemoryDoc): string {
+  const fm: Record<string, unknown> = { name: doc.slug };
+  if (doc.description) fm.description = doc.description;
+  fm.type = "task";
+  if (doc.category) fm.category = doc.category;
+  if (doc.tags?.length) fm.tags = [...doc.tags];
+  const t = extractTaskJson(doc.body);
+  if (t?.id) fm.task_id = t.id;
+  if (t?.title) fm.title = t.title;
+  if (t?.dependsOn?.length) fm.depends_on = [...t.dependsOn];
+  if (t?.files?.length) fm.files = [...t.files];
+  if (doc.repo) fm.repo = doc.repo;
+  fm.version = doc.version ?? 1;
+  if (doc.updated_at) fm.updated_at = doc.updated_at;
+  if (doc.branch) fm.branch = doc.branch;
+  if (doc.commit_sha) fm.commit_sha = doc.commit_sha;
+  return matter.stringify(doc.body ?? "", fm);
 }
 
 /** Single-line-ify a metadata bullet value so the header block stays parseable. */
@@ -122,6 +177,14 @@ export async function loadMemoryDocs(
   await ensureMongoose();
   const filter: Record<string, unknown> = { project };
   if (!opts.includeReserved) filter.type = { $nin: [...RESERVED_MEMORY_TYPES] };
+  return MemoryModel.find(filter, { embedding: 0 }).sort({ slug: 1 }).lean() as unknown as Promise<MemoryDoc[]>;
+}
+
+/** A project's SDD tasks (memory `type:"task"`), optionally scoped to one run id8. */
+export async function loadTaskDocs(project: string, opts: { run?: string } = {}): Promise<MemoryDoc[]> {
+  await ensureMongoose();
+  const filter: Record<string, unknown> = { project, type: "task" };
+  if (opts.run) filter.tags = `run:${opts.run}`;
   return MemoryModel.find(filter, { embedding: 0 }).sort({ slug: 1 }).lean() as unknown as Promise<MemoryDoc[]>;
 }
 
@@ -237,6 +300,21 @@ export async function exportAgents(project: string, dir: string): Promise<Export
   const recs = await loadDefinitions("agent", project);
   return exportRendered(
     recs.map((r) => ({ path: definitionFilePath(dir, "agent", r.name), content: renderDefinitionMarkdown(r) })),
+  );
+}
+
+/**
+ * Export a project's SDD tasks to `<dir>/tasks/<slug>.md` (ADR-0062: "export to
+ * dir" — materialize the task docs as reviewable markdown wherever asked).
+ */
+export async function exportTasks(
+  project: string,
+  dir: string,
+  opts: { run?: string } = {},
+): Promise<ExportResult> {
+  const docs = await loadTaskDocs(project, opts);
+  return exportRendered(
+    docs.map((d) => ({ path: taskFilePath(dir, d.slug), content: renderTaskMarkdown(d) })),
   );
 }
 

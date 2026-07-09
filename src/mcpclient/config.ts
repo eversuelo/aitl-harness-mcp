@@ -7,8 +7,8 @@
  * zod is allowed here by convention (MCP/config params only).
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 
 export const McpServerSpecSchema = z.object({
@@ -50,4 +50,56 @@ export function loadMcpConfig(pathOrDir?: string): { path: string; config: McpCo
     );
   }
   return { path, config: res.data };
+}
+
+// ── manifest editing (`/mcp add|rm` persist here) ────────────────────────────
+
+/** Raw manifest object, or a fresh skeleton when the file doesn't exist yet. */
+function readRawManifest(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return { mcpServers: {} };
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${path}: the manifest root must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+const writeRawManifest = (path: string, raw: Record<string, unknown>): void => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`, "utf-8");
+};
+
+/**
+ * Insert or replace one server entry, editing the RAW JSON so keys this schema does
+ * not know about (other tools' config in the same file) are preserved verbatim.
+ */
+export function upsertMcpServer(path: string, name: string, spec: McpServerSpec): void {
+  const parsed = McpServerSpecSchema.parse(spec);
+  const raw = readRawManifest(path);
+  const servers =
+    typeof raw.mcpServers === "object" && raw.mcpServers !== null && !Array.isArray(raw.mcpServers)
+      ? (raw.mcpServers as Record<string, unknown>)
+      : {};
+  // Drop empty defaults so the manifest stays as terse as a handwritten one.
+  servers[name] = {
+    command: parsed.command,
+    ...(parsed.args.length ? { args: parsed.args } : {}),
+    ...(Object.keys(parsed.env).length ? { env: parsed.env } : {}),
+    ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
+  };
+  raw.mcpServers = servers;
+  writeRawManifest(path, raw);
+}
+
+/** Remove one server entry. Returns whether it existed. */
+export function removeMcpServer(path: string, name: string): boolean {
+  if (!existsSync(path)) return false;
+  const raw = readRawManifest(path);
+  const servers = raw.mcpServers;
+  if (typeof servers !== "object" || servers === null || !(name in (servers as Record<string, unknown>))) {
+    return false;
+  }
+  delete (servers as Record<string, unknown>)[name];
+  writeRawManifest(path, raw);
+  return true;
 }

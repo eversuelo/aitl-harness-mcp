@@ -9,11 +9,14 @@ import { makeDefinitionRecord } from "../models/definition.model.js";
 import { makeMemoryDoc } from "../models/memory.model.js";
 import {
   adrFileName,
+  extractTaskJson,
   renderAdrMarkdown,
   renderDefinitionMarkdown,
   renderMemoryMarkdown,
+  renderTaskMarkdown,
   sanitizeFileName,
   slugifyTitle,
+  taskFilePath,
   writeIfChanged,
 } from "./export.js";
 import { parseDefinitionFile, parseMemoryFileForSync } from "./sync.js";
@@ -189,4 +192,67 @@ test("file naming: sanitize + ADR filename slugs are filesystem-safe and stable"
   assert.equal(sanitizeFileName("../../etc/passwd"), "etc-passwd");
   assert.equal(slugifyTitle("Conexión única — Mongoose dueño (getDb sin autoconectar)"), "conexion-unica-mongoose-dueno-getdb-sin-autoconectar");
   assert.equal(adrFileName({ id: "0051", title: "Sync bidireccional markdown" }), "0051-sync-bidireccional-markdown.md");
+});
+
+// ── task export (ADR-0062) ────────────────────────────────────────────────────
+
+test("tasks: renderTaskMarkdown lifts the SddTask JSON into the frontmatter", async () => {
+  const taskJson = {
+    id: "t2",
+    title: "Cablear el endpoint",
+    description: "…",
+    dependsOn: ["t1"],
+    files: ["src/api.ts"],
+  };
+  const body = [
+    "# t2 — Cablear el endpoint",
+    "",
+    "…",
+    "",
+    "Depends on: t1",
+    "Files: src/api.ts",
+    "",
+    "```json",
+    JSON.stringify(taskJson, null, 2),
+    "```",
+  ].join("\n");
+  const doc = await makeMemoryDoc({
+    project: "p",
+    slug: "sdd-task-abc12345-02",
+    type: "task",
+    category: "task",
+    description: "SDD task t2: Cablear el endpoint",
+    body,
+    tags: ["sdd", "run:abc12345", "parent:sdd-design-abc12345"],
+  });
+  const rendered = renderTaskMarkdown(doc);
+  assert.ok(!rendered.includes("embedding"));
+  const { data, content } = (await import("gray-matter")).default(rendered);
+  assert.equal(data.name, "sdd-task-abc12345-02");
+  assert.equal(data.type, "task");
+  assert.equal(data.task_id, "t2");
+  assert.equal(data.title, "Cablear el endpoint");
+  assert.deepEqual(data.depends_on, ["t1"]);
+  assert.deepEqual(data.files, ["src/api.ts"]);
+  assert.equal(content.trim(), body.trim(), "the body survives verbatim");
+  assert.equal(rendered, renderTaskMarkdown(doc), "deterministic render");
+});
+
+test("tasks: a body without the JSON block still renders (no lifted fields)", async () => {
+  const doc = await makeMemoryDoc({ project: "p", slug: "task-plain", type: "task", body: "solo prosa\n" });
+  const rendered = renderTaskMarkdown(doc);
+  const { data } = (await import("gray-matter")).default(rendered);
+  assert.equal(data.task_id, undefined);
+  assert.equal(data.type, "task");
+});
+
+test("tasks: extractTaskJson tolerates malformed JSON and missing blocks", () => {
+  assert.equal(extractTaskJson(undefined), null);
+  assert.equal(extractTaskJson("sin bloque"), null);
+  assert.equal(extractTaskJson("```json\n{rotísimo\n```"), null);
+  assert.deepEqual(extractTaskJson('```json\n{"id":"t1"}\n```'), { id: "t1" });
+});
+
+test("tasks: taskFilePath sanitizes the slug under <dir>/tasks/", () => {
+  assert.equal(taskFilePath("/out", "sdd task/rara"), "/out/tasks/sdd-task-rara.md");
 });
