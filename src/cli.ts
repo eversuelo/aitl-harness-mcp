@@ -337,8 +337,19 @@ program
 program
   .command("models")
   .option("--json", "Print the raw status object as JSON.")
+  .option(
+    "--detect [modelId]",
+    "Detecta el modelo CARGADO en LM Studio (API nativa /api/v0) y persiste LMSTUDIO_MODEL + " +
+      "LMSTUDIO_MAX_CONTEXT en ~/.aitl/config.json. Con varios cargados, pasa el id a usar.",
+  )
+  .option("--env", "Con --detect: espeja también las claves en el ./.env del cwd.", false)
   .description("Show which LLM backends are configured, the active one, and the fallback chain.")
   .action(async (opts) => {
+    if (opts.detect) {
+      await detectLmStudio(typeof opts.detect === "string" ? opts.detect : undefined, opts.env);
+      await closeClient();
+      return;
+    }
     const { providerStatus } = await import("./providers/base.js");
     const st = providerStatus();
     if (opts.json) {
@@ -362,6 +373,48 @@ program
     }
     await closeClient();
   });
+
+/** `aitl models --detect`: query LM Studio's native API for the LOADED model and persist it. */
+async function detectLmStudio(pick: string | undefined, mirrorEnv: boolean): Promise<void> {
+  const { settings } = await import("./config.js");
+  const { fetchLmStudioModels, planLmStudioDetection } = await import("./providers/lmstudioDetect.js");
+  const plan = planLmStudioDetection(await fetchLmStudioModels(settings.lmstudioBaseUrl), pick);
+  if (!plan.ok) {
+    if (plan.reason === "none_loaded") {
+      console.error("No hay ningún modelo cargado en LM Studio. Carga uno (`lms load <id>`) y reintenta.");
+    } else if (plan.reason === "ambiguous") {
+      console.error("Hay varios modelos cargados — elige uno con `aitl models --detect <id>`:");
+      for (const m of plan.loaded)
+        console.error(`  - ${m.id} (ctx ${m.loaded_context_length ?? m.max_context_length ?? "?"})`);
+    } else {
+      console.error(
+        `'${pick}' no está cargado. Cargados: ${plan.loaded.map((m) => m.id).join(", ") || "(ninguno)"}.`,
+      );
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const { writeConfigFile, resolveProfileSources, configFilePath } = await import("./config/store.js");
+  await writeConfigFile(plan.updates, { merge: true });
+  const ctxNote = plan.updates.LMSTUDIO_MAX_CONTEXT ? ` (ctx ${plan.updates.LMSTUDIO_MAX_CONTEXT})` : "";
+  console.log(`Detectado ${plan.model.id}${ctxNote} → escrito en ${configFilePath()}.`);
+  if (mirrorEnv) {
+    const { updateEnvFile } = await import("./config/envfile.js");
+    const { join } = await import("node:path");
+    const envPath = join(process.cwd(), ".env");
+    await updateEnvFile(envPath, plan.updates);
+    console.log(`Espejado en ${envPath}.`);
+  }
+  // Provenance guard: a repo `.env`, named profile or real env var eclipses the write
+  // (precedencia ADR-0061), so saying "done" without this warning would be a lie.
+  const source = resolveProfileSources().LMSTUDIO_MODEL;
+  if (source && source !== "file" && !(mirrorEnv && source === "dotenv")) {
+    console.log(
+      `ojo: el LMSTUDIO_MODEL efectivo viene de la capa '${source}', que eclipsa ~/.aitl/config.json` +
+        (source === "dotenv" ? " — repite con --env o edita el ./.env del repo." : "."),
+    );
+  }
+}
 
 program
   .command("sdd")
@@ -485,6 +538,10 @@ program
   )
   .option("--no-record-prompt", "Do not persist the prompt to the durable history.")
   .option("--no-spec-synthesis", "Do not synthesize spec-classified runs into durable memory.")
+  .option(
+    "--no-hydrate",
+    "Do not inject the project's durable context (memory/ADRs) into the prompt — bare baseline runs (C0).",
+  )
   .description("Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry.")
   .action(async (task, opts) => {
     const { runOnHost } = await import("./hosts/run.js");
@@ -510,6 +567,7 @@ program
       hostArgs: hostArgs.length ? hostArgs : undefined,
       recordPrompt: opts.recordPrompt, // commander sets false for --no-record-prompt
       synthesizeSpec: opts.specSynthesis, // commander sets false for --no-spec-synthesis
+      hydrate: opts.hydrate, // commander sets false for --no-hydrate
     });
     const tu = result.token_usage;
     const cost = (result.meta?.cost_usd as number | null) ?? null;
