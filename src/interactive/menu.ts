@@ -86,7 +86,17 @@ export async function runInteractive(): Promise<void> {
   let selected = 0;
   let mode: "menu" | "busy" = "menu";
   // Session default project, injected into command prefills so they never miss --project.
-  let project = process.env.AITL_PROJECT?.trim() || "default";
+  // Canonical resolution (ADR-0055 trap): flag-less panels read .aitl/project.json before
+  // falling back — "default" only when nothing identifies the repo.
+  let project = process.env.AITL_PROJECT?.trim() || "";
+  if (!project) {
+    try {
+      const { findProjectFile } = await import("../projectctx/resolveProject.js");
+      project = findProjectFile(process.cwd())?.project ?? "default";
+    } catch {
+      project = "default";
+    }
+  }
 
   const pushLog = (line: string) => {
     for (const l of line.replace(/\r/g, "").split("\n")) {

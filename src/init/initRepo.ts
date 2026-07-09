@@ -328,6 +328,19 @@ export async function initRepo(opts: InitRepoOpts, services?: InitServices): Pro
     add("done", "seed-roles", `roles: ${(await svc.seedRoles(project)).join(", ")}`);
   }
 
+  // (d.5) Canonical project marker: .aitl/project.json anchors flag-less commands to the
+  // real key (closes the ADR-0055 basename trap for sync/chat/interactive).
+  {
+    const { findProjectFile, writeProjectFile } = await import("../projectctx/resolveProject.js");
+    const existing = findProjectFile(root);
+    if (existing && existing.project === project && !force) {
+      add("skip", "project-marker", `.aitl/project.json ya fija '${project}'`);
+    } else {
+      writeProjectFile(root, project);
+      add("done", "project-marker", `.aitl/project.json → '${project}'`);
+    }
+  }
+
   // (e) Guides: create when missing; --force overwrites; else minimal AITL-section merge.
   const guides: { file: string; write: (out: string, force: boolean) => Promise<string> }[] = [
     { file: "CLAUDE.md", write: (out, f) => writeClaudeGuide({ out, project, mcp: "aitl-js", force: f }) },

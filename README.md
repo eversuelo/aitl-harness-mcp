@@ -20,6 +20,11 @@ The published npm package is **`aitl-mcp`**; it installs a global binary named *
 - **Composable engineering roles (H11).** Security / DevOps / QA / architect / DevSecOps
   roles run in `review`, `pair` or `gate` mode and produce a **DecisionBrief** that assists
   the engineer's decision (attributed objections; deterministic gate veto).
+- **Engineered, verifiable loop (ADR-0062).** The loop policy is a versioned spec
+  (LoopSpec): composable verifiers gate termination (with bounded verify rounds and an
+  optional no-tools reflection turn), a stall detector catches no-progress iterations,
+  token/wall-clock budgets end with a wrap-up turn, and every run records WHY it stopped
+  (`stop_reason` + `verified`) — an exhausted run can never masquerade as a success.
 - **Versioned ADR + memory + prompt ledger.** Architecture Decision Records, memory docs
   and the prompt history are append-only versioned (prior revisions archived in
   `*_history`), inspectable with a field-level diff.
@@ -217,6 +222,40 @@ Sub-command groups:
 | `aitl build` | `skill`, `agent`, `seed` | Construct skills/agents and seed the master skills. |
 | `aitl coord` | `claim`, `release`, `list`, `poll` | Minimal multi-agent coordination: task claims (heartbeat + TTL) + durable events + incremental polling. |
 | `aitl init` | *(bare)*, `agent`, `claude` | Onboard a repo into the harness in one idempotent command (DB + catalog + index + guides + hooks), or scaffold single guides. |
+
+### Loop engineering (ADR-0062)
+
+`aitl run` executes a loop whose termination is **verified, budgeted and stall-aware**,
+and whose policy is a **versioned specification**:
+
+- **Verification gates termination.** `--verify-cmd "npm test"` (or programmatic
+  `verifiers[]`) must pass for the run to end — including when the iteration window is
+  exhausted, so an exhausted run is reported as `stop_reason=max_iters`, never as a
+  success. Each failed verification grants a fresh work window, bounded by
+  `--max-verify-rounds` (then `verify_exhausted`).
+- **Stall detection.** If consecutive iterations repeat the same tool calls with an
+  unchanged workspace (`--stall-threshold`, default 3), the loop injects corrective
+  feedback; a second strike ends the run as `stalled`.
+- **Budgets.** `--budget-tokens` / `--budget-ms` end the run with one final no-tools
+  wrap-up turn ("summarize state") instead of a hard cut (`stop_reason=budget`).
+- **Reflection.** `--reflect` forces a no-tools diagnosis turn after each failed
+  verification before the model may act again.
+- **LoopSpec.** `--loop-spec <nameOrPath>` loads the whole policy from a JSON file (or
+  the durable `loops` collection), identified by a content-hash version. The resolved
+  policy — and `loop_spec@version` — is stamped into the run's `harness_config`, so any
+  measurement can state exactly which loop design produced it. Explicit flags override
+  spec fields.
+
+```json
+{ "name": "thesis-c2", "maxIters": 15, "stallThreshold": 2,
+  "maxVerifyRounds": 3, "reflect": true, "verifyCmd": "npm test",
+  "budgets": { "tokens": 120000, "ms": 900000 } }
+```
+
+Every outcome is durable: `stop_reason` (`completed` | `max_iters` | `verify_exhausted`
+| `stalled` | `budget`), `verified`, `verify_rounds` and `stall_strikes` land on the run
+doc, and `stall` / `budget` / `reflection` / per-verifier `verify` events join the
+existing trace.
 
 ### Experimental comparison (thesis conditions)
 

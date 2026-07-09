@@ -258,6 +258,8 @@ const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   // Coordination (ADR-0002 v1): claims mutate durable state; poll_events stays read-only (ungated).
   claim_task: { resource: "coordination", action: "create" },
   release_task: { resource: "coordination", action: "update" },
+  // The verifiable loop writes runs/messages/events/memory (ADR-0063).
+  run_agent: { resource: "memory", action: "create" },
 };
 
 /**
@@ -1129,6 +1131,76 @@ export function buildServer(): McpServer {
         const { makeEvent } = await import("../models/event.model.js");
         await new MemoryStore().logEvent(await makeEvent({ project, run_id, type: "human_intervention", payload: { reason, minutes } }));
         return text({ ok: true, run_id, minutes });
+      });
+    },
+  );
+
+  // ── verifiable agent loop over MCP (ADR-0063) ─────────────────────────────────
+  // The same engineered loop `aitl run` executes (hydrate + skills/agents routing +
+  // gates + verify/stall/budget, ADR-0062), callable by any MCP client. The wall-clock
+  // budget defaults to 10 minutes so a hung run can never wedge the MCP call forever.
+  server.tool(
+    "run_agent",
+    "Run the verifiable agent loop (hydrate + skills/agents + gates + verified termination) for a project task. Returns run_id, stop_reason, verified and totals.",
+    {
+      project: z.string(),
+      task: z.string(),
+      verify_cmd: z.string().optional().describe("Quality gate: shell command that must exit 0 for the run to end."),
+      loop_spec: z.string().optional().describe("Versioned loop policy: JSON file path or name in the `loops` collection."),
+      max_iters: z.number().int().positive().optional(),
+      budget_tokens: z.number().int().positive().optional(),
+      budget_ms: z.number().int().positive().default(600_000),
+      stall_threshold: z.number().int().min(0).optional(),
+      max_verify_rounds: z.number().int().min(0).optional(),
+      reflect: z.boolean().optional(),
+      bare: z.boolean().optional().describe("C0 baseline: no hydration, no skills, no gates."),
+    },
+    async (args) => {
+      return runLogged("run_agent", args, async () => {
+        const { runAgent } = await import("../orchestration/graph.js");
+        const verify = args.verify_cmd
+          ? async (): Promise<true | string> => {
+              const { execSync } = await import("node:child_process");
+              try {
+                execSync(args.verify_cmd as string, { stdio: "pipe", encoding: "utf8" });
+                return true;
+              } catch (e) {
+                const err = e as { stdout?: string; stderr?: string; message?: string };
+                return `Quality gate failed (\`${args.verify_cmd}\`). Fix it, then finish:\n${
+                  (err.stdout ?? "") + (err.stderr ?? "") || err.message || "non-zero exit"
+                }`.slice(0, 2000);
+              }
+            }
+          : undefined;
+        const result = await runAgent(args.task, args.project, {
+          installDefaultTools: true,
+          ...(verify ? { verify } : {}),
+          ...(args.loop_spec ? { loopSpec: args.loop_spec } : {}),
+          ...(args.max_iters !== undefined ? { maxIters: args.max_iters } : {}),
+          budgets: {
+            ms: args.budget_ms,
+            ...(args.budget_tokens !== undefined ? { tokens: args.budget_tokens } : {}),
+          },
+          ...(args.stall_threshold !== undefined ? { stallThreshold: args.stall_threshold } : {}),
+          ...(args.max_verify_rounds !== undefined ? { maxVerifyRounds: args.max_verify_rounds } : {}),
+          ...(args.reflect ? { reflect: true } : {}),
+          ...(args.bare ? { hydrate: false, skills: false, gates: false } : {}),
+        });
+        return text(
+          jsonable({
+            run_id: result.run_id,
+            stop_reason: result.stop_reason,
+            verified: result.verified,
+            iters: result.iters,
+            verify_rounds: result.verify_rounds,
+            stall_strikes: result.stall_strikes,
+            token_usage: result.token_usage,
+            tool_calls: result.tool_calls,
+            gate_denials: result.gate_denials,
+            selected_skills: result.selected_skills,
+            final_text: (result.final_text ?? "").slice(0, 4000),
+          }),
+        );
       });
     },
   );

@@ -94,6 +94,7 @@ function printHelp(): void {
       `  ${cyan("/models")}          objeto de LLMs configurados + fallback`,
       `  ${cyan("/model <name>")}    cambiar de provider (anthropic|openrouter|lmstudio|openai-compat|auto)`,
       `  ${cyan("/tools")}           tools registradas en esta sesión`,
+      `  ${cyan("/call <tool>")}     invocar una tool directamente: /call read_file {"path":"src/app.ts"}`,
       `  ${cyan("/tokens")}          tokens acumulados de la sesión`,
       `  ${cyan("/new")}             empezar un run nuevo (contexto fresco)`,
       `  ${cyan("/id")}              id del run durable actual`,
@@ -131,7 +132,19 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
   const onMcpEvent = (ev: { server: string; ok: boolean; tools?: number; error?: string }) =>
     console.error(dim(`[mcp] ${ev.server}: ${ev.ok ? `${ev.tools} tools` : `FALLÓ — ${ev.error}`}`));
   const mcp = new McpManager(defaultRegistry);
-  if (opts.mcp) await mcp.mountFromConfig(mcpConfigPath, onMcpEvent);
+  // Like Claude Code, a `.mcp.json` in the cwd mounts BY DEFAULT (--no-mcp opts out).
+  if (opts.mcp !== false) {
+    try {
+      const mounted = await mcp.mountFromConfig(mcpConfigPath, onMcpEvent);
+      if (!mounted.length) {
+        console.error(
+          dim(`[mcp] sin servidores montados (¿existe ${manifestPath}?) — /mcp add <name> <cmd> · /mcp self`),
+        );
+      }
+    } catch (err) {
+      console.error(`${YELLOW}⚠ .mcp.json:${RESET} ${String(err instanceof Error ? err.message : err)}`);
+    }
+  }
 
   // Install the default tools + gates NOW (not at the first turn) so /tools shows
   // the real registry and /call works — always through the gates, never around them.
@@ -235,9 +248,33 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
           continue;
         }
         if (cmd === "/tools") {
-          const { defaultRegistry } = await import("../tools/base.js");
           const names = defaultRegistry.schemas().map((s) => String(s.name));
-          console.log(names.length ? names.map((n) => `  ${dim("·")} ${n}`).join("\n") : dim("(aún sin tools — se instalan al primer turno)"));
+          console.log(names.length ? names.map((n) => `  ${dim("·")} ${n}`).join("\n") : dim("(sin tools registradas)"));
+          console.log(dim("  invoca una con /call <tool> [args JSON] · monta más con /mcp"));
+          continue;
+        }
+        if (cmd === "/call") {
+          const name = rest[0];
+          if (!name) {
+            console.log(dim("uso: /call <tool> [args JSON] — invoca una tool del registry (los gates aplican)"));
+            continue;
+          }
+          let args: Record<string, unknown> = {};
+          const rawArgs = rest.slice(1).join(" ").trim();
+          if (rawArgs) {
+            try {
+              args = JSON.parse(rawArgs) as Record<string, unknown>;
+            } catch (err) {
+              console.error(`${RED}args inválidos (JSON):${RESET} ${String(err instanceof Error ? err.message : err)}`);
+              continue;
+            }
+          }
+          const tCall = Date.now();
+          const out = await defaultRegistry.call(name, args, (reason) =>
+            console.error(`${RED}✗ denegado por gate${RESET} ${dim(reason)}`),
+          );
+          console.log(dim(`⏺ ${name} · ${Date.now() - tCall}ms`));
+          process.stdout.write(out.endsWith("\n") ? out : `${out}\n`);
           continue;
         }
         if (cmd === "/tokens") {
@@ -276,14 +313,25 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
                 }
               }
             } else if (sub === "add") {
-              const [, name, command, ...args] = rest;
-              if (!name || !command) {
-                console.log(dim("uso: /mcp add <name> <comando> [args…] — monta el servidor y lo persiste en .mcp.json"));
+              const [, first, command, ...args] = rest;
+              if (!first) {
+                console.log(dim("uso: /mcp add <name> <comando> [args…]  ·  /mcp add <ruta a .mcp.json>"));
+                continue;
+              }
+              // A path-looking single arg is a manifest: mount everything it declares.
+              if (!command && (first.endsWith(".json") || first.includes("/"))) {
+                const path = expandTilde(first);
+                const mounted = await mcp.mountFromConfig(path, onMcpEvent);
+                console.log(dim(`montados ${mounted.length} servidores desde ${path}`));
+                continue;
+              }
+              if (!command) {
+                console.log(dim("uso: /mcp add <name> <comando> [args…]  ·  /mcp add <ruta a .mcp.json>"));
                 continue;
               }
               const spec = { command, args, env: {} };
-              const st = await mcp.mount(name, spec); // si no arranca, no se persiste
-              upsertMcpServer(manifestPath, name, spec);
+              const st = await mcp.mount(first, spec); // si no arranca, no se persiste
+              upsertMcpServer(manifestPath, first, spec);
               console.log(dim(`montado '${st.name}' (${st.tools} tools) · guardado en ${manifestPath}`));
             } else if (sub === "rm" || sub === "remove") {
               const name = rest[1];

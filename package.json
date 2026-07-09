@@ -43,6 +43,7 @@
     "dev": "tsx watch src/cli.ts",
     "dev:watch": "tsx watch src/cli.ts",
     "dev:cli": "tsx src/cli.ts",
+    "dev:cli:watch": "tsx watch --clear-screen=false src/cli.ts",
     "dev:check-db": "tsx scripts/checkDb.ts",
     "dev:init-db": "tsx scripts/initDb.ts",
     "dev:mcp": "tsx watch src/mcpserver/server.ts",

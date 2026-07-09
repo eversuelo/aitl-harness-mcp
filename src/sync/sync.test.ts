@@ -20,6 +20,7 @@ function fakeStores(initial: { memory?: MemoryDoc[]; skills?: DefinitionRecord[]
   const defs: Record<DefinitionKind, DefinitionRecord[]> = {
     skill: [...(initial.skills ?? [])],
     agent: [...(initial.agents ?? [])],
+    loop: [], // loop specs are not mirrored by sync (kind added for loop-engineering)
   };
   const adrs = [...(initial.adrs ?? [])];
   const FIXED = new Date("2026-07-06T12:00:00.000Z");

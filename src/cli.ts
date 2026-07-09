@@ -185,6 +185,13 @@ program
   .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
   .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
+  .option("--loop-spec <nameOrPath>", "Versioned loop policy (ADR-0062): JSON file path or spec name in the `loops` collection.")
+  .option("--max-iters <n>", "Work-iteration window (refreshed on each granted verify round).")
+  .option("--budget-tokens <n>", "Hard token budget; on breach the model gets one no-tools wrap-up turn.")
+  .option("--budget-ms <n>", "Hard wall-clock budget in milliseconds (same wrap-up semantics).")
+  .option("--stall-threshold <n>", "Consecutive no-progress iterations that trip the stall detector (0 disables).")
+  .option("--max-verify-rounds <n>", "Verify-failure feedback rounds before the run ends `verify_exhausted`.")
+  .option("--reflect", "Force a no-tools diagnosis turn after each failed verification.")
   .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
   .option("--ask", "Human-in-the-loop: confirm side-effect tools (write_file, shell, mcp__*) before they run.")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
@@ -250,18 +257,36 @@ program
         // telemetry is best-effort
       }
     }
+    // Loop-engineering overrides (ADR-0062): flags win over --loop-spec fields, which
+    // win over the built-in defaults (resolved inside runAgent).
+    const budgets =
+      opts.budgetTokens || opts.budgetMs
+        ? {
+            ...(opts.budgetTokens ? { tokens: Number(opts.budgetTokens) } : {}),
+            ...(opts.budgetMs ? { ms: Number(opts.budgetMs) } : {}),
+          }
+        : undefined;
     try {
       const result = await runAgent(task, opts.project, {
         provider,
         installDefaultTools: true,
         ...(verify ? { verify } : {}),
+        ...(opts.loopSpec ? { loopSpec: String(opts.loopSpec) } : {}),
+        ...(opts.maxIters !== undefined ? { maxIters: Number(opts.maxIters) } : {}),
+        ...(budgets ? { budgets } : {}),
+        ...(opts.stallThreshold !== undefined ? { stallThreshold: Number(opts.stallThreshold) } : {}),
+        ...(opts.maxVerifyRounds !== undefined ? { maxVerifyRounds: Number(opts.maxVerifyRounds) } : {}),
+        ...(opts.reflect ? { reflect: true } : {}),
         ...(roles ? { roles } : {}),
         ...(opts.ask ? { ask: true, askPolicy: opts.askFallback === "allow" ? "allow" as const : "deny" as const } : {}),
         ...(opts.stream ? { onDelta: (d: { text: string }) => process.stdout.write(d.text) } : {}),
         ...(opts.bare ? { hydrate: false, skills: false, gates: false } : {}),
       });
       if (opts.stream) process.stdout.write("\n\n"); // separate the streamed text from the summary line
-      console.log(`run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials}`);
+      console.log(
+        `run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials} ` +
+          `stop_reason=${result.stop_reason} verified=${result.verified ?? "n/a"}`,
+      );
       if (result.decision_brief) {
         console.log(`\n── Decision brief (H11) ── ${result.decision_brief.summary}`);
         for (const v of result.decision_brief.verdicts) {
@@ -277,17 +302,18 @@ program
 
 program
   .command("chat")
-  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT, then .aitl/project.json, then the cwd folder name).")
   .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "auto")
   .option("--ask", "Confirm side-effect tools before they run (y/n/always).")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
   .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
+  .option("--no-mcp", "Do NOT auto-mount .mcp.json at startup.")
   .option("--no-markdown", "Print model output raw instead of ANSI-rendered markdown.")
   .description("Claude Code–style chat over the agent loop (streams, tool trace, /help; ADR-0003).")
   .action(async (opts) => {
     const { chatRepl } = await import("./repl/chat.js");
-    const { basename } = await import("node:path");
-    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const { resolveProject } = await import("./projectctx/resolveProject.js");
+    const project: string = resolveProject(opts.project).project;
     try {
       await chatRepl({
         project,
@@ -781,7 +807,7 @@ program
 
 program
   .command("sync")
-  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT, then .aitl/project.json, then the cwd folder name).")
   .option("--pull", "One-way Mongo → disk; conflicts resolve in Mongo's favor.")
   .option("--push", "One-way disk → Mongo; conflicts resolve in the disk's favor.")
   .option("--dir <dir>", "Mirror root for memory/skills/agents (hosts .sync-state.json).", ".aitl")
@@ -794,9 +820,9 @@ program
       process.exitCode = 1;
       return;
     }
-    const { basename } = await import("node:path");
     const { syncProject } = await import("./sync/sync.js");
-    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const { resolveProject } = await import("./projectctx/resolveProject.js");
+    const project: string = resolveProject(opts.project).project;
     const mode = opts.pull ? "pull" : opts.push ? "push" : "both";
     const res = await syncProject(project, {
       dir: opts.dir,
