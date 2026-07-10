@@ -93,21 +93,33 @@ export interface RouteSkillsResult {
 export async function routeSkills(
   project: string,
   prompt: string,
-  opts: { store?: DefinitionStore; limit?: number; poolSize?: number; maxChars?: number; rerank?: boolean } = {},
+  opts: {
+    store?: DefinitionStore;
+    limit?: number;
+    poolSize?: number;
+    maxChars?: number;
+    rerank?: boolean;
+    /** Preamble section header/instruction — lets the same router serve agents (ADR-0063). */
+    heading?: string;
+    instruction?: string;
+    /** Candidate filter (e.g. exclude role records stored in the agents collection). */
+    filter?: (rec: Skill) => boolean;
+  } = {},
 ): Promise<RouteSkillsResult> {
   const store = opts.store ?? new DefinitionStore("skill");
   const limit = opts.limit ?? 3;
   const poolSize = opts.poolSize ?? Math.max(limit * 3, 10);
   const maxChars = opts.maxChars ?? 6000;
 
-  const pool = await candidateSkills(store, project, prompt, poolSize);
+  let pool = await candidateSkills(store, project, prompt, poolSize);
+  if (opts.filter) pool = pool.filter(opts.filter);
   if (pool.length === 0) return { preamble: "", selected: [] };
 
   const ranked = opts.rerank === false ? pool : await rerank(prompt, pool);
 
   const lines = [
-    "## Project skills (relevant capabilities for this task)",
-    "Apply these project skills when they fit the work; follow their instructions.",
+    opts.heading ?? "## Project skills (relevant capabilities for this task)",
+    opts.instruction ?? "Apply these project skills when they fit the work; follow their instructions.",
     "",
   ];
   const selected: string[] = [];

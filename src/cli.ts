@@ -185,6 +185,13 @@ program
   .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "primary")
   .option("--bare", "C0 baseline: no hydration, no skills, no gates (improvised agent).")
   .option("--verify-cmd <cmd>", "Quality gate: shell command that must exit 0 to end the run (e.g. a test cmd).")
+  .option("--loop-spec <nameOrPath>", "Versioned loop policy (ADR-0062): JSON file path or spec name in the `loops` collection.")
+  .option("--max-iters <n>", "Work-iteration window (refreshed on each granted verify round).")
+  .option("--budget-tokens <n>", "Hard token budget; on breach the model gets one no-tools wrap-up turn.")
+  .option("--budget-ms <n>", "Hard wall-clock budget in milliseconds (same wrap-up semantics).")
+  .option("--stall-threshold <n>", "Consecutive no-progress iterations that trip the stall detector (0 disables).")
+  .option("--max-verify-rounds <n>", "Verify-failure feedback rounds before the run ends `verify_exhausted`.")
+  .option("--reflect", "Force a no-tools diagnosis turn after each failed verification.")
   .option("--roles <list>", "Comma-separated engineering roles (H11) to attach (e.g. security,architect,qa).")
   .option("--ask", "Human-in-the-loop: confirm side-effect tools (write_file, shell, mcp__*) before they run.")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
@@ -250,18 +257,36 @@ program
         // telemetry is best-effort
       }
     }
+    // Loop-engineering overrides (ADR-0062): flags win over --loop-spec fields, which
+    // win over the built-in defaults (resolved inside runAgent).
+    const budgets =
+      opts.budgetTokens || opts.budgetMs
+        ? {
+            ...(opts.budgetTokens ? { tokens: Number(opts.budgetTokens) } : {}),
+            ...(opts.budgetMs ? { ms: Number(opts.budgetMs) } : {}),
+          }
+        : undefined;
     try {
       const result = await runAgent(task, opts.project, {
         provider,
         installDefaultTools: true,
         ...(verify ? { verify } : {}),
+        ...(opts.loopSpec ? { loopSpec: String(opts.loopSpec) } : {}),
+        ...(opts.maxIters !== undefined ? { maxIters: Number(opts.maxIters) } : {}),
+        ...(budgets ? { budgets } : {}),
+        ...(opts.stallThreshold !== undefined ? { stallThreshold: Number(opts.stallThreshold) } : {}),
+        ...(opts.maxVerifyRounds !== undefined ? { maxVerifyRounds: Number(opts.maxVerifyRounds) } : {}),
+        ...(opts.reflect ? { reflect: true } : {}),
         ...(roles ? { roles } : {}),
         ...(opts.ask ? { ask: true, askPolicy: opts.askFallback === "allow" ? "allow" as const : "deny" as const } : {}),
         ...(opts.stream ? { onDelta: (d: { text: string }) => process.stdout.write(d.text) } : {}),
         ...(opts.bare ? { hydrate: false, skills: false, gates: false } : {}),
       });
       if (opts.stream) process.stdout.write("\n\n"); // separate the streamed text from the summary line
-      console.log(`run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials}`);
+      console.log(
+        `run_id=${result.run_id} iters=${result.iters} gate_denials=${result.gate_denials} ` +
+          `stop_reason=${result.stop_reason} verified=${result.verified ?? "n/a"}`,
+      );
       if (result.decision_brief) {
         console.log(`\n── Decision brief (H11) ── ${result.decision_brief.summary}`);
         for (const v of result.decision_brief.verdicts) {
@@ -277,16 +302,18 @@ program
 
 program
   .command("chat")
-  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT, then .aitl/project.json, then the cwd folder name).")
   .option("--model <m>", "auto | anthropic | openrouter | lmstudio | openai-compat | primary | secondary", "auto")
   .option("--ask", "Confirm side-effect tools before they run (y/n/always).")
   .option("--ask-fallback <policy>", "Non-TTY behavior for --ask: deny | allow.", "deny")
   .option("--mcp [path]", "Mount tools from MCP servers declared in .mcp.json (or the given path).")
+  .option("--no-mcp", "Do NOT auto-mount .mcp.json at startup.")
+  .option("--no-markdown", "Print model output raw instead of ANSI-rendered markdown.")
   .description("Claude Code–style chat over the agent loop (streams, tool trace, /help; ADR-0003).")
   .action(async (opts) => {
     const { chatRepl } = await import("./repl/chat.js");
-    const { basename } = await import("node:path");
-    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const { resolveProject } = await import("./projectctx/resolveProject.js");
+    const project: string = resolveProject(opts.project).project;
     try {
       await chatRepl({
         project,
@@ -294,6 +321,8 @@ program
         ask: Boolean(opts.ask),
         askPolicy: opts.askFallback === "allow" ? "allow" : "deny",
         mcp: opts.mcp,
+        // `--no-markdown` forces raw; otherwise the REPL auto-detects (TTY && !NO_COLOR).
+        ...(opts.markdown === false ? { markdown: false } : {}),
       });
     } catch (err) {
       // Config errors (no LLM set up) deserve a hint, not a stack trace.
@@ -308,8 +337,19 @@ program
 program
   .command("models")
   .option("--json", "Print the raw status object as JSON.")
+  .option(
+    "--detect [modelId]",
+    "Detecta el modelo CARGADO en LM Studio (API nativa /api/v0) y persiste LMSTUDIO_MODEL + " +
+      "LMSTUDIO_MAX_CONTEXT en ~/.aitl/config.json. Con varios cargados, pasa el id a usar.",
+  )
+  .option("--env", "Con --detect: espeja también las claves en el ./.env del cwd.", false)
   .description("Show which LLM backends are configured, the active one, and the fallback chain.")
   .action(async (opts) => {
+    if (opts.detect) {
+      await detectLmStudio(typeof opts.detect === "string" ? opts.detect : undefined, opts.env);
+      await closeClient();
+      return;
+    }
     const { providerStatus } = await import("./providers/base.js");
     const st = providerStatus();
     if (opts.json) {
@@ -333,6 +373,48 @@ program
     }
     await closeClient();
   });
+
+/** `aitl models --detect`: query LM Studio's native API for the LOADED model and persist it. */
+async function detectLmStudio(pick: string | undefined, mirrorEnv: boolean): Promise<void> {
+  const { settings } = await import("./config.js");
+  const { fetchLmStudioModels, planLmStudioDetection } = await import("./providers/lmstudioDetect.js");
+  const plan = planLmStudioDetection(await fetchLmStudioModels(settings.lmstudioBaseUrl), pick);
+  if (!plan.ok) {
+    if (plan.reason === "none_loaded") {
+      console.error("No hay ningún modelo cargado en LM Studio. Carga uno (`lms load <id>`) y reintenta.");
+    } else if (plan.reason === "ambiguous") {
+      console.error("Hay varios modelos cargados — elige uno con `aitl models --detect <id>`:");
+      for (const m of plan.loaded)
+        console.error(`  - ${m.id} (ctx ${m.loaded_context_length ?? m.max_context_length ?? "?"})`);
+    } else {
+      console.error(
+        `'${pick}' no está cargado. Cargados: ${plan.loaded.map((m) => m.id).join(", ") || "(ninguno)"}.`,
+      );
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const { writeConfigFile, resolveProfileSources, configFilePath } = await import("./config/store.js");
+  await writeConfigFile(plan.updates, { merge: true });
+  const ctxNote = plan.updates.LMSTUDIO_MAX_CONTEXT ? ` (ctx ${plan.updates.LMSTUDIO_MAX_CONTEXT})` : "";
+  console.log(`Detectado ${plan.model.id}${ctxNote} → escrito en ${configFilePath()}.`);
+  if (mirrorEnv) {
+    const { updateEnvFile } = await import("./config/envfile.js");
+    const { join } = await import("node:path");
+    const envPath = join(process.cwd(), ".env");
+    await updateEnvFile(envPath, plan.updates);
+    console.log(`Espejado en ${envPath}.`);
+  }
+  // Provenance guard: a repo `.env`, named profile or real env var eclipses the write
+  // (precedencia ADR-0061), so saying "done" without this warning would be a lie.
+  const source = resolveProfileSources().LMSTUDIO_MODEL;
+  if (source && source !== "file" && !(mirrorEnv && source === "dotenv")) {
+    console.log(
+      `ojo: el LMSTUDIO_MODEL efectivo viene de la capa '${source}', que eclipsa ~/.aitl/config.json` +
+        (source === "dotenv" ? " — repite con --env o edita el ./.env del repo." : "."),
+    );
+  }
+}
 
 program
   .command("sdd")
@@ -456,6 +538,10 @@ program
   )
   .option("--no-record-prompt", "Do not persist the prompt to the durable history.")
   .option("--no-spec-synthesis", "Do not synthesize spec-classified runs into durable memory.")
+  .option(
+    "--no-hydrate",
+    "Do not inject the project's durable context (memory/ADRs) into the prompt — bare baseline runs (C0).",
+  )
   .description("Run a task OVER an external agent host (Codex/Claude Code/Antigravity), wrapped with durable context + telemetry.")
   .action(async (task, opts) => {
     const { runOnHost } = await import("./hosts/run.js");
@@ -481,6 +567,7 @@ program
       hostArgs: hostArgs.length ? hostArgs : undefined,
       recordPrompt: opts.recordPrompt, // commander sets false for --no-record-prompt
       synthesizeSpec: opts.specSynthesis, // commander sets false for --no-spec-synthesis
+      hydrate: opts.hydrate, // commander sets false for --no-hydrate
     });
     const tu = result.token_usage;
     const cost = (result.meta?.cost_usd as number | null) ?? null;
@@ -764,9 +851,9 @@ program
 
 program
   .command("export")
-  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown")
+  .requiredOption("--adapter <name>", "agents_md | cursor | copilot | antigravity | kiro | trae | markdown | tasks")
   .requiredOption("--project <project>", "Project scope.")
-  .option("--root <dir>", "Repo root to write tool files into.", ".")
+  .option("--root <dir>", "Repo root to write tool files into (for 'tasks': the export dir → <root>/tasks/*.md).", ".")
   .description("Project the canonical artifacts into a tool's native format (incremental).")
   .action(async (opts) => {
     const { getAdapter, loadCanon } = await import("./adapters/base.js");
@@ -778,7 +865,7 @@ program
 
 program
   .command("sync")
-  .option("--project <project>", "Project scope (default: $AITL_PROJECT or the cwd folder name).")
+  .option("--project <project>", "Project scope (default: $AITL_PROJECT, then .aitl/project.json, then the cwd folder name).")
   .option("--pull", "One-way Mongo → disk; conflicts resolve in Mongo's favor.")
   .option("--push", "One-way disk → Mongo; conflicts resolve in the disk's favor.")
   .option("--dir <dir>", "Mirror root for memory/skills/agents (hosts .sync-state.json).", ".aitl")
@@ -791,9 +878,9 @@ program
       process.exitCode = 1;
       return;
     }
-    const { basename } = await import("node:path");
     const { syncProject } = await import("./sync/sync.js");
-    const project: string = opts.project ?? process.env.AITL_PROJECT?.trim() ?? basename(process.cwd());
+    const { resolveProject } = await import("./projectctx/resolveProject.js");
+    const project: string = resolveProject(opts.project).project;
     const mode = opts.pull ? "pull" : opts.push ? "push" : "both";
     const res = await syncProject(project, {
       dir: opts.dir,

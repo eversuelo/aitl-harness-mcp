@@ -22,10 +22,11 @@ import { BASE_SCHEMA_OPTS } from "../db/mongoose.js";
 
 export const AGENTS_COLLECTION = "agents";
 export const SKILLS_COLLECTION = "skills";
-export type DefinitionKind = "agent" | "skill";
+export const LOOPS_COLLECTION = "loops";
+export type DefinitionKind = "agent" | "skill" | "loop";
 
 export const collectionFor = (kind: DefinitionKind): string =>
-  kind === "agent" ? AGENTS_COLLECTION : SKILLS_COLLECTION;
+  kind === "agent" ? AGENTS_COLLECTION : kind === "loop" ? LOOPS_COLLECTION : SKILLS_COLLECTION;
 
 const now = () => new Date();
 
@@ -53,9 +54,13 @@ export type DefinitionRecord = InferSchemaType<typeof definitionSchema>;
  */
 export const AgentModel = model("Agent", definitionSchema, AGENTS_COLLECTION);
 export const SkillModel = model("Skill", definitionSchema.clone(), SKILLS_COLLECTION);
+// Loop specs (loop-engineering policies) share the definition shape: the spec JSON
+// lives in `content`, its content-hash version in `metadata.version` (see loopspec.ts).
+export const LoopModel = model("Loop", definitionSchema.clone(), LOOPS_COLLECTION);
 
 /** Pick the model backing a kind's collection (used by DefinitionStore/RoleStore). */
-export const modelFor = (kind: DefinitionKind) => (kind === "agent" ? AgentModel : SkillModel);
+export const modelFor = (kind: DefinitionKind) =>
+  kind === "agent" ? AgentModel : kind === "loop" ? LoopModel : SkillModel;
 
 /** Build + validate a definition record (fills schema defaults). Mirrors the former Zod builder. */
 export const makeDefinitionRecord = async (

@@ -50,7 +50,7 @@ export function renderRules(canon: Canon): string {
   return canon.conventions.map((c) => `- ${String(c.rule)}`).join("\n");
 }
 
-export const ADAPTERS = ["agents_md", "cursor", "copilot", "antigravity", "kiro", "trae", "markdown"] as const;
+export const ADAPTERS = ["agents_md", "cursor", "copilot", "antigravity", "kiro", "trae", "markdown", "tasks"] as const;
 
 export async function getAdapter(name: string): Promise<ToolAdapter> {
   switch (name) {
@@ -58,6 +58,8 @@ export async function getAdapter(name: string): Promise<ToolAdapter> {
       return new (await import("./agentsMd.js")).AgentsMdAdapter();
     case "markdown":
       return new (await import("./markdown.js")).MarkdownAdapter();
+    case "tasks":
+      return new (await import("./tasks.js")).TasksAdapter();
     case "cursor":
       return new (await import("./cursor.js")).CursorAdapter();
     case "copilot":

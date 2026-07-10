@@ -34,6 +34,13 @@ const EVENT_TYPES = [
   "skills_route",
   "retry",
   "verify",
+  // loop engineering (ADR-0062): no-progress strikes, budget breaches, post-verify
+  // reflection turns — distinct outcomes the stability metrics need to tell apart.
+  "stall",
+  "budget",
+  "reflection",
+  // caller abort (ESC in the chat REPL): the run ended `interrupted`, resumable.
+  "interrupt",
   "error",
   "resume",
   "spawn",

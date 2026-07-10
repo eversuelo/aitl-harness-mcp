@@ -14,6 +14,7 @@
  * panel stays instant.
  */
 
+import { homedir } from "node:os";
 import type { CouncilSeats, HostAvailability } from "./taskLogic.js";
 
 /** Terminal I/O seam the menu provides (readline-backed); injectable for tests. */
@@ -97,6 +98,31 @@ export async function planFlow(project: string, io: TaskIO): Promise<void> {
   }
   const slugs = await preview.persist();
   io.write(`Persistido: ${slugs.join(", ")}\n`);
+}
+
+// ── EXPORTAR: task memory docs → <dir>/tasks/*.md (ADR-0062) ──────────────────
+
+export async function exportTasksFlow(project: string, io: TaskIO): Promise<void> {
+  const answer = (await io.question("Directorio destino para <dir>/tasks/*.md (vacío cancela): ")).trim();
+  if (!answer) {
+    io.write("(cancelado)\n");
+    return;
+  }
+  const dir = answer.replace(/^~(?=\/|$)/, homedir());
+  const hasBackend = await probeBackend(io);
+  if (!hasBackend) {
+    io.write("[task] sin backend Mongo — no hay tareas durables que exportar.\n");
+    return;
+  }
+  const { exportTasks } = await import("../sync/export.js");
+  const res = await exportTasks(project, dir);
+  for (const p of res.written) io.write(`  + ${p}\n`);
+  const total = res.written.length + res.unchanged.length;
+  io.write(
+    `${res.written.length} escritos · ${res.unchanged.length} sin cambios` +
+      (total === 0 ? " — el proyecto no tiene tareas SDD (genera con Planear o `aitl sdd`)" : "") +
+      "\n",
+  );
 }
 
 // ── DELEGAR: run-host over an available host ──────────────────────────────────

@@ -112,19 +112,25 @@ export async function getProvider(which?: string): Promise<Provider> {
   if (name === "lmstudio") {
     // LM Studio serves an OpenAI-compatible endpoint (Developer tab → Start server,
     // or `lms server start`). Local models are free/offline — reproducible pilot runs.
-    if (!settings.lmstudioModel) {
-      throw new Error(
-        "lmstudio: set LMSTUDIO_MODEL to the id of the loaded model (LM Studio Developer tab " +
-          "or `lms ls`), and start the server with `lms server start`.",
-      );
+    let model = settings.lmstudioModel;
+    let maxContext = settings.lmstudioMaxContext;
+    if (!model) {
+      // Empty LMSTUDIO_MODEL: ask the native API which model is ACTUALLY loaded and
+      // use it for this process only — `aitl models --detect` is what persists it.
+      // Fails actionably when the server is down, nothing is loaded, or >1 is loaded.
+      const { detectLmStudioModel } = await import("./lmstudioDetect.js");
+      const detected = await detectLmStudioModel(settings.lmstudioBaseUrl);
+      model = detected.id;
+      // The context the server actually allocated beats the configured/default cap.
+      if (detected.loaded_context_length) maxContext = detected.loaded_context_length;
     }
     const { OpenAIProvider } = await import("./openai.js");
     return new OpenAIProvider({
       name: "lmstudio",
       apiKey: settings.lmstudioApiKey || "lm-studio", // LM Studio ignores it, ctor requires it
-      model: settings.lmstudioModel,
+      model,
       baseURL: settings.lmstudioBaseUrl,
-      maxContext: settings.lmstudioMaxContext,
+      maxContext,
     });
   }
 
@@ -161,6 +167,8 @@ const RAW_PROVIDERS = ["anthropic", "openrouter", "lmstudio", "openai-compat"] a
 function isConfigured(n: string): boolean {
   if (n === "anthropic") return Boolean(settings.anthropicApiKey);
   if (n === "openrouter") return Boolean(settings.openrouterApiKey);
+  // NOTE: load-state autodetection only kicks in on an EXPLICIT `--model lmstudio`;
+  // the auto/fallback chain stays deterministic and needs LMSTUDIO_MODEL set.
   if (n === "lmstudio") return Boolean(settings.lmstudioModel);
   if (n === "openai-compat") return Boolean(settings.openaiCompatBaseUrl && settings.openaiCompatModel);
   return false;
@@ -210,7 +218,7 @@ export function providerStatus(): ProviderStatus {
     {
       name: "lmstudio",
       configured: isConfigured("lmstudio"),
-      model: settings.lmstudioModel || "(LMSTUDIO_MODEL sin definir)",
+      model: settings.lmstudioModel || "(LMSTUDIO_MODEL sin definir — detéctalo con `aitl models --detect`)",
       via: "LMSTUDIO_MODEL + servidor local",
     },
     {

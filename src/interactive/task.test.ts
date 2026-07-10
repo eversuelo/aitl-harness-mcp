@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { councilFlow, delegateFlow, planFlow, type TaskIO } from "./task.js";
+import { councilFlow, delegateFlow, exportTasksFlow, planFlow, type TaskIO } from "./task.js";
 import type { HostAvailability } from "./taskLogic.js";
 
 /** Headless TaskIO: scripted answers in, transcript out. Nothing touches the TTY. */
@@ -79,5 +79,11 @@ test("delegateFlow: only available hosts are offered", async () => {
 test("councilFlow: empty task cancels before deliberating", async () => {
   const io = new FakeIO([""]);
   await councilFlow("proj", io, { proponents: ["a", "b"], judge: "provider:p" }, [host("a"), host("b")]);
+  assert.match(io.text, /\(cancelado\)/);
+});
+
+test("exportTasksFlow: empty dir cancels before touching Mongo", async () => {
+  const io = new FakeIO([""]);
+  await exportTasksFlow("proj", io);
   assert.match(io.text, /\(cancelado\)/);
 });

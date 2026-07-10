@@ -22,7 +22,16 @@ import { type Provider, type StreamDelta, getProvider } from "../providers/base.
 import { denyPathsGate, installDefaultGates } from "../hooks/gates.js";
 import { type ToolRegistry, defaultRegistry } from "../tools/base.js";
 import { withRetry } from "../util/retry.js";
-import { consumeStream } from "./stream.js";
+import {
+  type LoopSpec,
+  LoopSpecSchema,
+  budgetBreached,
+  loadLoopSpecAuto,
+  loopSpecVersion,
+  resolveLoopPolicy,
+} from "./loopspec.js";
+import { STALL_FEEDBACK, StallTracker, progressSignature, workspaceDigest } from "./stall.js";
+import { consumeStream, StreamInterrupted } from "./stream.js";
 
 export interface RunAgentOpts {
   provider?: Provider;
@@ -77,12 +86,53 @@ export interface RunAgentOpts {
    * `false` (or a feedback string) is fed back as a new user turn and the loop continues
    * (bounded by `maxIters`). This turns `maxIters` from the only stop into a goal check.
    */
-  verify?: (ctx: {
-    finalText: string;
-    convo: Record<string, unknown>[];
-    project: string;
-  }) => boolean | string | Promise<boolean | string>;
+  verify?: (ctx: VerifyCtx) => boolean | string | Promise<boolean | string>;
+  /** Composable quality gates: ALL must pass for the run to end; failures are aggregated
+   *  into one feedback turn and each verdict is logged as its own `verify` event. */
+  verifiers?: Verifier[];
+  /** Verify-failure feedback rounds granted before ending `verify_exhausted` (default 3).
+   *  Each granted round refreshes the `maxIters` work window, so verification retries
+   *  never compete with work iterations. */
+  maxVerifyRounds?: number;
+  /** Hard budgets checked each iteration. On breach the model gets ONE final no-tools
+   *  wrap-up turn ("summarize state and stop") instead of a hard cut. */
+  budgets?: { tokens?: number; ms?: number };
+  /** Consecutive no-progress iterations (same tool calls + unchanged workspace) that trip
+   *  the stall detector: first strike injects corrective feedback, second ends the run
+   *  `stalled`. 0 disables (default 3). */
+  stallThreshold?: number;
+  /** After a failed verification, force one no-tools diagnosis turn before acting again. */
+  reflect?: boolean;
+  /** Loop policy as a versioned spec: a name in the `loops` collection, a JSON file path,
+   *  or an inline spec. Explicit opts above override spec fields; the resolved
+   *  `loop_spec@version` is stamped into the run's `harness_config` (traceability). */
+  loopSpec?: string | LoopSpec;
+  /** Caller abort (ESC in the chat REPL): stops the loop cleanly at the next checkpoint —
+   *  mid-stream, between tool calls, or at the iteration top. The run ends `interrupted`
+   *  with a coherent transcript, so `resume` can continue it. */
+  signal?: AbortSignal;
 }
+
+export interface VerifyCtx {
+  finalText: string;
+  convo: Record<string, unknown>[];
+  project: string;
+}
+
+/** A named quality gate over the run's outcome (tests, lint, custom checks…). */
+export interface Verifier {
+  name: string;
+  run: (ctx: VerifyCtx) => boolean | string | Promise<boolean | string>;
+}
+
+/** Why the loop ended — `done`/`error` alone cannot distinguish these outcomes. */
+export type RunStopReason =
+  | "completed" // model stopped and verification (if any) passed
+  | "max_iters" // iteration window exhausted; final verification did not pass
+  | "verify_exhausted" // all verify rounds spent without passing
+  | "stalled" // no progress across iterations, twice
+  | "budget" // token/wall-clock budget breached (after the wrap-up turn)
+  | "interrupted"; // caller abort (ESC in the chat REPL); the run stays resumable
 
 export interface RunAgentResult {
   run_id: string;
@@ -100,6 +150,14 @@ export interface RunAgentResult {
   tool_calls?: number;
   /** Final run status. */
   status?: "done" | "error";
+  /** Why the loop ended (also persisted on the run doc as `stop_reason`). */
+  stop_reason?: RunStopReason;
+  /** Verification outcome: true/false when verifiers ran, null when none configured. */
+  verified?: boolean | null;
+  /** Verify-failure feedback rounds consumed. */
+  verify_rounds?: number;
+  /** Stall strikes hit (0 = never stalled). */
+  stall_strikes?: number;
   /** Role review checkpoint output (H11), if roles were attached. */
   decision_brief?: import("../roles/schema.js").DecisionBrief;
 }
@@ -128,16 +186,63 @@ export async function runAgent(
   const provider = opts.provider ?? (await getProvider());
   const store = opts.store ?? new MemoryStore();
   const registry = opts.registry ?? defaultRegistry;
-  const maxIters = opts.maxIters ?? 12;
+
+  // ── loop policy: explicit opts > versioned LoopSpec > built-in defaults (ADR-0062) ──
+  let spec: LoopSpec | null = null;
+  let specRef = null;
+  if (opts.loopSpec) {
+    if (typeof opts.loopSpec === "string") {
+      ({ spec, ref: specRef } = await loadLoopSpecAuto(project, opts.loopSpec));
+    } else {
+      spec = LoopSpecSchema.parse(opts.loopSpec);
+      specRef = { name: spec.name, version: loopSpecVersion(spec), source: "inline" as const };
+    }
+  }
+  const policy = resolveLoopPolicy(
+    {
+      maxIters: opts.maxIters,
+      budgets: opts.budgets,
+      stallThreshold: opts.stallThreshold,
+      maxVerifyRounds: opts.maxVerifyRounds,
+      reflect: opts.reflect,
+    },
+    spec,
+    specRef,
+  );
+  const maxIters = policy.maxIters;
   const ctx = new ContextManager(undefined, provider);
+
+  // Composable verification: `verifiers` plus the legacy single `verify` callback.
+  const verifiers: Verifier[] = [...(opts.verifiers ?? [])];
+  if (opts.verify) verifiers.push({ name: "verify", run: opts.verify });
+  // A spec's verifyCmd makes file/store specs self-contained quality gates.
+  if (spec?.verifyCmd) {
+    const cmd = spec.verifyCmd;
+    verifiers.push({
+      name: "verify_cmd",
+      run: async () => {
+        const { execSync } = await import("node:child_process");
+        try {
+          execSync(cmd, { stdio: "pipe", encoding: "utf8" });
+          return true;
+        } catch (e) {
+          const err = e as { stdout?: string; stderr?: string; message?: string };
+          return `Quality gate failed (\`${cmd}\`). Fix it, then finish:\n${
+            (err.stdout ?? "") + (err.stderr ?? "") || err.message || "non-zero exit"
+          }`.slice(0, 2000);
+        }
+      },
+    });
+  }
 
   // ── enforcement setup: tools + deterministic permission gates, owned by the loop ──
   // Default safety gates are on unless explicitly disabled, so `runAgent` is safe even
   // when used as a library (not just via the CLI).
   if (opts.installDefaultTools) {
-    const { ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
+    const { EditFileTool, ReadFileTool, WriteFileTool } = await import("../tools/filesystem.js");
     const { ShellTool } = await import("../tools/shell.js");
-    for (const t of [new ReadFileTool(), new WriteFileTool(), new ShellTool()]) registry.register(t);
+    for (const t of [new ReadFileTool(), new EditFileTool(), new WriteFileTool(), new ShellTool()])
+      registry.register(t);
   }
   if (opts.gates !== false) {
     installDefaultGates(registry); // idempotent per registry
@@ -192,7 +297,20 @@ export async function runAgent(
     await store.logEvent(await makeEvent({ project, run_id: runId, type: "resume", payload: { from_idx: idx } }));
   } else {
     runId = randomUUID();
-    const run = await makeRun({ project, model: provider.name, harness_config: { max_iters: maxIters } });
+    // The FULL resolved loop policy is stamped on the run: any measurement can state
+    // exactly which loop design produced it (loop engineering as a versioned spec).
+    const run = await makeRun({
+      project,
+      model: provider.name,
+      harness_config: {
+        max_iters: maxIters,
+        stall_threshold: policy.stallThreshold,
+        max_verify_rounds: policy.maxVerifyRounds,
+        reflect: policy.reflect,
+        ...(policy.budgets ? { budgets: policy.budgets } : {}),
+        ...(policy.specRef ? { loop_spec: policy.specRef } : {}),
+      },
+    });
     await ensureMongoose();
     await RunModel.create({ ...run, _id: runId });
     convo = [{ role: "user", content: prompt }];
@@ -248,6 +366,24 @@ export async function runAgent(
     } catch {
       // Skill routing is best-effort; never block the run.
     }
+    // Agents: the SAME routing cascade over the `agents` collection, so the loop always
+    // consults the project's agent briefs too (ADR-0063). Role records (metadata.kind
+    // "role") are excluded — they enter via `opts.roles`, not the preamble.
+    try {
+      const { preamble, selected } = await routeSkills(project, promptText, {
+        store: new DefinitionStore("agent"),
+        heading: "## Project agents (operating briefs relevant to this task)",
+        instruction: "Follow these agent briefs when acting in their domain.",
+        filter: (rec) =>
+          (rec as { metadata?: { kind?: string } }).metadata?.kind !== "role",
+      });
+      if (preamble) preambles.push(preamble);
+      await store.logEvent(
+        await makeEvent({ project, run_id: runId, type: "skills_route", payload: { selected, kind: "agent" } }),
+      );
+    } catch {
+      // Agent routing is best-effort; never block the run.
+    }
   }
   const system = [...preambles, opts.system].filter(Boolean).join("\n\n") || undefined;
 
@@ -258,8 +394,155 @@ export async function runAgent(
   let tokIn = 0;
   let tokOut = 0;
   let toolCalls = 0;
+  // ── loop-engineering state (ADR-0062): work window, verify rounds, stall, budgets ──
+  const t0 = Date.now();
+  const stall = new StallTracker(policy.stallThreshold);
+  let itersLeft = maxIters;
+  let verifyRounds = 0;
+  let stallStrikes = 0;
+  let stopReason: RunStopReason = "completed";
+  // null = no verifiers configured (outcome unknowable); set on every verifier pass.
+  let verified: boolean | null = verifiers.length ? false : null;
+
+  const appendUser = async (content: string) => {
+    convo.push({ role: "user", content });
+    idx += 1;
+    await store.appendMessage(
+      await makeMessage({ project, run_id: runId, idx, role: "user", content }),
+    );
+  };
+
+  // Run ALL verifiers; each verdict is its own `verify` event; failures are aggregated.
+  const runVerifiers = async (iter: number): Promise<{ ok: boolean; feedback: string }> => {
+    const failures: string[] = [];
+    for (const v of verifiers) {
+      let res: boolean | string;
+      try {
+        res = await v.run({ finalText, convo, project });
+      } catch (err) {
+        res = `verifier crashed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      const ok = res === true;
+      await store.logEvent(
+        await makeEvent({
+          project,
+          run_id: runId,
+          type: "verify",
+          payload: {
+            iter,
+            verifier: v.name,
+            ok,
+            feedback: typeof res === "string" ? res.slice(0, 200) : null,
+          },
+        }),
+      );
+      if (!ok) {
+        failures.push(
+          typeof res === "string" && res.trim()
+            ? `[${v.name}] ${res}`
+            : `[${v.name}] Verification did not pass.`,
+        );
+      }
+    }
+    return { ok: failures.length === 0, feedback: failures.join("\n") };
+  };
+
+  // Reflection (#6): one no-tools diagnosis turn between a failed verification and the
+  // next action, so the model commits to WHAT it will change before touching anything.
+  const reflect = async (feedback: string) => {
+    await appendUser(
+      `${feedback}\n\nBefore touching anything again: diagnose in a few lines WHY ` +
+        "verification failed and what you will change. Do not use tools in this reply.",
+    );
+    const turn = await withRetry(() => provider.chat(convo, { system }), {
+      retries: opts.retries ?? 3,
+    });
+    convo.push({ role: "assistant", content: turn.text });
+    idx += 1;
+    await store.appendMessage(
+      await makeMessage({
+        project,
+        run_id: runId,
+        idx,
+        role: "assistant",
+        content: turn.text,
+        tokens: turn.usage.output,
+      }),
+    );
+    tokIn += turn.usage.input ?? 0;
+    tokOut += turn.usage.output ?? 0;
+    await store.logEvent(
+      await makeEvent({ project, run_id: runId, type: "reflection", payload: { iter: it } }),
+    );
+  };
+
+  // Caller abort: audit trail for every interrupt checkpoint that fires.
+  const noteInterrupt = async () =>
+    store.logEvent(await makeEvent({ project, run_id: runId, type: "interrupt", payload: { iter: it } }));
+
   try {
-    for (; it < maxIters; it++) {
+    for (; ; it++) {
+      // Interrupt checkpoint (iteration top): the transcript is coherent here, so the
+      // run ends `interrupted` and stays resumable.
+      if (opts.signal?.aborted) {
+        stopReason = "interrupted";
+        await noteInterrupt();
+        break;
+      }
+
+      // Budget gate (#3): on breach, ONE final no-tools wrap-up turn instead of a hard cut.
+      const breach = budgetBreached(policy.budgets, {
+        tokens: tokIn + tokOut,
+        ms: Date.now() - t0,
+      });
+      if (breach) {
+        await store.logEvent(
+          await makeEvent({
+            project,
+            run_id: runId,
+            type: "budget",
+            payload: { iter: it, breach, tokens: tokIn + tokOut, ms: Date.now() - t0 },
+          }),
+        );
+        await appendUser(
+          `The run's ${breach} budget is exhausted. Do not use tools. Summarize what was ` +
+            "accomplished, what remains, and the exact state you are leaving things in, then stop.",
+        );
+        const wrap = await withRetry(() => provider.chat(convo, { system }), {
+          retries: opts.retries ?? 3,
+        });
+        idx += 1;
+        await store.appendMessage(
+          await makeMessage({
+            project,
+            run_id: runId,
+            idx,
+            role: "assistant",
+            content: wrap.text,
+            tokens: wrap.usage.output,
+          }),
+        );
+        tokIn += wrap.usage.input ?? 0;
+        tokOut += wrap.usage.output ?? 0;
+        finalText = wrap.text || finalText;
+        stopReason = "budget";
+        break;
+      }
+
+      // Exhausted work window (#1): the run STILL gets verified — an exhausted run must
+      // never look identical to a verified success.
+      if (itersLeft <= 0) {
+        if (verifiers.length) {
+          const { ok } = await runVerifiers(it);
+          verified = ok;
+          stopReason = ok ? "completed" : "max_iters";
+        } else {
+          stopReason = "max_iters";
+        }
+        break;
+      }
+      itersLeft -= 1;
+
       if (ctx.overBudget(convo)) {
         convo = await ctx.compact(convo);
         await store.logEvent(await makeEvent({ project, run_id: runId, type: "compaction", payload: { iter: it } }));
@@ -272,23 +555,37 @@ export async function runAgent(
       const onDelta = opts.onDelta;
       const doTurn = () =>
         onDelta && provider.chatStream
-          ? consumeStream(provider.chatStream(convo, { tools: registry.schemas(), system }), onDelta)
+          ? consumeStream(provider.chatStream(convo, { tools: registry.schemas(), system }), onDelta, {
+              signal: opts.signal,
+            })
           : provider.chat(convo, { tools: registry.schemas(), system });
-      const turn = await withRetry(
-        doTurn,
-        {
-          retries: opts.retries ?? 3,
-          onRetry: async ({ attempt, delayMs, error }) =>
-            store.logEvent(
-              await makeEvent({
-                project,
-                run_id: runId,
-                type: "retry",
-                payload: { iter: it, attempt, delay_ms: delayMs, error: String(error).slice(0, 200) },
-              }),
-            ),
-        },
-      );
+      let turn: Awaited<ReturnType<typeof doTurn>>;
+      try {
+        turn = await withRetry(
+          doTurn,
+          {
+            retries: opts.retries ?? 3,
+            onRetry: async ({ attempt, delayMs, error }) =>
+              store.logEvent(
+                await makeEvent({
+                  project,
+                  run_id: runId,
+                  type: "retry",
+                  payload: { iter: it, attempt, delay_ms: delayMs, error: String(error).slice(0, 200) },
+                }),
+              ),
+          },
+        );
+      } catch (err) {
+        // Interrupt checkpoint (mid-stream): the in-flight turn is discarded — nothing
+        // of it was persisted — so the transcript stays coherent and resumable.
+        if (err instanceof StreamInterrupted) {
+          stopReason = "interrupted";
+          await noteInterrupt();
+          break;
+        }
+        throw err;
+      }
       idx += 1;
       await store.appendMessage(
         await makeMessage({
@@ -308,37 +605,54 @@ export async function runAgent(
       finalText = turn.text || finalText;
 
       if (turn.tool_calls.length === 0) {
-        // Termination by verification: if a verifier is supplied, the run ends only when it
-        // passes; a falsey/string result is fed back and the loop continues (bounded by maxIters).
-        if (opts.verify) {
-          const v = await opts.verify({ finalText, convo, project });
-          const ok = v === true;
-          await store.logEvent(
-            await makeEvent({
-              project,
-              run_id: runId,
-              type: "verify",
-              payload: { iter: it, ok, feedback: typeof v === "string" ? v.slice(0, 200) : null },
-            }),
-          );
+        // Termination by verification (#4): ALL verifiers must pass for the run to end.
+        // A failure grants a FRESH work window (bounded by maxVerifyRounds), so verify
+        // retries never compete with work iterations.
+        if (verifiers.length) {
+          const { ok, feedback } = await runVerifiers(it);
           if (!ok) {
-            const feedback =
-              typeof v === "string" && v.trim()
-                ? v
-                : "Verification did not pass. Address the remaining issue, then finish.";
-            convo.push({ role: "user", content: feedback });
-            idx += 1;
-            await store.appendMessage(
-              await makeMessage({ project, run_id: runId, idx, role: "user", content: feedback }),
-            );
+            verifyRounds += 1;
+            if (verifyRounds > policy.maxVerifyRounds) {
+              verified = false;
+              stopReason = "verify_exhausted";
+              break;
+            }
+            itersLeft = maxIters;
+            const msg =
+              feedback.trim() ||
+              "Verification did not pass. Address the remaining issue, then finish.";
+            if (policy.reflect) await reflect(msg);
+            else await appendUser(msg);
             continue;
           }
+          verified = true;
         }
+        stopReason = "completed";
         break; // model is done (and verification passed, if any)
       }
 
       convo.push({ role: "assistant", content: turn.text, tool_calls: turn.tool_calls });
+      let interruptedInTools = false;
       for (const call of turn.tool_calls) {
+        // Interrupt checkpoint (between tool calls): pending calls never execute, but
+        // each still gets a synthetic result — a dangling tool_call would corrupt the
+        // transcript for `resume` and the next provider round-trip.
+        if (opts.signal?.aborted) {
+          interruptedInTools = true;
+          idx += 1;
+          await store.appendMessage(
+            await makeMessage({
+              project,
+              run_id: runId,
+              idx,
+              role: "tool",
+              content: "[interrupted by user — tool not executed]",
+              tool_call_id: call.id ?? null,
+            }),
+          );
+          convo.push({ role: "tool", tool_call_id: call.id, content: "[interrupted by user — tool not executed]" });
+          continue;
+        }
         let denyReason: string | null = null;
         opts.onTool?.({ name: call.name, args: call.input ?? {}, phase: "start" });
         const toolT0 = Date.now();
@@ -397,6 +711,37 @@ export async function runAgent(
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: result });
       }
+      if (interruptedInTools) {
+        stopReason = "interrupted";
+        await noteInterrupt();
+        break;
+      }
+
+      // Stall detection (#2): same tool calls + unchanged workspace across consecutive
+      // iterations means the loop is spinning, not progressing. First strike injects
+      // corrective feedback; a second strike ends the run as `stalled` — a distinct,
+      // measurable outcome that must never masquerade as success.
+      if (policy.stallThreshold > 0) {
+        const verdict = stall.observe(
+          progressSignature(turn.tool_calls, await workspaceDigest()),
+        );
+        if (verdict.stalled) {
+          stallStrikes += 1;
+          await store.logEvent(
+            await makeEvent({
+              project,
+              run_id: runId,
+              type: "stall",
+              payload: { iter: it, action: verdict.action, strikes: stallStrikes },
+            }),
+          );
+          if (verdict.action === "abort") {
+            stopReason = "stalled";
+            break;
+          }
+          await appendUser(STALL_FEEDBACK);
+        }
+      }
     }
   } catch (err) {
     // Unrecoverable failure: mark the run errored (so it never hangs in "running") and rethrow.
@@ -447,6 +792,10 @@ export async function runAgent(
         iters: it,
         tool_calls: toolCalls,
         gate_denials: gateDenials,
+        stop_reason: stopReason,
+        verified,
+        verify_rounds: verifyRounds,
+        stall_strikes: stallStrikes,
         roles: activeRoles.map((r) => r.name),
         decision_blocked: decisionBrief?.blocked ?? false,
       },
@@ -462,6 +811,10 @@ export async function runAgent(
     token_usage: { input: tokIn, output: tokOut },
     tool_calls: toolCalls,
     status: "done",
+    stop_reason: stopReason,
+    verified,
+    verify_rounds: verifyRounds,
+    stall_strikes: stallStrikes,
     decision_brief: decisionBrief,
   };
 }

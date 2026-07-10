@@ -15,7 +15,7 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createInterface, emitKeypressEvents } from "node:readline";
-import { councilFlow, delegateFlow, planFlow, type TaskIO } from "./task.js";
+import { councilFlow, delegateFlow, exportTasksFlow, planFlow, type TaskIO } from "./task.js";
 import {
   availableHostNames,
   computeTaskActions,
@@ -86,7 +86,17 @@ export async function runInteractive(): Promise<void> {
   let selected = 0;
   let mode: "menu" | "busy" = "menu";
   // Session default project, injected into command prefills so they never miss --project.
-  let project = process.env.AITL_PROJECT?.trim() || "default";
+  // Canonical resolution (ADR-0055 trap): flag-less panels read .aitl/project.json before
+  // falling back — "default" only when nothing identifies the repo.
+  let project = process.env.AITL_PROJECT?.trim() || "";
+  if (!project) {
+    try {
+      const { findProjectFile } = await import("../projectctx/resolveProject.js");
+      project = findProjectFile(process.cwd())?.project ?? "default";
+    } catch {
+      project = "default";
+    }
+  }
 
   const pushLog = (line: string) => {
     for (const l of line.replace(/\r/g, "").split("\n")) {
@@ -351,6 +361,11 @@ export async function runInteractive(): Promise<void> {
         const seats = actions.council.seats;
         if (seats) void runTaskFlow((io) => councilFlow(project, io, seats, hosts));
       }),
+      // Always available: only needs Mongo, and the flow degrades with a warning.
+      {
+        label: "Exportar tareas (markdown → <dir>/tasks)",
+        run: () => void runTaskFlow((io) => exportTasksFlow(project, io)),
+      },
     ];
   };
 

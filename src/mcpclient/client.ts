@@ -53,7 +53,7 @@ function contentToString(result: { content?: unknown; isError?: unknown }): stri
   return result.isError === true ? `[tool error] ${text || "MCP tool returned an error"}` : text;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms: ${what}`)), ms);
     p.then(

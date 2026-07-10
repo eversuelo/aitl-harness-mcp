@@ -154,6 +154,26 @@ spelling — those fragment the history. Verify the hash above matches
 > CLI `aitl config profile {list,create,set,show,use,rm}`. 27 tests nuevos (319);
 > E2E vivo contra atlas-local (dos BDs por perfil, respawn ~2s).
 > Ledger ahora contiguo **0001–0061**; next free **0062**.
+> 0062 (2026-07-08): loop engineering — verify también al agotar iteraciones
+> (`stop_reason` + `verified` en el run doc: completed|max_iters|verify_exhausted|
+> stalled|budget), detector de estancamiento (`src/orchestration/stall.ts`: firma
+> tool-calls+workspace, feedback→abort), budgets {tokens,ms} con turno de cierre sin
+> tools, `verifiers[]` componibles + `maxVerifyRounds` (ventana fresca por ronda),
+> `reflect` (diagnóstico sin tools tras verify fallido), y LoopSpec versionada
+> (`loopspec.ts`, kind "loop", versión content-hash, `loop_spec@version` estampado en
+> `harness_config`; precedencia flags > spec > defaults). CLI `run --loop-spec/
+> --max-iters/--budget-*/--stall-threshold/--max-verify-rounds/--reflect`; eventos
+> nuevos stall/budget/reflection. 25 tests nuevos (378). Ledger ahora contiguo
+> **0001–0062**; next free **0063**.
+> 0063 (2026-07-08): clave de project canónica — `.aitl/project.json` escrito por
+> `aitl init`, resolución flag > $AITL_PROJECT > marcador (búsqueda hacia arriba) >
+> basename con AVISO (`src/projectctx/resolveProject.ts`; cierra la trampa de
+> ADR-0055 en sync/chat/panel) + tool MCP `run_agent` (el loop verificable completo
+> vía MCP: verify_cmd/loop_spec/budgets; budget_ms default 10 min; RBAC
+> memory:create) + el loop rutea también AGENTS al preámbulo (routeSkills
+> generalizado con heading/filter; roles excluidos; evento skills_route
+> kind:"agent"). DATABASE_URI muerta fuera de .env/.mcp.json. 7 tests nuevos (385).
+> Ledger ahora contiguo **0001–0063**; next free **0064**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
