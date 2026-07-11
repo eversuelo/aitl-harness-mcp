@@ -187,7 +187,7 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 
 | Función | Firma | Qué hace |
 |---|---|---|
-| `buildServer` | `() => McpServer` | Servidor MCP (stdio) que sirve memoria/decisiones/skills/agents/prompts a clientes como Claude Code. |
+| `buildServer` | `() => McpServer` | Servidor MCP (stdio/HTTP) con **52 tools** (registro único en `src/mcpserver/server.ts`). Catálogo completo tool-por-tool en la **§14** de este documento. |
 | `main` / `mainHttp` | `() => Promise<void>` | Arranque del MCP por stdio / HTTP. |
 | `createApiServer` | `() => Server` | API REST `node:http` (proyección de `MemoryStore`) para el web UI. |
 | `startUi` | `(opts) => Promise<void>` | Levanta API + Vite dev server (memory-admin UI). |
@@ -247,6 +247,128 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 Emitidos a la colección `events` por `runAgent`/`orchestrate`:
 
 `loop_iter` · `compaction` · `tool_call` · `gate` (denegación auditada) · `synthesis` ·
-`hydrate` (desglose memory/decisions/conventions/repomap) · `session_summary` · `skills_route` ·
+`hydrate` (desglose memory/decisions/conventions/repomap) · `session_summary` ·
+`skills_route` (payload `selected`; `kind:"agent"` cuando rutea agents, ADR-0063) ·
 `retry` · `verify` · `error` · `resume` · `spawn` (sub-agente lanzado) ·
-**`review`** · **`role_veto`** · **`deliberation`** (objeciones de rol, H11) · **`human_intervention`** (Tabla 4.3 #6).
+**`review`** · **`role_veto`** · **`deliberation`** (objeciones de rol, H11) · **`human_intervention`** (Tabla 4.3 #6) ·
+**`stall`** · **`budget`** · **`reflection`** (loop engineering, ADR-0062) ·
+**`council_*`** (plan-council, ADR-0055) · eventos de coordinación en `coord_events`
+(`claim`/`release`/`expire_reclaim`/`decision`/`task_done`/`note`, ADR-0054).
+
+---
+
+## 14. Tools MCP del servidor `aitl-js` (52)
+
+Registro único: `buildServer()` en `src/mcpserver/server.ts` (las 10 de agents/skills
+salen de la plantilla `registerDefinitionTools`). Todas pasan por `runLogged` — logging
+estructurado + telemetría en `mcp_tool_calls` + RBAC (`guardTool` sobre `TOOL_RBAC`,
+exportada y con canario en `src/mcpserver/rbac.test.ts`) — **excepto las 4 de historial
+de versiones**, que van directo a Mongo sin telemetría (hallazgo 2026-07-11). El actor
+es `agent:aitl-server` (override `AITL_MCP_ACTOR_ID`/`_ROLE`); toda decisión RBAC se
+audita en `audit`. Parámetros: **negrita = requerido**; `=x` es el default.
+
+### Memoria
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `search_memory` | **query**, **project**, collection=`memory`, limit=10 | Búsqueda semántica sobre `memory`/`messages`/`decisions`: Atlas `$vectorSearch` con fallback `$text`. | — |
+| `write_memory` | **project**, **slug**, **body**, description, type=`project`, repo, tags | Upsert de UNA memoria estructurada (clasificada + embebida), keyed por `(project, slug)`. Versionado append-only (ADR-0027). | memory:create |
+| `ingest_path` | **path**, **project**, repo | Ingesta masiva de un directorio de markdown como memoria. | memory:create |
+
+### Contexto MCP y prompts
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `save_mcp_context` | **project**, messages, summary, title, context, metadata, model, run_id, tags | Snapshot completo de contexto de sesión aportado por el cliente. | memory:create |
+| `list_mcp_context` | **project**, limit=50, run_id, source, tag | Lista snapshots, recientes primero. | — |
+| `search_mcp_context` | **project**, **query**, limit=10 | Búsqueda por texto en los snapshots. | — |
+| `record_prompt` | **project**, **prompt**, title, model, run_id, tags, metadata | Persiste un prompt en el historial durable. | prompts:create |
+| `list_prompts` | **project**, limit=50, source, tag | Historial de prompts, recientes primero. | — |
+| `search_prompts` | **project**, **query**, limit=10 | Búsqueda `$text` con fallback regex. | — |
+
+### Repo map y grafo
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `get_repomap` | **project**, root, repo, maxTokens=1024 | Mapa tree-sitter+PageRank; con `root` lo (re)construye primero (fija el aviso `[repomap] stale`). | — |
+| `get_module_map` | **project**, repo | Mapa de módulos de primer nivel (view/back/mixed/infra) desde el mapa cacheado. | — |
+| `get_module_brief` | **project**, **dir**, repo | Brief del módulo: bloque + ADRs activas por `components[]` + memorias `component:<dir>`. | — |
+| `index_repo` | **project**, **root**, repo, memory, adr | Indexador maestro: repo map + (opcional) ingest de memoria + adr-sync en una pasada. | memory:create |
+| `graphify` | project, scope=`all`, fmt=`json` | Proyecta el estado durable como grafo (symbols por `refs`, memoria por `[[wikilinks]]`). | memory:update |
+
+### Decisiones (ADRs)
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `list_decisions` | **project**, limit=50 | Lista ADRs versionadas (orden ascendente por id). | — |
+| `record_decision` | **project**, **id**, **title**, **context**, **decision**, consequences, status=`accepted`, components, review_after | Registra una ADR embebida para `$vectorSearch`; `id` next-free leído de la colección (skill `adr-ledger-reconcile`). | decisions:create |
+| `deprecate_decision` | **project**, **id**, **reason**, superseded_by, review_after | Depreca sin borrar (bump de versión + snapshot; sale de hydrate, sigue buscable — ADR-0049). | decisions:update |
+
+### Historial de versiones (⚠️ sin `runLogged`: sin telemetría `mcp_tool_calls`)
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `list_decision_versions` | **project**, **id** | Cadena de revisiones de una ADR (viva + archivadas). | — |
+| `get_decision_version` | **project**, **id**, **version** | Una versión específica de la ADR. | — |
+| `list_memory_versions` | **project**, **slug** | Cadena de revisiones de una memoria. | — |
+| `get_memory_version` | **project**, **slug**, **version** | Una versión específica de la memoria. | — |
+
+### Agents y skills (plantilla ×2 + builder)
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `write_agent` / `write_skill` | **project**, **name**, **content**, description, source=`mcp`, tags | Upsert de UNA definición keyed por `(project, name)`. | agents_skills:create |
+| `get_agent` / `get_skill` | **project**, **name** | Una definición; `null` si no existe. | — |
+| `list_agents` / `list_skills` | **project**, limit=100, tag | Lista, recientes primero. ⚠️ `list_agents` devuelve TAMBIÉN los roles (`metadata.kind="role"`) — filtra si buscas agents puros. | — |
+| `search_agents` / `search_skills` | **project**, **query**, limit=10 | Búsqueda `$text` con fallback regex. | — |
+| `delete_agent` / `delete_skill` | **project**, **name** | Borra UNA definición; devuelve si existía. | agents_skills:delete |
+| `build_definition` | **kind** (`skill`\|`agent`), **project**, **name**, description, content, tags, host, model | Constructora: contenido inline o scaffold editable; upsert. | agents_skills:create |
+
+### Roles de ingeniería (H11)
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `list_roles` | **project** | Roles review/pair/gate del proyecto. | — |
+| `write_role` | **project**, **name**, **lens**, mode=`review`, severity=`advisory`, triggers, denyGlobs, skills, description | Upsert de un rol (vive en `agents` con `metadata.kind="role"`). | agents_skills:create |
+| `seed_roles` | **project** | Siembra el catálogo default: security, devops, qa, architect, devsecops. | agents_skills:create |
+
+### Catálogo software → projects → repos
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `write_software` | **name**, display_name, description, projects, tags | Upsert del nivel software (raíz de la jerarquía). | softwares:create |
+| `get_software` | **name** | Un software; `null` si no existe. | — |
+| `list_softwares` | limit=100, tag | Lista, recientes primero. | — |
+| `search_softwares` | **query**, limit=10 | Búsqueda por nombre/display/description. | — |
+| `delete_software` | **name** | Borra un software. | softwares:delete |
+| `write_repo` | **project**, **name**, software, path, branch, remote, description, tags | Upsert de un repo (hoja); `name` es también el sub-scope `repo` de los datos. | repos:create |
+| `get_repo` | **project**, **name** | Un repo; `null` si no existe. | — |
+| `list_repos` | project, software, tag, limit=100 | Lista por project y/o software. | — |
+| `delete_repo` | **project**, **name** | Borra un repo. | repos:delete |
+
+### Branches
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `sync_branches` | **project**, **repo**, **root**, remote | Lee las ramas locales de git, clasifica (kind/environment/base) y las upserta al catálogo. | branches:create |
+| `list_branches` | project, repo, kind, limit=200 | Lista del catálogo, recientes primero. | — |
+| `delete_branch` | **project**, **repo**, **name** | Borra una rama del catálogo. | branches:delete |
+
+### Coordinación multi-agente (ADR-0054)
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `claim_task` | **project**, **task_key**, scope, ttl_ms | Claim atómico (UNO activo por project+task_key); conflicto ⇒ `{ok:false, heldBy, expiresAt}`; TTL default 30 min, re-claim propio renueva, expirado se toma (`expire_reclaim`). | coordination:create |
+| `release_task` | **project**, **task_key**, outcome=`done` | Libera TU claim (solo el dueño); emite evento con el outcome. | coordination:update |
+| `poll_events` | **project**, since, limit≤500 | Eventos de coordinación estrictamente > `since`, ascendentes; devuelve `cursor` incremental. | — |
+
+### Loop verificable y supervisión humana
+
+| Tool | Parámetros | Qué hace | RBAC |
+|---|---|---|---|
+| `run_agent` | **project**, **task**, bare, verify_cmd, loop_spec, max_iters, budget_tokens, budget_ms=600000, stall_threshold, max_verify_rounds, reflect | El loop completo vía MCP (hydrate + skills/agents + gates + terminación verificada); devuelve `run_id`, `stop_reason`, `verified`, totales. ⚠️ No expone `roles` (solo CLI `aitl run --roles`). | memory:create |
+| `record_human_intervention` | **project**, **run_id**, **reason**, minutes=0 | Registra una intervención humana en un run (métrica de supervisión, Tabla 4.3 #6). | memory:create |
+
+> Scope reservado **`__global__`**: skills multi-proyecto (p. ej. `adr-ledger-reconcile`)
+> se guardan con `project="__global__"` y se cargan EXPLÍCITAMENTE — el router del loop
+> no las enruta (E6 pendiente). Mapa operativo: `docs/MAPA-SKILLS.md`.

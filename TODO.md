@@ -40,12 +40,17 @@ Ejemplo de salida:
 - [ADR-0005] chatStream() es opcional y aditivo — no romper el fallback a chat().
 ```
 
-## 3. Guardia de regresión sobre el diff  *(ABIERTA — ya desbloqueada por 0049/0053)*
+## 3. Guardia de regresión sobre el diff  *(CERRADA — `src/hooks/adrGuard.ts`)*
 
 > La parte que de verdad **previene** regresión; las capas 1-2 solo informan.
 
-- [ ] Sobre el diff: archivos cambiados → ADRs ligadas a esos componentes →
-      "¿este cambio contradice alguna ADR?".
-- [ ] Con LLM = check real; rules-first = re-imprimir las ADRs vinculadas como recordatorio
-      antes de que el edit aterrice.
-- [ ] Cablear como hook `PreToolUse` en Edit/Write, o mejor un `pre-commit` / pre-PR.
+- [x] Sobre el diff: archivos cambiados → ADRs ligadas a esos componentes →
+      recordatorio inyectado en el resultado del tool (rules-first).
+- [x] Rules-first = re-imprimir las ADRs vinculadas como recordatorio
+      **en el resultado** del `write_file`/`edit_file` (PostToolHook, ADR-0039).
+- [x] Cableado en `runAgent` (`src/orchestration/graph.ts`) y `aitl chat`
+      (`src/repl/chat.ts`). Best-effort (degrada sin Mongo).
+- [ ] LLM-mode = check real "¿este cambio contradice la ADR?" (fase futura,
+      requiere un pre-hook que invoque al modelo — deferred).
+- [ ] Hook `pre-commit` / pre-PR con `aitl guard` CLI (fase futura, standalone).
+

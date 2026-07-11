@@ -238,19 +238,28 @@ async function persistMcpToolCall(doc: Record<string, unknown>): Promise<void> {
  * Tools that mutate durable state, mapped to the RBAC resource/action they need.
  * Read-only tools are absent → never RBAC-restricted.
  */
-const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
+export const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   write_memory: { resource: "memory", action: "create" },
   ingest_path: { resource: "memory", action: "create" },
   graphify: { resource: "memory", action: "update" },
   record_decision: { resource: "decisions", action: "create" },
   deprecate_decision: { resource: "decisions", action: "update" },
   record_prompt: { resource: "prompts", action: "create" },
+  // Session context + supervision telemetry write durable state (same catch-all as run_agent).
+  save_mcp_context: { resource: "memory", action: "create" },
+  record_human_intervention: { resource: "memory", action: "create" },
   write_software: { resource: "softwares", action: "create" },
   delete_software: { resource: "softwares", action: "delete" },
   write_repo: { resource: "repos", action: "create" },
   delete_repo: { resource: "repos", action: "delete" },
   index_repo: { resource: "memory", action: "create" },
   build_definition: { resource: "agents_skills", action: "create" },
+  // The templated definition tools (registerDefinitionTools) mutate the same
+  // collections as build_definition and must carry the same RBAC mapping.
+  write_agent: { resource: "agents_skills", action: "create" },
+  write_skill: { resource: "agents_skills", action: "create" },
+  delete_agent: { resource: "agents_skills", action: "delete" },
+  delete_skill: { resource: "agents_skills", action: "delete" },
   sync_branches: { resource: "branches", action: "create" },
   delete_branch: { resource: "branches", action: "delete" },
   write_role: { resource: "agents_skills", action: "create" },

@@ -174,6 +174,26 @@ spelling — those fragment the history. Verify the hash above matches
 > generalizado con heading/filter; roles excluidos; evento skills_route
 > kind:"agent"). DATABASE_URI muerta fuera de .env/.mcp.json. 7 tests nuevos (385).
 > Ledger ahora contiguo **0001–0063**; next free **0064**.
+> 0064–0068 (2026-07-08/09): 0064 tool `edit_file` (reemplazo exacto old→new, match
+> único); 0065 interrupción ESC (AbortSignal, StreamInterrupted no-transitoria, run
+> resumible); 0066 tool `mcp_add` (el LLM monta servidores MCP en caliente desde el
+> chat); 0067 autodetección del modelo cargado en LM Studio (API nativa /api/v0);
+> 0068 `run-host --no-hydrate` (baseline C0 sin contaminación del store).
+> 0069–0070 (2026-07-11, sesión de siembra): 0069 siembra operativa del registro —
+> skills `skill-router` + `memoria-sesion` (+ espejos `skills/*/SKILL.md`), agent
+> `harness-engineer`, conventions sembradas desde AGENTS.md §Conventions (8: 6
+> error/2 warn — hydrate inyecta por 1ª vez sus 4 secciones), software/repo del
+> propio harness en el catálogo, AGENTS.md regenerado (contrato+registro+mapa de
+> inyección), docs/MAPA-SKILLS.md, Functions.md §14 con las 52 tools MCP; fixes:
+> TOOL_RBAC +6 entradas (write/delete_agent|skill, save_mcp_context,
+> record_human_intervention) exportada con canario, y clamp del presupuesto en
+> routeSkills (slice negativo inyectaba basura); primera suite del router. Hallazgos
+> documentados: pair==review (triggers muerto), __global__ no enrutado (E6),
+> run_agent MCP sin roles, PhaseGate muerto, hook UserPromptSubmit vs ADR-0023.
+> 0070 (proposed) plan repo map v2: PLAN-REPOMAP-V2.md — símbolos ricos → symbol_edges
+> (call graph) → mapa de clases → `aitl impact`/`get_impact` anti-regresión → hydrate
+> symbol-brief + symbols_touched + riesgo de regresión por sesión. Ledger ahora
+> contiguo **0001–0070**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero
@@ -204,6 +224,7 @@ local fallback (`MONGODB_URI` → `MONGODB_URI_FALLBACK`); db `aitl`.
 - Run `npm run typecheck` and `npm run build` before claiming a change is done.
 - Context lookups (memory, decisions, conventions, skills) use a robust cascade
   (vector → text → recency) so they work even before the Atlas vector index exists.
-- Architectural changes get an ADR via the `record_decision` MCP tool (next free id;
-  currently 0046). Keep ADR ids contiguous and never reuse one. The number is the
-  next-free read from the `decisions` collection at BUILD time — never pin it in docs.
+- Architectural changes get an ADR via the `record_decision` MCP tool. Keep ADR ids
+  contiguous and never reuse one. The number is the next-free read from the
+  `decisions` collection at BUILD time — never pin it in docs (skill
+  `adr-ledger-reconcile`, scope `__global__`).

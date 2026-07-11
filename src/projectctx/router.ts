@@ -132,7 +132,8 @@ export async function routeSkills(
     const content = String(s.content ?? "").trim();
     if (!content) continue;
     const header = `### ${name}${desc ? ` — ${desc}` : ""}`;
-    const body = content.slice(0, budget - header.length - 2);
+    // Clamp to 0: a negative end would slice from the tail and inject a garbage fragment.
+    const body = content.slice(0, Math.max(0, budget - header.length - 2));
     if (body.length < 1) break; // out of budget
     const block = `${header}\n${body}`;
     lines.push(block, "");
