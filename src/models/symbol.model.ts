@@ -25,6 +25,14 @@ const symbolSchema = new Schema(
     file: { type: String, required: true },
     name: { type: String, required: true },
     kind: { type: String, required: true },
+    // Rich symbol metadata (repo map v2 F1, ADR-0070) — additive; pre-v2 docs lack
+    // `line_start` and are treated as stale by `RepoMap.build` (rewritten on next index).
+    line_start: { type: Number, default: 0 }, // 1-based def range; 0 = unknown (pre-v2 doc)
+    line_end: { type: Number, default: 0 },
+    parent: { type: String, default: null }, // enclosing class for method/property
+    exported: { type: Boolean, default: false }, // part of the module's API
+    signature: { type: String, default: "" }, // trimmed first line of the definition
+    doc: { type: String, default: null }, // doc comment above the definition (metadata for briefs)
     refs: { type: [String], default: [] },
     pagerank: { type: Number, default: 0 },
     mtime: { type: Number, default: 0 },

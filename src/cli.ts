@@ -773,6 +773,7 @@ program
   .option("--repo <repo>", "Repo sub-scope (rebuilds only this repo's symbols).")
   .option("--modules", "Print the first-level module map (kind view|back|mixed|infra + files + top symbols) from the cached symbols.", false)
   .option("--json", "With --modules: print the module map as JSON.", false)
+  .option("--full", "Force a full rewrite (ignore the per-file mtime cache; use after extractor/schema changes).", false)
   .description("Build the tree-sitter + PageRank repo map and print the top symbols (or the module map with --modules).")
   .action(async (opts) => {
     // Without --modules the legacy contract holds: --root is required (build + render).
@@ -780,7 +781,7 @@ program
     const { RepoMap } = await import("./repomap/store.js");
     const rm = new RepoMap();
     if (opts.root) {
-      const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
+      const n = await rm.build(opts.root, opts.project, opts.repo ?? null, { full: opts.full });
       // With --modules --json keep stdout machine-readable; the build note goes to stderr.
       const note = `Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`;
       if (opts.modules && opts.json) console.error(note.trimEnd());

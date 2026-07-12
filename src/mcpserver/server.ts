@@ -240,6 +240,8 @@ async function persistMcpToolCall(doc: Record<string, unknown>): Promise<void> {
  */
 export const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> = {
   write_memory: { resource: "memory", action: "create" },
+  update_memory: { resource: "memory", action: "update" },
+  delete_memory: { resource: "memory", action: "delete" },
   ingest_path: { resource: "memory", action: "create" },
   graphify: { resource: "memory", action: "update" },
   record_decision: { resource: "decisions", action: "create" },
@@ -409,6 +411,73 @@ export function buildServer(): McpServer {
         const a = mcpActor();
         await new MemoryStore().upsertMemory(doc, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
         return text({ slug: doc.slug, category: doc.category, type: doc.type, version: doc.version });
+      });
+    },
+  );
+
+  server.tool(
+    "get_memory",
+    "Fetch ONE memory doc by (project, slug) — full body, no embedding. Read-before-edit companion of update_memory.",
+    { project: z.string(), slug: z.string() },
+    async ({ project, slug }) => {
+      return runLogged("get_memory", { project, slug }, async () => {
+        const doc = await new MemoryStore().getMemory(project, slug);
+        if (!doc) throw new Error(`memory not found: ${project}/${slug}`);
+        return text(jsonable(doc));
+      });
+    },
+  );
+
+  server.tool(
+    "update_memory",
+    "Patch an EXISTING memory doc by (project, slug): only the provided fields change. Re-embeds and bumps version (prior version archived in memory_history). Fails if absent — use write_memory to create.",
+    {
+      project: z.string(),
+      slug: z.string(),
+      body: z.string().optional(),
+      description: z.string().optional(),
+      type: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      repo: z.string().nullable().optional(),
+      compacted_into: z.string().nullable().optional(),
+    },
+    async ({ project, slug, body, description, type, tags, repo, compacted_into }) => {
+      return runLogged("update_memory", { project, slug, body, description, type, tags, repo, compacted_into }, async () => {
+        const store = new MemoryStore();
+        const prev = (await store.getMemory(project, slug)) as Record<string, unknown> | null;
+        if (!prev) throw new Error(`memory not found: ${project}/${slug} (use write_memory to create)`);
+        delete prev._id;
+        if (type !== undefined && (!(MEMORY_TYPES as readonly string[]).includes(type) || RESERVED_MEMORY_TYPES.has(type))) {
+          throw new Error(`invalid memory type: ${type}`);
+        }
+        const doc = await makeMemoryDoc({
+          ...prev,
+          project,
+          slug,
+          ...(body !== undefined ? { body, links: extractLinks(body) } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(type !== undefined ? { type: type as MemoryType } : {}),
+          ...(tags !== undefined ? { tags } : {}),
+          ...(repo !== undefined ? { repo } : {}),
+          ...(compacted_into !== undefined ? { compacted_into } : {}),
+        });
+        // getMemory strips the vector, so always re-embed — otherwise $set would null it out.
+        doc.embedding = await embedOne(`${doc.description}\n${doc.body}`);
+        const a = mcpActor();
+        await store.upsertMemory(doc, { actor: { id: a.id, role: a.role }, branch: currentBranch() });
+        return text({ slug: doc.slug, type: doc.type, version: doc.version, updated: true });
+      });
+    },
+  );
+
+  server.tool(
+    "delete_memory",
+    "Delete ONE live memory doc by (project, slug). Archived versions in memory_history are untouched. Prefer update_memory / compaction (soft lifecycle) unless the doc is a true duplicate or mistake.",
+    { project: z.string(), slug: z.string() },
+    async ({ project, slug }) => {
+      return runLogged("delete_memory", { project, slug }, async () => {
+        const deleted = await new MemoryStore().deleteMemory(project, slug);
+        return text({ project, slug, deleted });
       });
     },
   );

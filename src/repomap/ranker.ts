@@ -24,10 +24,13 @@ export function rankSymbols(files: FileSymbols[]): Map<string, number> {
   const nodes = new Set<Key>();
   const edges: [Key, Key][] = [];
 
-  // Map symbol name -> defining file(s).
+  // Map symbol name -> defining file(s). Properties are stored for the class map but
+  // do NOT define graph nodes: common member names (`name`, `id`, …) collide with
+  // ubiquitous identifiers and would flood the ranking with spurious edges.
   const definers = new Map<string, string[]>();
   for (const fs of files) {
-    for (const [name] of fs.defs) {
+    for (const { name, kind } of fs.defs) {
+      if (kind === "property") continue;
       (definers.get(name) ?? definers.set(name, []).get(name)!).push(fs.file);
       nodes.add(defNode(fs.file, name));
     }

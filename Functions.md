@@ -187,7 +187,7 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 
 | Función | Firma | Qué hace |
 |---|---|---|
-| `buildServer` | `() => McpServer` | Servidor MCP (stdio/HTTP) con **55 tools** (registro único en `src/mcpserver/server.ts`). Catálogo completo tool-por-tool en la **§14** de este documento. |
+| `buildServer` | `() => McpServer` | Servidor MCP (stdio/HTTP) con **58 tools** (registro único en `src/mcpserver/server.ts`). Catálogo completo tool-por-tool en la **§14** de este documento. |
 | `main` / `mainHttp` | `() => Promise<void>` | Arranque del MCP por stdio / HTTP. |
 | `createApiServer` | `() => Server` | API REST `node:http` (proyección de `MemoryStore`) para el web UI. |
 | `startUi` | `(opts) => Promise<void>` | Levanta API + Vite dev server (memory-admin UI). |
@@ -273,6 +273,9 @@ audita en `audit`. Parámetros: **negrita = requerido**; `=x` es el default.
 |---|---|---|---|
 | `search_memory` | **query**, **project**, collection=`memory`, limit=10 | Búsqueda semántica sobre `memory`/`messages`/`decisions`: Atlas `$vectorSearch` con fallback `$text`. | — |
 | `write_memory` | **project**, **slug**, **body**, description, type=`project`, repo, tags | Upsert de UNA memoria estructurada (clasificada + embebida), keyed por `(project, slug)`. Versionado append-only (ADR-0027). | memory:create |
+| `get_memory` | **project**, **slug** | Lee UNA memoria completa (sin embedding) — companion read-before-edit de `update_memory`. | — |
+| `update_memory` | **project**, **slug**, body, description, type, tags, repo, compacted_into | Patch PARCIAL de una memoria existente (falla si no existe): solo cambian los campos provistos, re-embeddea y versiona (historial en `memory_history`). | memory:update |
+| `delete_memory` | **project**, **slug** | Borra el doc VIVO; las versiones archivadas en `memory_history` quedan intactas. Para ciclo suave preferir `update_memory`/compaction. | memory:delete |
 | `ingest_path` | **path**, **project**, repo | Ingesta masiva de un directorio de markdown como memoria. | memory:create |
 | `synthesize` | **project**, provider=`auto` (`anthropic`\|`openrouter`\|`lmstudio`\|`openai-compat`\|`extractive`), force=true, compact=false, return_text=true | Compresión rodante de la memoria viva ejecutada por el modelo PROPIO del server (map-reduce; fallback extractivo — jamás en blanco). Devuelve slugs, stats y los cuerpos de síntesis para re-inyección inmediata por el agente llamador (interop multi-harness). | memory:update |
 

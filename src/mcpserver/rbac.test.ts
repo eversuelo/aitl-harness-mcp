@@ -10,6 +10,8 @@ import { TOOL_RBAC } from "./server.js";
  */
 const MUTATING_TOOLS = [
   "write_memory",
+  "update_memory",
+  "delete_memory",
   "ingest_path",
   "graphify",
   "record_decision",
@@ -40,6 +42,7 @@ const MUTATING_TOOLS = [
 
 const READ_ONLY_SAMPLE = [
   "search_memory",
+  "get_memory",
   "list_decisions",
   "get_skill",
   "list_agents",
@@ -93,5 +96,10 @@ describe("TOOL_RBAC — forma de las entradas", () => {
   it("synthesize reescribe memoria y publish_event escribe coordinación", () => {
     assert.deepEqual(TOOL_RBAC.synthesize, { resource: "memory", action: "update" });
     assert.deepEqual(TOOL_RBAC.publish_event, { resource: "coordination", action: "create" });
+  });
+
+  it("edición y borrado de memoria mapean a memory:update / memory:delete", () => {
+    assert.deepEqual(TOOL_RBAC.update_memory, { resource: "memory", action: "update" });
+    assert.deepEqual(TOOL_RBAC.delete_memory, { resource: "memory", action: "delete" });
   });
 });
