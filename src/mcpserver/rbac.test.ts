@@ -33,7 +33,9 @@ const MUTATING_TOOLS = [
   "seed_roles",
   "claim_task",
   "release_task",
+  "publish_event",
   "run_agent",
+  "synthesize",
 ] as const;
 
 const READ_ONLY_SAMPLE = [
@@ -43,6 +45,7 @@ const READ_ONLY_SAMPLE = [
   "list_agents",
   "get_repomap",
   "poll_events",
+  "coord_status",
   "list_decision_versions",
   "get_memory_version",
 ] as const;
@@ -85,5 +88,10 @@ describe("TOOL_RBAC — forma de las entradas", () => {
   it("contexto de sesión y supervisión humana escriben estado durable (memory:create)", () => {
     assert.deepEqual(TOOL_RBAC.save_mcp_context, { resource: "memory", action: "create" });
     assert.deepEqual(TOOL_RBAC.record_human_intervention, { resource: "memory", action: "create" });
+  });
+
+  it("synthesize reescribe memoria y publish_event escribe coordinación", () => {
+    assert.deepEqual(TOOL_RBAC.synthesize, { resource: "memory", action: "update" });
+    assert.deepEqual(TOOL_RBAC.publish_event, { resource: "coordination", action: "create" });
   });
 });

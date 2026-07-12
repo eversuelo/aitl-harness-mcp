@@ -1,6 +1,7 @@
 import {
   BarChart3,
   FileText,
+  FolderTree,
   GitBranch,
   Loader2,
   MessageSquare,
@@ -21,6 +22,9 @@ import { AuthBadge, LoginDialog } from "@/components/LoginView";
 import { ConfigView } from "@/components/ConfigView";
 import { RestartBanner } from "@/components/RestartBanner";
 import { SetupWizard } from "@/components/SetupWizard";
+import { type ScopeFocus, ScopeSelector } from "@/components/ScopeSelector";
+import { WorkspaceView } from "@/components/WorkspaceView";
+import { EDGE_STROKE, NODE_FILL } from "@/lib/kindColors";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -58,12 +62,15 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge" | "config";
+type Tab = "workspace" | "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge" | "config";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
   const [project, setProject] = useState(DEFAULT_PROJECT);
-  const [tab, setTab] = useState<Tab>("memory");
+  // Header hierarchy scope: software narrows Workspace; repo/branch deep-link into it.
+  const [software, setSoftware] = useState("");
+  const [focus, setFocus] = useState<ScopeFocus>({});
+  const [tab, setTab] = useState<Tab>("workspace");
   const [error, setError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -137,17 +144,20 @@ export function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between gap-4 border-b px-5 py-3">
-        <div className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-3 py-3 sm:px-5">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <FileText className="h-4 w-4" />
           </div>
           <div>
             <h1 className="text-sm font-semibold leading-tight">AITL · Memory Admin</h1>
-            <p className="text-xs text-muted-foreground">durable state · MongoDB Atlas Vector Search</p>
+            <p className="hidden text-xs text-muted-foreground sm:block">durable state · MongoDB Atlas Vector Search</p>
           </div>
-          <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="ml-4">
-            <TabsList>
+          <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="min-w-0 sm:ml-4">
+            <TabsList className="h-auto max-w-full flex-wrap justify-start">
+              <TabsTrigger value="workspace">
+                <FolderTree /> Workspace
+              </TabsTrigger>
               <TabsTrigger value="memory">
                 <FileText /> Memory
               </TabsTrigger>
@@ -174,23 +184,20 @@ export function App() {
             </TabsList>
           </Tabs>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Label className="text-xs text-muted-foreground">project</Label>
-            <Select value={project} onValueChange={setProject}>
-              <SelectTrigger className="h-8 w-52">
-                <SelectValue placeholder="select a project…" />
-              </SelectTrigger>
-              <SelectContent>
-                {[...new Set([project, ...projects].filter(Boolean))].map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <Separator orientation="vertical" className="h-6" />
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <ScopeSelector
+            project={project}
+            projects={projects}
+            onProjectChange={setProject}
+            software={software}
+            onSoftwareChange={setSoftware}
+            focus={focus}
+            onFocusChange={(f) => {
+              setFocus(f);
+              if (f.repo) setTab("workspace");
+            }}
+          />
+          <Separator orientation="vertical" className="hidden h-6 sm:block" />
           <AuthBadge me={me} onLogin={() => setLoginOpen(true)} onLogout={logout} />
         </div>
       </header>
@@ -217,6 +224,15 @@ export function App() {
       )}
 
       <div className="min-h-0 flex-1">
+        {tab === "workspace" && (
+          <WorkspaceView
+            project={project}
+            software={software}
+            focus={focus}
+            onProjectChange={setProject}
+            onError={reportError}
+          />
+        )}
         {tab === "memory" && <MemoryView project={project} onError={reportError} />}
         {tab === "decisions" && <DecisionsView project={project} onError={reportError} />}
         {tab === "prompts" && <PromptsView project={project} onError={reportError} />}
@@ -233,9 +249,12 @@ export function App() {
 
 /* ── shared layout ───────────────────────────────────────────────────────── */
 function TwoPane({ list, detail }: { list: React.ReactNode; detail: React.ReactNode }) {
+  // Stacks on small screens (list capped, detail below); side-by-side from md up.
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(320px,38%)_1fr]">
-      <section className="flex min-h-0 flex-col border-r">{list}</section>
+    <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[minmax(320px,38%)_1fr]">
+      <section className="flex max-h-[45vh] min-h-0 flex-col border-b md:max-h-none md:border-b-0 md:border-r">
+        {list}
+      </section>
       <section className="min-h-0 overflow-y-auto">{detail}</section>
     </div>
   );
@@ -962,25 +981,6 @@ type GraphScope = "all" | "symbols" | "memory";
 const VW = 960;
 const VH = 640;
 const MAX_NODES = 300;
-const NODE_FILL: Record<GraphNode["kind"], string> = {
-  symbol: "#6366f1",
-  memory: "#f59e0b",
-  decision: "#ec4899",
-  context: "#14b8a6",
-  software: "#ef4444",
-  project: "#8b5cf6",
-  repo: "#22c55e",
-  branch: "#0ea5e9",
-  run: "#0f172a",
-  prompt: "#64748b",
-};
-const EDGE_STROKE: Record<string, string> = {
-  ref: "#a5b4fc",
-  link: "#fcd34d",
-  contains: "#94a3b8",
-  references: "#f472b6",
-  derives: "#0ea5e9",
-};
 
 /** Deterministic Fruchterman–Reingold-style force layout (pure, no deps). */
 function computeLayout(nodes: GraphNode[], edges: GraphData["edges"]): Map<string, { x: number; y: number }> {

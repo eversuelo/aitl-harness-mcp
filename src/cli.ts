@@ -1283,6 +1283,11 @@ program
   .option("--web-port <n>", "Port for the Vite dev server.", "5317")
   .option("--no-web", "Start only the API (skip the Vite dev server).")
   .option(
+    "--static",
+    "Sirve la SPA compilada (web/dist) desde el mismo puerto del API — modo producción/Docker, una sola URL compartible.",
+    false,
+  )
+  .option(
     "--watch-restart",
     "Supervise the UI and respawn it when it exits with the restart code (75) — enables the web UI's 'restart now' button (ADR-0061).",
     false,
@@ -1320,6 +1325,7 @@ program
       webPort: Number(opts.webPort),
       web: opts.web !== false,
       project: opts.project,
+      staticSpa: opts.static === true,
     });
   });
 
@@ -1675,6 +1681,42 @@ branch
   .action(async (name, opts) => {
     const { BranchStore } = await import("./branches/store.js");
     console.log((await new BranchStore().delete(opts.project, opts.repo, name)) ? `Deleted '${name}'.` : `(no branch '${name}')`);
+    await closeClient();
+  });
+
+// ── catalog tree: la jerarquía completa en una vista ─────────────────────────
+program
+  .command("tree")
+  .description("Muestra el catálogo jerárquico software → project → repo → branch.")
+  .option("--project <project>", "Filtra por project (muestra solo su cadena).")
+  .option("--software <software>", "Filtra por software.")
+  .option("--json", "Emite el árbol como JSON en vez de dibujarlo.", false)
+  .option("--no-color", "Desactiva los colores ANSI.")
+  .action(async (opts) => {
+    const [{ SoftwareStore }, { RepoStore }, { BranchStore }] = await Promise.all([
+      import("./softwares/store.js"),
+      import("./repos/store.js"),
+      import("./branches/store.js"),
+    ]);
+    const { buildCatalogTree, renderCatalogTree } = await import("./catalog/tree.js");
+    const [softwares, repos, branches] = await Promise.all([
+      new SoftwareStore().list({ limit: 200 }),
+      new RepoStore().list({ project: opts.project, software: opts.software, limit: 200 }),
+      new BranchStore().list({ project: opts.project, limit: 500 }),
+    ]);
+    const tree = buildCatalogTree({
+      softwares,
+      repos,
+      branches,
+      projectFilter: opts.project,
+      softwareFilter: opts.software,
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(tree, null, 2));
+    } else {
+      const color = opts.color !== false && process.stdout.isTTY;
+      for (const line of renderCatalogTree(tree, { color })) console.log(line);
+    }
     await closeClient();
   });
 

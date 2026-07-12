@@ -300,10 +300,11 @@ skills, no gates) — vs **C2** — the default full harness. Compare the measur
 
 ## MCP tools
 
-`aitl mcp` registers 52 tools, grouped by domain:
+`aitl mcp` registers 55 tools, grouped by domain:
 
 - **Memory** — `search_memory`, `write_memory`, `ingest_path`, `save_mcp_context`,
-  `list_mcp_context`, `search_mcp_context`.
+  `list_mcp_context`, `search_mcp_context`, `synthesize` (rolling knowledge compression
+  run by the server's own model stack; returns the synthesis for re-injection).
 - **Prompts** — `record_prompt`, `list_prompts`, `search_prompts`.
 - **Decisions (ADR)** — `list_decisions`, `record_decision`, `deprecate_decision`,
   `list_decision_versions`, `get_decision_version`.
@@ -313,8 +314,9 @@ skills, no gates) — vs **C2** — the default full harness. Compare the measur
   `list_skills`, `search_skills`, `delete_skill`).
 - **Repo map & graph** — `get_repomap`, `get_module_map`, `get_module_brief`, `graphify`,
   `index_repo`, `build_definition`.
-- **Coordination** — `claim_task`, `release_task`, `poll_events` (task claims with TTL +
-  durable events, RBAC resource `coordination`).
+- **Coordination** — `claim_task`, `release_task`, `poll_events`, `publish_event`,
+  `coord_status` (task claims with TTL + durable events + live who-is-working-on-what,
+  RBAC resource `coordination`).
 - **Agent runs** — `run_agent` (the full verifiable loop via MCP: `verify_cmd`, `loop_spec`,
   budgets; ADR-0063).
 - **Software / repo catalog** — `write_software`, `get_software`, `list_softwares`,

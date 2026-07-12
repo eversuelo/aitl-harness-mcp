@@ -84,6 +84,8 @@ export interface ApiDeps {
   requestRestart: () => void;
   /** Idempotent collections/indexes bootstrap (POST /api/admin/init-db). */
   runInitDb: () => Promise<unknown>;
+  /** Built SPA root (web/dist) to serve on non-/api GETs; null = API only. */
+  staticDir?: string | null;
 }
 
 /**
@@ -960,6 +962,26 @@ const DEFAULT_DEPS: ApiDeps = {
 export function createApiServer(overrides: Partial<ApiDeps> = {}): Server {
   const deps: ApiDeps = { ...DEFAULT_DEPS, ...overrides };
   return createServer((req, res) => {
+    // Production SPA (`aitl ui --static`): non-/api GETs stream the built web app
+    // from the same port, so one origin serves both the UI and the API.
+    if (deps.staticDir && (req.method === "GET" || req.method === "HEAD")) {
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (!pathname.startsWith("/api")) {
+        void (async () => {
+          const { resolveStaticFile } = await import("./staticFiles.js");
+          const hit = resolveStaticFile(deps.staticDir as string, pathname);
+          if (!hit) return send(req, res, 404, { error: "SPA build not found (run `vite build` in web/)." });
+          res.writeHead(200, {
+            "content-type": hit.type,
+            "cache-control": hit.immutable ? "public, max-age=31536000, immutable" : "no-cache",
+          });
+          if (req.method === "HEAD") return res.end();
+          const { createReadStream } = await import("node:fs");
+          createReadStream(hit.file).pipe(res);
+        })().catch(() => send(req, res, 500, { error: "static serve failed" }));
+        return;
+      }
+    }
     handle(req, res, deps).catch((err) => {
       const status = err instanceof HttpError ? err.status : 500;
       const body =

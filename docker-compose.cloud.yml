@@ -1,0 +1,65 @@
+# AITL Harness — despliegue cloud/VPS en un comando, con enlace compartible.
+#
+#   docker compose -f docker-compose.cloud.yml up -d
+#     → UI + API en http://<host>:4317  (una sola URL: SPA estática + /api)
+#
+#   docker compose -f docker-compose.cloud.yml --profile tunnel up -d
+#     → además publica un enlace público https://….trycloudflare.com SIN configurar
+#       nada (Cloudflare quick tunnel). Ver la URL con:
+#       docker compose -f docker-compose.cloud.yml logs tunnel | grep trycloudflare
+#
+# Mongo: por defecto levanta `mongodb-atlas-local` (mismo motor de Vector Search
+# que Atlas). Para usar un cluster Atlas real: define MONGODB_URI en `.env` o en
+# el entorno y elimina/ignora el servicio mongodb (el harness usa la URI externa).
+#
+# Seguridad para compartir el enlace:
+#   - AITL_WEB_ALLOW_SIGNUP=false → nadie se registra solo; crea usuarios con
+#     `aitl user create` o la pestaña Config.
+#   - El asistente de primer arranque (setup) solo responde a loopback; el primer
+#     usuario root se auto-genera en el log del contenedor (bootstrap) o créalo
+#     antes con `aitl user bootstrap`.
+#   - AITL_WEB_ORIGINS: allowlist CORS si sirves la UI desde otro origen.
+
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:latest
+    container_name: aitl-mongodb
+    volumes:
+      - aitl-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  aitl:
+    build: .
+    container_name: aitl-ui
+    ports:
+      - "${AITL_PORT:-4317}:4317"
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017/?directConnection=true}
+      MONGODB_DB: ${MONGODB_DB:-aitl}
+      AITL_WEB_ALLOW_SIGNUP: ${AITL_WEB_ALLOW_SIGNUP:-false}
+      AITL_WEB_ORIGINS: ${AITL_WEB_ORIGINS:-}
+      AITL_API_KEY: ${AITL_API_KEY:-}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Enlace público instantáneo (perfil opcional): quick tunnel de Cloudflare.
+  # Sin cuenta ni token; la URL https://….trycloudflare.com sale en los logs.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: aitl-tunnel
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://aitl:4317
+    depends_on:
+      - aitl
+    restart: unless-stopped
+
+volumes:
+  aitl-mongo-data:

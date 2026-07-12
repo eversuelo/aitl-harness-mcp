@@ -25,6 +25,11 @@ Toda llamada a tools del MCP `aitl-js` lleva `project: "aitl-js"`. Nunca `AITL-H
 3. `get_repomap` / `get_module_map` / `get_module_brief <dir>` — cuando toque estructura de código.
 4. `get_skill(project="aitl-js", name="skill-router")` — al iniciar una tarea no trivial:
    enruta a la skill/rol/agente correcto (mapa completo en `docs/MAPA-SKILLS.md`).
+5. `coord_status` — al abrir sesión de trabajo en el codebase: ¿quién más está
+   trabajando y en qué? (claims activos + eventos + actores). Reclama tu tarea con
+   `claim_task` (TTL 30 min, renovable), anuncia hitos con `publish_event`
+   (`note`/`task_done`) y libera con `release_task` al terminar. Hay sesiones
+   paralelas de otros harneses en este repo: coordina, no asumas exclusividad.
 
 Si el MCP y tus supuestos discrepan, **gana el MCP** — o expón el conflicto.
 

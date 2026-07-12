@@ -248,6 +248,8 @@ export const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> =
   // Session context + supervision telemetry write durable state (same catch-all as run_agent).
   save_mcp_context: { resource: "memory", action: "create" },
   record_human_intervention: { resource: "memory", action: "create" },
+  // The synthesizer rewrites memory: writes synthesis docs and (with compact) marks sources.
+  synthesize: { resource: "memory", action: "update" },
   write_software: { resource: "softwares", action: "create" },
   delete_software: { resource: "softwares", action: "delete" },
   write_repo: { resource: "repos", action: "create" },
@@ -267,6 +269,7 @@ export const TOOL_RBAC: Record<string, { resource: Resource; action: Action }> =
   // Coordination (ADR-0002 v1): claims mutate durable state; poll_events stays read-only (ungated).
   claim_task: { resource: "coordination", action: "create" },
   release_task: { resource: "coordination", action: "update" },
+  publish_event: { resource: "coordination", action: "create" },
   // The verifiable loop writes runs/messages/events/memory (ADR-0063).
   run_agent: { resource: "memory", action: "create" },
 };
@@ -1331,6 +1334,155 @@ export function buildServer(): McpServer {
         const { pollEvents } = await import("../coord/events.js");
         const res = await pollEvents(project, { since, limit });
         return text(jsonable(res));
+      });
+    },
+  );
+
+  server.tool(
+    "publish_event",
+    "Publish ONE coordination event (type note|task_done|decision) so peer agents polling the same project see it — the pub side of the coordination bus (claim/release/poll/status). Best-effort by contract: returns { ok:false } instead of throwing.",
+    {
+      project: z.string(),
+      type: z.enum(["note", "task_done", "decision"]).default("note"),
+      task_key: z.string().optional(),
+      payload: z.record(z.unknown()).default({}),
+    },
+    async ({ project, type, task_key, payload }) => {
+      return runLogged("publish_event", { project, type, task_key }, async () => {
+        await ensureMongoose();
+        const { recordCoordNote } = await import("../coord/events.js");
+        const res = await recordCoordNote(project, type, payload, {
+          taskKey: task_key ?? null,
+          actorId: mcpActor().id,
+        });
+        return text(jsonable({ ...res, type, task_key: task_key ?? null }));
+      });
+    },
+  );
+
+  server.tool(
+    "coord_status",
+    "Live multi-agent coordination status for a project: ACTIVE claims (task_key → owner → expiry), recent coordination events (newest first) and the actors seen with their open claims — one call answers 'who else is working on this codebase and on what'. Read-only.",
+    {
+      project: z.string(),
+      events_limit: z.number().int().positive().max(100).default(20),
+      include_history: z.boolean().default(false).describe("Also include released/expired claims."),
+    },
+    async ({ project, events_limit, include_history }) => {
+      return runLogged("coord_status", { project, events_limit, include_history }, async () => {
+        await ensureMongoose();
+        const { listClaims } = await import("../coord/claims.js");
+        const { CoordEventModel } = await import("../models/coordEvent.model.js");
+        const nowMs = Date.now();
+        const active = await listClaims(project); // live only: released:false AND not expired
+        const all = include_history ? await listClaims(project, { active: false }) : active;
+        const events = await CoordEventModel.find({ project }).sort({ created_at: -1 }).limit(events_limit).lean();
+        // Actors seen = claim owners ∪ event actors, with last activity + open claim count.
+        const actors = new Map<string, { last_seen: number; open_claims: number }>();
+        const touch = (id: string | null | undefined, at: Date | null | undefined, open = 0): void => {
+          if (!id) return;
+          const prev = actors.get(id) ?? { last_seen: 0, open_claims: 0 };
+          actors.set(id, {
+            last_seen: Math.max(prev.last_seen, at ? new Date(at).getTime() : 0),
+            open_claims: prev.open_claims + open,
+          });
+        };
+        for (const c of all) {
+          const live = !c.released && new Date(c.expires_at).getTime() > nowMs;
+          touch(c.owner_id, c.heartbeat_at ?? c.claimed_at, live ? 1 : 0);
+        }
+        for (const e of events) touch(e.actor_id, e.created_at as Date | null);
+        return text(
+          jsonable({
+            project,
+            now: new Date(nowMs).toISOString(),
+            active_claims: active.map((c) => ({
+              task_key: c.task_key,
+              owner: c.owner_id,
+              scope: c.scope || null,
+              claimed_at: c.claimed_at,
+              expires_at: c.expires_at,
+              expires_in_ms: Math.max(0, new Date(c.expires_at).getTime() - nowMs),
+            })),
+            ...(include_history
+              ? {
+                  claim_history: all
+                    .filter((c) => c.released || new Date(c.expires_at).getTime() <= nowMs)
+                    .slice(0, 100),
+                }
+              : {}),
+            recent_events: events.map((e) => ({
+              type: e.type,
+              task_key: e.task_key,
+              actor: e.actor_id,
+              at: e.created_at,
+              payload: e.payload,
+            })),
+            actors: [...actors.entries()]
+              .map(([id, a]) => ({
+                id,
+                last_seen: a.last_seen ? new Date(a.last_seen).toISOString() : null,
+                open_claims: a.open_claims,
+              }))
+              .sort((x, y) => ((x.last_seen ?? "") < (y.last_seen ?? "") ? 1 : -1)),
+          }),
+        );
+      });
+    },
+  );
+
+  // ── knowledge synthesis over MCP ────────────────────────────────────────────
+  // Any MCP host (Claude Code, Codex, Antigravity, OpenCode) can trigger a synthesis
+  // performed by THIS server's provider stack (model credentials live server-side);
+  // the returned bodies let the caller re-inject fresh knowledge into its own flow.
+  server.tool(
+    "synthesize",
+    "Compress the project's live memory into per-category syntheses using the harness's own synthesizer model (map-reduce batches; deterministic extractive fallback — a synthesis is never blank). `provider` picks the backend for THIS call: auto = configured fallback chain; extractive = no model. `compact:true` archives absorbed sources out of live memory (compacted_into; nothing deleted). Returns written slugs, compression stats and (with return_text) the synthesis bodies for immediate re-injection by the calling agent.",
+    {
+      project: z.string(),
+      provider: z
+        .enum(["auto", "anthropic", "openrouter", "lmstudio", "openai-compat", "extractive"])
+        .default("auto"),
+      force: z.boolean().default(true).describe("Run even under the growth trigger (an explicit call means 'do it now')."),
+      compact: z.boolean().default(false),
+      return_text: z.boolean().default(true),
+    },
+    async ({ project, provider, force, compact, return_text }) => {
+      return runLogged("synthesize", { project, provider, force, compact, return_text }, async () => {
+        await ensureMongoose();
+        const { Synthesizer } = await import("../memory/synthesizer.js");
+        let llm: import("../providers/base.js").Provider | null = null;
+        let synthesizer = "extractive";
+        if (provider === "auto") {
+          try {
+            const { getProviderWithFallback } = await import("../providers/base.js");
+            llm = await getProviderWithFallback();
+            synthesizer = "model:auto";
+          } catch {
+            llm = null; // no backend configured → deterministic extractive (degrade, never fail)
+          }
+        } else if (provider !== "extractive") {
+          const { getProvider } = await import("../providers/base.js");
+          llm = await getProvider(provider); // an explicitly requested backend must resolve: let it throw
+          synthesizer = `model:${provider}`;
+        }
+        const store = new MemoryStore();
+        const report = await new Synthesizer(store, llm).synthesize(project, { force, compact });
+        let syntheses: { slug: string; description: string; body: string }[] | undefined;
+        if (return_text && report.written.length) {
+          syntheses = [];
+          for (const slug of report.written) {
+            const doc = (await store.getMemory(project, slug)) as { description?: string; body?: string } | null;
+            if (doc) {
+              syntheses.push({
+                slug,
+                description: String(doc.description ?? ""),
+                body: String(doc.body ?? "").slice(0, 8000),
+              });
+            }
+          }
+        }
+        return text(jsonable({ ...report, synthesizer, ...(syntheses ? { syntheses } : {}) }));
       });
     },
   );

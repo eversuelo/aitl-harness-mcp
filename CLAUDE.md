@@ -194,6 +194,29 @@ spelling — those fragment the history. Verify the hash above matches
 > (call graph) → mapa de clases → `aitl impact`/`get_impact` anti-regresión → hydrate
 > symbol-brief + symbols_touched + riesgo de regresión por sesión. Ledger ahora
 > contiguo **0001–0070**.
+> 0071–0072 (2026-07-11, interop multi-harness): 0071 tools MCP `synthesize` (síntesis
+> ejecutada por el provider del SERVER, elegible por invocación — auto|anthropic|
+> openrouter|lmstudio|openai-compat|extractive — y re-inyectable por el llamador),
+> `coord_status` (claims activos + eventos + actores: «¿quién trabaja en qué?») y
+> `publish_event` (lado pub del bus best-effort) — 52→55 tools, canario RBAC a 27
+> mutantes; .env recableado a Chutes por el slot openai-compat (la key estaba INERTE
+> en API_KEY; cpk_* no se auto-clasifica), LM Studio retirado del .env y del config
+> global (la autodetección ADR-0067 lo recupera cuando su server corre),
+> MODEL_PRIMARY=openai-compat determinista; guía nueva docs/PROVIDERS.md (4 slots,
+> cadena auto, recetas mínimas). 0072 (proposed) AACL: canal push SSE/WS para
+> wrappers (Mongo change streams sobre coord_events), leases por archivo/glob,
+> detect_conflicts y DAG de dependencias — los agentes siguen en pull por frontera
+> de turno. Ledger ahora contiguo **0001–0072**.
+> 0073 (2026-07-12): workspace jerárquico — pestaña web «Workspace» (árbol
+> software→project→repo→branch + feed de actividad MCP por nodo), ScopeSelector en
+> cascada en el header (el software acota el Workspace; repo/branch deep-linkean),
+> colores unificados `web/src/lib/kindColors.ts`, layout responsivo; CLI `aitl tree`
+> (src/catalog/tree.ts puro); `aitl ui --static` (el API sirve web/dist en el mismo
+> puerto: una URL; `resolveStaticFile` con guard de traversal; `vite build` SIEMPRE
+> con cwd=web por los globs de Tailwind → `npm run build:web`); Dockerfile
+> multi-stage + docker-compose.cloud.yml (mongo atlas-local + aitl + perfil `tunnel`
+> cloudflared para enlace público). Se decidió NO separar el server. Ledger ahora
+> contiguo **0001–0073**; next free **0074**.
 > 0032: instrumentación del piloto — slice Schoolar T1/T3, condiciones C0/C2 (`--bare`),
 > `aitl run-show`, y quality gate en el loop (`aitl run --verify-cmd`).
 > 0033: roles de ingeniería componibles (H11) review/pair/gate que asisten al ingeniero

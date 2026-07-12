@@ -187,7 +187,7 @@ Precedencia: `process.env` > `~/.aitl/config.json` > defaults.
 
 | Función | Firma | Qué hace |
 |---|---|---|
-| `buildServer` | `() => McpServer` | Servidor MCP (stdio/HTTP) con **52 tools** (registro único en `src/mcpserver/server.ts`). Catálogo completo tool-por-tool en la **§14** de este documento. |
+| `buildServer` | `() => McpServer` | Servidor MCP (stdio/HTTP) con **55 tools** (registro único en `src/mcpserver/server.ts`). Catálogo completo tool-por-tool en la **§14** de este documento. |
 | `main` / `mainHttp` | `() => Promise<void>` | Arranque del MCP por stdio / HTTP. |
 | `createApiServer` | `() => Server` | API REST `node:http` (proyección de `MemoryStore`) para el web UI. |
 | `startUi` | `(opts) => Promise<void>` | Levanta API + Vite dev server (memory-admin UI). |
@@ -257,7 +257,7 @@ Emitidos a la colección `events` por `runAgent`/`orchestrate`:
 
 ---
 
-## 14. Tools MCP del servidor `aitl-js` (52)
+## 14. Tools MCP del servidor `aitl-js` (55)
 
 Registro único: `buildServer()` en `src/mcpserver/server.ts` (las 10 de agents/skills
 salen de la plantilla `registerDefinitionTools`). Todas pasan por `runLogged` — logging
@@ -274,6 +274,7 @@ audita en `audit`. Parámetros: **negrita = requerido**; `=x` es el default.
 | `search_memory` | **query**, **project**, collection=`memory`, limit=10 | Búsqueda semántica sobre `memory`/`messages`/`decisions`: Atlas `$vectorSearch` con fallback `$text`. | — |
 | `write_memory` | **project**, **slug**, **body**, description, type=`project`, repo, tags | Upsert de UNA memoria estructurada (clasificada + embebida), keyed por `(project, slug)`. Versionado append-only (ADR-0027). | memory:create |
 | `ingest_path` | **path**, **project**, repo | Ingesta masiva de un directorio de markdown como memoria. | memory:create |
+| `synthesize` | **project**, provider=`auto` (`anthropic`\|`openrouter`\|`lmstudio`\|`openai-compat`\|`extractive`), force=true, compact=false, return_text=true | Compresión rodante de la memoria viva ejecutada por el modelo PROPIO del server (map-reduce; fallback extractivo — jamás en blanco). Devuelve slugs, stats y los cuerpos de síntesis para re-inyección inmediata por el agente llamador (interop multi-harness). | memory:update |
 
 ### Contexto MCP y prompts
 
@@ -361,6 +362,8 @@ audita en `audit`. Parámetros: **negrita = requerido**; `=x` es el default.
 | `claim_task` | **project**, **task_key**, scope, ttl_ms | Claim atómico (UNO activo por project+task_key); conflicto ⇒ `{ok:false, heldBy, expiresAt}`; TTL default 30 min, re-claim propio renueva, expirado se toma (`expire_reclaim`). | coordination:create |
 | `release_task` | **project**, **task_key**, outcome=`done` | Libera TU claim (solo el dueño); emite evento con el outcome. | coordination:update |
 | `poll_events` | **project**, since, limit≤500 | Eventos de coordinación estrictamente > `since`, ascendentes; devuelve `cursor` incremental. | — |
+| `publish_event` | **project**, type=`note` (`note`\|`task_done`\|`decision`), task_key, payload | Publica UN evento de coordinación para que los pares que hacen polling lo vean — el lado «pub» del bus. Best-effort: devuelve `{ok:false}` en vez de lanzar. | coordination:create |
+| `coord_status` | **project**, events_limit=20, include_history=false | Estado vivo multi-agente: claims ACTIVOS (tarea→dueño→expiración), eventos recientes y actores vistos con sus claims abiertos — «¿quién más trabaja en este codebase y en qué?». | — |
 
 ### Loop verificable y supervisión humana
 

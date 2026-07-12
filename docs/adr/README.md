@@ -5,7 +5,7 @@ Chronological record of the harness's architecture decisions, in the Nygard form
 
 **Source of truth:** the `decisions` collection in MongoDB (project `aitl-js`) — query it
 with `aitl adr history`, the `list_decisions` MCP tool, or the web UI. The ledger is
-contiguous **0001–0070** as of 2026-07-11 — always read the live next-free id from the
+contiguous **0001–0072** as of 2026-07-11 — always read the live next-free id from the
 collection (skill `adr-ledger-reconcile`), never from docs.
 
 **This directory is a complete mirror** of that ledger, maintained by
