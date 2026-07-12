@@ -14,6 +14,7 @@ import {
   Settings2,
   Share2,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -23,6 +24,7 @@ import { ConfigView } from "@/components/ConfigView";
 import { RestartBanner } from "@/components/RestartBanner";
 import { SetupWizard } from "@/components/SetupWizard";
 import { type ScopeFocus, ScopeSelector } from "@/components/ScopeSelector";
+import { ToolCallsView } from "@/components/ToolCallsView";
 import { WorkspaceView } from "@/components/WorkspaceView";
 import { EDGE_STROKE, NODE_FILL } from "@/lib/kindColors";
 import { Badge } from "@/components/ui/badge";
@@ -62,7 +64,7 @@ const TYPE_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   reference: "outline",
 };
 
-type Tab = "workspace" | "memory" | "decisions" | "prompts" | "runs" | "graph" | "knowledge" | "config";
+type Tab = "workspace" | "memory" | "decisions" | "prompts" | "runs" | "toolcalls" | "graph" | "knowledge" | "config";
 
 export function App() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -170,6 +172,9 @@ export function App() {
               <TabsTrigger value="runs">
                 <BarChart3 /> Runs
               </TabsTrigger>
+              <TabsTrigger value="toolcalls">
+                <Wrench /> ToolCalls
+              </TabsTrigger>
               <TabsTrigger value="graph">
                 <Network /> Graph
               </TabsTrigger>
@@ -237,6 +242,7 @@ export function App() {
         {tab === "decisions" && <DecisionsView project={project} onError={reportError} />}
         {tab === "prompts" && <PromptsView project={project} onError={reportError} />}
         {tab === "runs" && <RunsView project={project} onError={reportError} />}
+        {tab === "toolcalls" && <ToolCallsView project={project} onError={reportError} />}
         {tab === "graph" && <GraphView project={project} onError={reportError} />}
         {tab === "knowledge" && <KnowledgeMapView project={project} onError={reportError} />}
         {tab === "config" && canConfig && (

@@ -34,6 +34,8 @@
  *   DELETE /api/memory/:slug?project=
  *   GET    /api/runs?project=&limit=         run telemetry (tokens, cost, iters, status)
  *   GET    /api/runs/:id                     one run + event counts + supervision minutes
+ *   GET    /api/tool-calls?project=&since=   mcp_tool_calls aggregation: per tool, volume/
+ *                                            success/latency + read-vs-write + what it hydrated/created
  */
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -832,6 +834,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
       .limit(parseLimit(searchParams, 200))
       .lean();
     return send(req, res, 200, rows);
+  }
+
+  // ── tool-calls telemetry (which MCP tools ran, what they hydrated/created) ─
+  if (pathname === "/api/tool-calls" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { toolCallsReport } = await import("../toolcalls/report.js");
+    await ensureMongoose();
+    const since = searchParams.get("since");
+    const match: Record<string, unknown> = { project };
+    if (since) {
+      const d = new Date(since);
+      if (!Number.isNaN(d.getTime())) match.ts = { $gte: d };
+    }
+    return send(req, res, 200, await toolCallsReport(match));
   }
 
   // Per-session graph (ADR-0035): the run linked to the ADRs/memories/prompts it produced.

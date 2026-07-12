@@ -75,6 +75,37 @@ export interface RunDetail {
   intervention_minutes: number;
 }
 
+/* ── tool-calls telemetry (mcp_tool_calls aggregation) ────────────────────── */
+
+export interface ToolSummaryRow {
+  _id: { project: string | null; tool: string };
+  calls: number;
+  ok: number;
+  failed: number;
+  avgMs: number | null;
+  lastTs: string;
+  firstTs: string;
+  /** What was asked for in the most recent call (redacted args). */
+  lastArgsPreview: string | null;
+  /** Proof of what actually came back from the most recent successful call. */
+  lastResultPreview: string | null;
+  lastErrorMessage: string | null;
+}
+
+export interface ToolTargetRow {
+  _id: { project: string | null; tool: string; target: string };
+  calls: number;
+  ok: number;
+  failed: number;
+  lastTs: string;
+  lastResultPreview: string | null;
+}
+
+export interface ToolCallsReport {
+  summary: ToolSummaryRow[];
+  targets: ToolTargetRow[];
+}
+
 /* ── catalog hierarchy: software → project → repo → branch (ADR-0028/0031) ── */
 
 export interface SoftwareDoc {
@@ -453,6 +484,12 @@ export const api = {
 
   run: (id: string) =>
     fetch(`/api/runs/${encodeURIComponent(id)}`, { headers: authHeaders() }).then(json<RunDetail>),
+
+  toolCalls: (project: string, since?: string) =>
+    fetch(
+      `/api/tool-calls?project=${encodeURIComponent(project)}${since ? `&since=${encodeURIComponent(since)}` : ""}`,
+      { headers: authHeaders() },
+    ).then(json<ToolCallsReport>),
 
   sessionGraph: (project: string, id: string, temporal = false) =>
     fetch(

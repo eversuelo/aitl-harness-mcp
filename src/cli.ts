@@ -2170,6 +2170,22 @@ program
         session = session ?? (hook.session_id as string | undefined);
         cwd = cwd ?? (hook.cwd as string | undefined);
       }
+      // Manual invocation (no hook stdin, no --transcript): find the newest Claude Code
+      // transcript for the cwd instead of silently capturing nothing (empty-run bug).
+      if (!transcript) {
+        const { findLatestTranscript } = await import("./context/capture.js");
+        const found = await findLatestTranscript(cwd);
+        if (found) {
+          transcript = found;
+          console.error(`[aitl capture-session] transcript auto-descubierto: ${found}`);
+        } else {
+          console.error(
+            `[aitl capture-session] sin transcript: no vino por --transcript ni por el hook, y no hay ` +
+              `~/.claude/projects/<cwd>/*.jsonl para ${cwd ?? process.cwd()}. Nada que capturar.`,
+          );
+          return;
+        }
+      }
       const { captureSession } = await import("./context/capture.js");
       const res = await captureSession({
         project: opts.project,

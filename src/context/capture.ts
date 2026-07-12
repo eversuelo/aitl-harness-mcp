@@ -16,7 +16,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { ensureMongoose } from "../db/mongoose.js";
 import { McpContextModel } from "../models/mcpContext.model.js";
 import { RunModel, makeRun } from "../models/run.model.js";
@@ -180,6 +182,36 @@ export async function parseTranscript(path: string): Promise<ParsedTranscript> {
   return finish();
 }
 
+/**
+ * Locate the newest Claude Code transcript for a working directory: Claude stores them at
+ * `~/.claude/projects/<cwd-slug>/<session>.jsonl` where the slug is the absolute path with
+ * `/` (and `.`) replaced by `-`. Returns null when no transcript dir/file exists — the
+ * caller decides whether that is an error (manual capture) or fine (hook supplied a path).
+ */
+export async function findLatestTranscript(
+  cwd?: string,
+  projectsRoot: string = join(homedir(), ".claude", "projects"),
+): Promise<string | null> {
+  const abs = resolve(cwd ?? process.cwd());
+  const slugs = [abs.replace(/\//g, "-"), abs.replace(/[/.]/g, "-")];
+  for (const slug of [...new Set(slugs)]) {
+    const dir = join(projectsRoot, slug);
+    try {
+      const entries = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
+      let best: { path: string; mtime: number } | null = null;
+      for (const f of entries) {
+        const p = join(dir, f);
+        const s = await stat(p);
+        if (!best || s.mtimeMs > best.mtime) best = { path: p, mtime: s.mtimeMs };
+      }
+      if (best) return best.path;
+    } catch {
+      // dir absent for this slug variant → try the next
+    }
+  }
+  return null;
+}
+
 /** Derive `component:<dir>` tags from edited file paths (relative to cwd, first 2 segments). */
 export function componentTags(editedPaths: string[], cwd?: string): string[] {
   const base = (cwd ?? process.cwd()).replace(/\\/g, "/").replace(/\/+$/, "");
@@ -222,6 +254,12 @@ export interface CaptureOpts {
   source?: string;
   provider?: Provider;
   store?: MemoryStore;
+  /**
+   * Permit capturing without transcript (or one that parsed to zero turns/tokens). Default
+   * FALSE: an empty capture writes a run of pure zeros — garbage in the Runs tab — so it is
+   * an error unless the caller explicitly opts in.
+   */
+  allowEmpty?: boolean;
 }
 
 /** Persist a context snapshot to `mcp_context` (mirrors the save_mcp_context MCP tool shape). */
@@ -276,6 +314,11 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
   const source = opts.source ?? "claude-code";
   const runId = opts.sessionId ?? randomUUID();
 
+  if (!opts.transcriptPath && !opts.allowEmpty) {
+    throw new Error(
+      "no transcript to capture (pass transcriptPath, pipe the Stop-hook JSON, or set allowEmpty)",
+    );
+  }
   const parsed = opts.transcriptPath
     ? await parseTranscript(opts.transcriptPath)
     : {
@@ -289,6 +332,11 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
         startedAt: null as Date | null,
         endedAt: null as Date | null,
       };
+  if (!opts.allowEmpty && parsed.turns === 0 && parsed.usage.input + parsed.usage.output === 0) {
+    throw new Error(
+      `transcript parsed to zero turns/tokens (${opts.transcriptPath}) — wrong file or unrecognized format; refusing to record an empty run`,
+    );
+  }
 
   const compTags = componentTags(parsed.editedPaths, opts.cwd);
   const explicit = opts.component ? [`component:${opts.component}`] : [];
