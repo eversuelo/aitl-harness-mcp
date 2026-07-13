@@ -15,22 +15,39 @@ import { currentBranch } from "../util/git.js";
 import { parseTree } from "./parser.js";
 import { rankSymbols, selectWithinBudget } from "./ranker.js";
 
+/** Per-build write stats (repo map v2 F1): what changed in the `symbols` collection. */
+export interface BuildStats {
+  symbols: number; // total live symbols for (project, repo) after the build
+  files_scanned: number;
+  files_written: number; // files whose symbols were (re)written — new, changed mtime, or pre-v2 docs
+  files_pruned: number; // files deleted from disk whose stale symbols were removed
+}
+
 export class RepoMap {
   // Retained for call-site compatibility (`new RepoMap(store.db)`); the symbols
   // collection is now accessed through the Mongoose `SymbolModel`, not this handle.
   private db?: Db;
+  /** Stats of the most recent `build()` on this instance (callers keep the numeric return). */
+  lastStats: BuildStats | null = null;
 
   constructor(db?: Db) {
     this.db = db;
   }
 
   /**
-   * Parse the tree, rank symbols, upsert into Mongo. Returns symbol count.
+   * Parse the tree, rank symbols, write into Mongo incrementally. Returns symbol count.
    * When `repo` is given, symbols are tagged with it and only that repo's symbols
-   * are replaced (rebuilding one repo does not wipe the project's other repos).
+   * are touched (rebuilding one repo does not wipe the project's other repos).
+   *
+   * Incremental contract (v2, closes G6 of PLAN-REPOMAP-V2): the tree is always
+   * parsed in full (the heuristic scanner is cheap and PageRank needs the whole
+   * graph), but WRITES are per-file — symbols of deleted files are pruned, only
+   * files with a changed mtime (or pre-v2 docs missing `line_start`) are rewritten,
+   * and unchanged files just get their pagerank refreshed in bulk.
    */
-  async build(root: string, project: string, repo: string | null = null): Promise<number> {
+  async build(root: string, project: string, repo: string | null = null, opts: { full?: boolean } = {}): Promise<number> {
     await ensureMongoose();
+    const scope = repo ? { project, repo } : { project, repo: null };
     const files = await parseTree(root);
     // Relativize every path to `root` so stored keys are PORTABLE (e.g. `repomap/store.ts`,
     // not `/abs/.../src/repomap/store.ts`). The ranker treats `file` as an opaque key, so
@@ -49,24 +66,83 @@ export class RepoMap {
       }
     }
 
-    await SymbolModel.deleteMany(repo ? { project, repo } : { project, repo: null });
-    const docs = await Promise.all(files.flatMap((fsym) =>
-      fsym.defs.map(([name, kind]) =>
+    // Snapshot what the store already holds for this scope: per-file mtime + whether
+    // the docs are v2-rich (line_start present) — pre-v2 docs must be rewritten once.
+    const existing = (await SymbolModel.find(scope, { file: 1, mtime: 1, line_start: 1 }).lean()) as {
+      file: string; mtime?: number; line_start?: number;
+    }[];
+    const storedByFile = new Map<string, { mtime: number; rich: boolean }>();
+    for (const e of existing) {
+      const prev = storedByFile.get(e.file);
+      storedByFile.set(e.file, {
+        mtime: e.mtime ?? 0,
+        rich: (prev?.rich ?? true) && e.line_start !== undefined && e.line_start !== 0,
+      });
+    }
+
+    // Prune: symbols of files that no longer exist on disk (or left the walk).
+    const live = new Set(files.map((f) => f.file));
+    const pruned = [...storedByFile.keys()].filter((f) => !live.has(f));
+    if (pruned.length) await SymbolModel.deleteMany({ ...scope, file: { $in: pruned } });
+
+    const changed = files.filter((f) => {
+      if (opts.full) return true; // schema/extractor evolved → rewrite everything
+      const stored = storedByFile.get(f.file);
+      return !stored || stored.mtime !== (mtimes.get(f.file) ?? 0) || !stored.rich;
+    });
+    const unchanged = files.filter((f) => !changed.includes(f));
+
+    if (changed.length) {
+      await SymbolModel.deleteMany({ ...scope, file: { $in: changed.map((f) => f.file) } });
+    }
+    const docs = await Promise.all(changed.flatMap((fsym) =>
+      fsym.defs.map((def) =>
         makeSymbol({
           project,
           repo,
           branch,
           file: fsym.file,
-          name,
-          kind,
+          name: def.name,
+          kind: def.kind,
+          line_start: def.line_start,
+          line_end: def.line_end,
+          parent: def.parent,
+          exported: def.exported,
+          signature: def.signature,
+          doc: def.doc,
           refs: [...fsym.refs].slice(0, 50),
-          pagerank: scores.get(`${fsym.file}${String.fromCharCode(1)}${name}`) ?? 0,
+          pagerank: scores.get(`${fsym.file}${String.fromCharCode(1)}${def.name}`) ?? 0,
           mtime: mtimes.get(fsym.file) ?? 0,
         }),
       ),
     ));
     if (docs.length) await SymbolModel.insertMany(docs);
-    return docs.length;
+
+    // PageRank is global: any change shifts every score, so refresh the kept files too.
+    const rankOps = unchanged.flatMap((fsym) =>
+      fsym.defs.map((def) => ({
+        updateOne: {
+          filter: { ...scope, file: fsym.file, name: def.name },
+          update: {
+            $set: {
+              pagerank: scores.get(`${fsym.file}${String.fromCharCode(1)}${def.name}`) ?? 0,
+              branch,
+              updated_at: new Date(),
+            },
+          },
+        },
+      })),
+    );
+    if (rankOps.length) await SymbolModel.bulkWrite(rankOps, { ordered: false });
+
+    const total = docs.length + unchanged.reduce((s, f) => s + f.defs.length, 0);
+    this.lastStats = {
+      symbols: total,
+      files_scanned: files.length,
+      files_written: changed.length,
+      files_pruned: pruned.length,
+    };
+    return total;
   }
 
   /** Render the top-ranked symbols within a token budget (agent-facing). Optional repo filter. */

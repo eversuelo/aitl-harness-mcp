@@ -1,0 +1,17 @@
+# ADR-0070 — Plan repo map v2: call graph, mapa de clases/objetos e impacto anti-regresión (get_impact)
+
+- **Status:** proposed
+- **Date:** 2026-07-11
+- **Components:** src/repomap, src/models, src/memory, src/cli.ts
+
+## Context
+
+El repo map actual (ADR-0017/0037/0053) no puede responder «¿dónde afecta este cambio?»: G1 los métodos de clase son invisibles para la heurística (RepoMap.build/render no existen como símbolos en este mismo repo — solo captura function/class/interface/type/enum/arrow); G2 las refs son un Set plano por ARCHIVO recortado a 50 (store.ts:62) — imposible derivar quién llama a quién; G3 sin posiciones línea → no se cruza con hunks de git diff; G4 sin parent/exported/signature → mapa de clases no reconstruible; G5 el grafo del PageRank se calcula y se tira (no hay edges persistidos → no hay consulta inversa); G6 el docstring promete cache incremental por mtime pero build() borra todo y reinserta (mtime se guarda y nunca se compara); G7 las gramáticas tree-sitter .wasm no se distribuyen → siempre corre la heurística. Evidencia viva 2026-07-11: tras reconstruir el mapa, los top símbolos por PageRank son ruido (now, add, run, text de los modelos) y las APIs reales (runAgent, hydrate, MemoryStore) apenas aparecen. El plus del harness (memoria durable + contexto inteligente + medición de sesiones) exige que el mapa alimente hydrate y la telemetría de runs.
+
+## Decision
+
+Adoptar el plan de 5 fases de PLAN-REPOMAP-V2.md (raíz del repo): F1 símbolos ricos (line_start/end, parent clase→método, exported, signature, kinds method/property; heurística scope-aware por llaves balanceadas + wasm empaquetados para ts/tsx/js/py; fix real del cache mtime); F2 grafo de llamadas — refs atribuidas al símbolo contenedor y persistidas en colección nueva symbol_edges {from, to, kind: calls|imports|extends|implements|instantiates, count} por (project, repo, branch), PageRank pasa a símbolo→símbolo; funciones principales = top PageRank ∪ entry points exported; funciones compuestas = out-degree>0 en calls; F3 mapa de clases/objetos (aitl repomap --classes anidado en el module map de ADR-0053); F4 impacto anti-regresión — clausura transitiva INVERSA (callers+importers) con CLI aitl impact <símbolo|archivo|--diff> [--tests] y tool MCP get_impact; tests afectados = *.test.ts en el radio → sugerencia de --verify-cmd focalizado; evento impact_check; F5 integración con el plus: fuente symbol-brief en hydrate (símbolos mencionados en el prompt → firma + callers/callees + ADRs por components + memorias component:), capture-session taguea symbol:<name>, run doc gana symbols_touched[] y blast_radius, y run-show reporta riesgo de regresión por sesión (tests del radio no ejecutados). Orden F1→F2→F4→F3→F5 (el valor anti-regresión antes que el render). Impacto conservador por diseño (mejor sobre-avisar); todo aditivo (docs viejos válidos, get_repomap no cambia su salida por defecto).
+
+## Consequences
+
+«¿Dónde afecta?» se responde con datos (clausura inversa) en vez de memoria del agente; el gate correcto se elige por evidencia (tests del radio); el PageRank deja de premiar helpers ruidosos al rankear sobre llamadas reales; hydrate gana una fuente de contexto quirúrgica por símbolo; y la métrica de sesiones puede reportar riesgo de regresión. Costo: una colección nueva con índice inverso, resolución de nombres ambigua aceptada como conservadora, y ~4-5 sesiones de implementación (estimación por fase en el plan). Cada fase aterriza con su ADR accepted referenciando este documento y los 438 tests actuales en verde.

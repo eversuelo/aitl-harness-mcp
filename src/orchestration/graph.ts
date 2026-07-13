@@ -249,6 +249,16 @@ export async function runAgent(
     if (opts.denyPaths?.length) registry.addGate(denyPathsGate(opts.denyPaths));
   }
 
+  // ── ADR regression guard (Layer 3, TODO.md §3): annotate write/edit results ──
+  // with reminders of active ADRs whose components[] match the edited file's dir.
+  // Best-effort: degrades silently if Mongo is unavailable.
+  try {
+    const { installAdrGuard } = await import("../hooks/adrGuard.js");
+    installAdrGuard(registry, { project });
+  } catch {
+    // adrGuard import or install failed — never block the loop.
+  }
+
   // ── engineering roles (H11): gate-mode roles veto in-loop; review/pair are
   //    applied at the end-of-run checkpoint (see below). They assist the engineer. ──
   let activeRoles: import("../roles/schema.js").Role[] = [];

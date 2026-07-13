@@ -44,6 +44,9 @@ export interface StartUiOpts {
   webPort: number;
   web: boolean;
   project?: string;
+  /** Serve the built SPA (web/dist) from the API port instead of spawning Vite —
+   *  production/Docker mode: one port, one shareable URL. */
+  staticSpa?: boolean;
 }
 
 /** Absolute path to the `web/` SPA directory, relative to this module. */
@@ -128,12 +131,28 @@ export async function startUi(opts: StartUiOpts): Promise<void> {
   let requestRestart = () => {
     console.warn("[ui] restart requested before the server finished booting — ignored");
   };
-  const api = createApiServer({ requestRestart: () => requestRestart() });
+
+  // Static mode (explicit --static, or dev fallback when Vite is missing but a
+  // build exists): the API port serves the SPA too — one shareable URL.
+  const { resolveWebDist } = await import("./staticFiles.js");
+  let staticDir: string | null = null;
+  if (opts.staticSpa) {
+    staticDir = resolveWebDist();
+    if (!staticDir) {
+      console.warn("[ui] --static: no hay build de la SPA (corre `vite build` en web/) — API solamente.");
+    }
+  } else if (opts.web && !resolveViteBin()) {
+    staticDir = resolveWebDist();
+    if (staticDir) console.log("[ui] Vite no está instalado — sirviendo la SPA compilada (web/dist) desde el API.");
+  }
+
+  const api = createApiServer({ requestRestart: () => requestRestart(), staticDir });
   await new Promise<void>((resolve) => api.listen(opts.apiPort, resolve));
   console.log(`[ui] memory-admin API → http://localhost:${opts.apiPort}/api`);
+  if (staticDir) console.log(`[ui] web UI (estática) → http://localhost:${opts.apiPort}/`);
 
-  const vite = opts.web ? startViteDevServer(opts) : undefined;
-  if (opts.web && vite) console.log(`[ui] React SPA (Vite) → http://localhost:${opts.webPort}`);
+  const vite = opts.web && !opts.staticSpa && !staticDir ? startViteDevServer(opts) : undefined;
+  if (vite) console.log(`[ui] React SPA (Vite) → http://localhost:${opts.webPort}`);
 
   let shuttingDown = false;
   const shutdown = async (code = 0) => {

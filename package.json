@@ -36,6 +36,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/fix-bin-perms.mjs",
+    "build:web": "cd web && vite build",
+    "typecheck:web": "tsc -p web/tsconfig.json",
     "build:watch": "tsc -p tsconfig.build.json --watch",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepare": "npm run build",
@@ -57,6 +59,7 @@
     "db:check": "tsx scripts/checkDb.ts",
     "init-db": "tsx scripts/initDb.ts",
     "db:init": "tsx scripts/initDb.ts",
+    "tool-calls-report": "tsx scripts/toolCallsReport.ts",
     "mcp": "tsx src/mcpserver/server.ts",
     "mcp:dist": "node dist/src/mcpserver/server.js",
     "mcp:http": "tsx src/cli.ts mcp --http --host 127.0.0.1 --port 8000 --path /mcp",

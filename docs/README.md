@@ -14,7 +14,8 @@ Reading index for exploring AITL-Harness-JS.
 ## ADRs
 
 The **ADR ledger lives in MongoDB** (the `decisions` collection), contiguous
-**0001–0059**. Since ADR-0051 the full series is mirrored as markdown under
+**0001–0072** as of 2026-07-11 (read the live next-free from the collection, not from
+docs). Since ADR-0051 the full series is mirrored as markdown under
 [adr/](adr/) by `aitl sync --project aitl-js` (two malformed legacy docs,
 `0036-mongoose-data-layer` and `0037-branch-aware-repomap`, are skipped by the
 mirror; their canonical `0036`/`0037` entries are mirrored normally). ADRs are also

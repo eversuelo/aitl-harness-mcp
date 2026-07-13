@@ -186,6 +186,13 @@ export async function chatRepl(opts: ChatReplOpts): Promise<void> {
     });
     const { installDefaultGates } = await import("../hooks/gates.js");
     installDefaultGates(defaultRegistry); // idempotent per registry
+    // ADR regression guard (Layer 3): annotate write/edit results with ADR reminders.
+    try {
+      const { installAdrGuard } = await import("../hooks/adrGuard.js");
+      installAdrGuard(defaultRegistry, { project: opts.project });
+    } catch {
+      // best-effort — never break the chat session.
+    }
   }
 
   const caps = provider.capabilities();

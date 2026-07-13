@@ -63,3 +63,34 @@ export function detectBaseBranch(branch: string, candidates: string[], cwd: stri
   }
   return best?.name ?? null;
 }
+
+/**
+ * Files changed in the working tree + index (staged) relative to HEAD.
+ * Returns normalised forward-slash paths relative to the repo root.
+ * Never throws: returns an empty array outside a git repo.
+ */
+export function changedFiles(cwd: string = process.cwd()): string[] {
+  // unstaged changes
+  const unstaged = git(["diff", "--name-only", "HEAD"], cwd);
+  // staged (could differ from HEAD)
+  const staged = git(["diff", "--name-only", "--cached"], cwd);
+  // untracked new files
+  const untracked = git(["ls-files", "--others", "--exclude-standard"], cwd);
+  const set = new Set<string>();
+  for (const block of [unstaged, staged, untracked]) {
+    if (!block) continue;
+    for (const line of block.split("\n")) {
+      const f = line.trim();
+      if (f) set.add(f.replace(/\\/g, "/"));
+    }
+  }
+  return [...set].sort();
+}
+
+/**
+ * Resolve the repo root directory (absolute path) for a given `cwd`.
+ * Returns null outside a git repo.
+ */
+export function repoRoot(cwd: string = process.cwd()): string | null {
+  return git(["rev-parse", "--show-toplevel"], cwd);
+}

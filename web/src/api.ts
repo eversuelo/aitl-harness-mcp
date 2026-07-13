@@ -75,6 +75,92 @@ export interface RunDetail {
   intervention_minutes: number;
 }
 
+/* ── tool-calls telemetry (mcp_tool_calls aggregation) ────────────────────── */
+
+export interface ToolSummaryRow {
+  _id: { project: string | null; tool: string };
+  calls: number;
+  ok: number;
+  failed: number;
+  avgMs: number | null;
+  lastTs: string;
+  firstTs: string;
+  /** What was asked for in the most recent call (redacted args). */
+  lastArgsPreview: string | null;
+  /** Proof of what actually came back from the most recent successful call. */
+  lastResultPreview: string | null;
+  lastErrorMessage: string | null;
+}
+
+export interface ToolTargetRow {
+  _id: { project: string | null; tool: string; target: string };
+  calls: number;
+  ok: number;
+  failed: number;
+  lastTs: string;
+  lastResultPreview: string | null;
+}
+
+export interface ToolCallsReport {
+  summary: ToolSummaryRow[];
+  targets: ToolTargetRow[];
+}
+
+/* ── catalog hierarchy: software → project → repo → branch (ADR-0028/0031) ── */
+
+export interface SoftwareDoc {
+  name: string;
+  display_name?: string;
+  description?: string;
+  projects: string[];
+  tags?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RepoDoc {
+  project: string;
+  name: string;
+  software?: string | null;
+  remote?: string;
+  branch?: string;
+  path?: string;
+  description?: string;
+  tags?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BranchDoc {
+  project: string;
+  repo: string;
+  name: string;
+  kind: string;
+  environment: string;
+  base?: string | null;
+  protectedBranch?: boolean;
+  head_sha?: string | null;
+  remote?: string | null;
+  tags?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** MCP context snapshot header (messages/context bodies excluded by the API). */
+export interface ContextDoc {
+  context_id: string;
+  project: string;
+  title?: string;
+  summary?: string;
+  source?: string;
+  model?: string | null;
+  run_id?: string | null;
+  tags?: string[];
+  repo?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export type NodeKind = "symbol" | "memory" | "decision" | "context" | "software" | "project" | "repo" | "branch" | "run" | "prompt";
 export type EdgeKind = "ref" | "link" | "contains" | "references" | "derives" | "produced";
 
@@ -399,6 +485,12 @@ export const api = {
   run: (id: string) =>
     fetch(`/api/runs/${encodeURIComponent(id)}`, { headers: authHeaders() }).then(json<RunDetail>),
 
+  toolCalls: (project: string, since?: string) =>
+    fetch(
+      `/api/tool-calls?project=${encodeURIComponent(project)}${since ? `&since=${encodeURIComponent(since)}` : ""}`,
+      { headers: authHeaders() },
+    ).then(json<ToolCallsReport>),
+
   sessionGraph: (project: string, id: string, temporal = false) =>
     fetch(
       `/api/runs/${encodeURIComponent(id)}/graph?project=${encodeURIComponent(project)}${temporal ? "&temporal=1" : ""}`,
@@ -409,6 +501,32 @@ export const api = {
     fetch(`/api/graph?project=${encodeURIComponent(project)}&scope=${scope}`, {
       headers: authHeaders(),
     }).then(json<GraphData>),
+
+  /* ── catalog hierarchy (Workspace tab) ──────────────────────────────────── */
+
+  softwares: () => fetch("/api/softwares", { headers: authHeaders() }).then(json<SoftwareDoc[]>),
+
+  repos: (project?: string, software?: string) => {
+    const q = new URLSearchParams();
+    if (project) q.set("project", project);
+    if (software) q.set("software", software);
+    const qs = q.toString();
+    return fetch(`/api/repos${qs ? `?${qs}` : ""}`, { headers: authHeaders() }).then(json<RepoDoc[]>);
+  },
+
+  branches: (project?: string, repo?: string) => {
+    const q = new URLSearchParams();
+    if (project) q.set("project", project);
+    if (repo) q.set("repo", repo);
+    const qs = q.toString();
+    return fetch(`/api/branches${qs ? `?${qs}` : ""}`, { headers: authHeaders() }).then(json<BranchDoc[]>);
+  },
+
+  contexts: (project: string, repo?: string, limit = 25) =>
+    fetch(
+      `/api/context?project=${encodeURIComponent(project)}${repo ? `&repo=${encodeURIComponent(repo)}` : ""}&limit=${limit}`,
+      { headers: authHeaders() },
+    ).then(json<ContextDoc[]>),
 
   knowledgeGraph: (project: string, entities?: NodeKind[]) =>
     fetch(

@@ -118,44 +118,76 @@ profile.
 
 ## Configuration
 
-All settings come from environment variables (or a `.env` file) and the user-level profile.
-Precedence, highest wins: **`env` > `~/.aitl/config.json` > built-in defaults**. Manage the
-profile with `aitl config {set,unset,show,export,import,path}`.
+All settings come from environment variables, a `.env` file, or a named config profile.
+Layered resolution (ADR-0061), highest wins: **real env > active profile (`AITL_PROFILE`) >
+`.env` > `~/.aitl/config.json` > built-in defaults**. Manage them with
+`aitl config {set,unset,show,export,import,path}` and
+`aitl config profile {list,create,set,show,use,rm}`, or from the web Config tab.
+
+Every variable has a working default: a fresh clone runs against local MongoDB with local
+embeddings and — with LM Studio — zero API keys.
+
+### API keys: you need at most one
+
+| Setup | What to set | API keys |
+|---|---|---|
+| Local & free (LM Studio) | `MODEL_PRIMARY=lmstudio` + a model loaded in LM Studio | none |
+| Anthropic first-party | `AITL_API_KEY=sk-ant-…` | one |
+| Any model via OpenRouter | `AITL_API_KEY=sk-or-…` | one |
+
+`AITL_API_KEY` is classified by prefix (`sk-ant-*` → Anthropic, `sk-or-*` → OpenRouter) and
+fills the matching provider key. The other key variables cover special cases only, and an
+explicitly set provider key wins over `AITL_API_KEY`:
+
+- `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` — set these directly only if you configure two
+  cloud providers at once.
+- `OPENAI_COMPAT_API_KEY` — only if your generic OpenAI-compatible endpoint requires auth.
+- `LMSTUDIO_API_KEY` — placeholder (default `lm-studio`); LM Studio ignores it.
+- `VOYAGE_API_KEY` — only for the opt-in `voyage` embedding backend. The default embedding
+  backend is local and needs no key.
+
+### Core
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `MONGODB_URI` | `mongodb://localhost:27017/?directConnection=true` | Primary MongoDB / Atlas connection string. |
 | `MONGODB_URI_FALLBACK` | *(empty)* | Optional second URI tried when the primary is unreachable (local ↔ Atlas). |
 | `MONGODB_DB` | `aitl` | Database name. |
-| `EMBEDDING_PROVIDER` | `local` | Embedding backend: `local` (`@xenova/transformers`) or `voyage`. |
-| `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | Embedding model id. |
-| `EMBEDDING_DIMS` | `384` | Embedding dimension — **must match the vector index**. |
-| `VOYAGE_API_KEY` | *(empty)* | API key when `EMBEDDING_PROVIDER=voyage`. |
-| `MODEL_PRIMARY` | `openrouter` | Primary model provider (`anthropic` \| `openrouter` \| `lmstudio` \| `openai-compat`). |
+| `MODEL_PRIMARY` | `openrouter` | Primary model provider (`anthropic` \| `openrouter` \| `lmstudio` \| `openai-compat`). `--model auto` picks the first configured backend (see `aitl models`). |
 | `MODEL_SECONDARY` | `openrouter` | Secondary/fallback model provider. |
-| `MODEL_HOST` | *(empty)* | Agent host the harness runs over (`codex` \| `claude-code` \| `antigravity`). |
-| `AITL_API_KEY` | *(empty)* | Single-key convenience: classified by prefix (`sk-ant-*` → Anthropic, `sk-or-*` → OpenRouter). Explicit provider keys win. |
-| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic first-party API key (prompt caching + structured outputs + native tool blocks). |
-| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Anthropic model id. |
-| `ANTHROPIC_MAX_CONTEXT` | `1000000` | Context-window budget assumed for the Anthropic provider. |
-| `OPENROUTER_API_KEY` | *(empty)* | OpenRouter API key (OpenAI-compatible gateway). |
-| `OPENROUTER_MODEL` | `openrouter/auto` | Default OpenRouter model id (namespaced, e.g. `anthropic/claude-3.5-sonnet`). |
+| `AITL_API_KEY` | *(empty)* | The single key (see above). |
+| `AITL_PROFILE` | *(empty)* | Pin a named config profile for this shell/repo (`""` disables any profile). |
+
+### Model providers — only the one you use matters
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Anthropic model id (first-party API: prompt caching + structured outputs + native tool blocks). |
+| `ANTHROPIC_MAX_CONTEXT` | `1000000` | Context-window budget assumed for Anthropic. |
+| `OPENROUTER_MODEL` | `openrouter/auto` | OpenRouter model id (namespaced, e.g. `anthropic/claude-3.5-sonnet`). |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio local OpenAI-compatible server URL. |
-| `LMSTUDIO_MODEL` | *(empty)* | Id of the model loaded in LM Studio (setting it marks the backend as configured). |
-| `LMSTUDIO_API_KEY` | `lm-studio` | Placeholder API key (LM Studio ignores it). |
+| `LMSTUDIO_MODEL` | *(empty)* | Model loaded in LM Studio; leave empty to auto-detect the loaded model (`aitl models --detect` persists it). |
 | `LMSTUDIO_MAX_CONTEXT` | `32768` | Context-window budget assumed for the LM Studio model. |
 | `OPENAI_COMPAT_BASE_URL` | *(empty)* | Generic OpenAI-compatible endpoint (Ollama `/v1`, vLLM, LiteLLM, …). |
 | `OPENAI_COMPAT_MODEL` | *(empty)* | Model id for the generic endpoint (required together with the base URL). |
-| `OPENAI_COMPAT_API_KEY` | *(empty)* | API key for the generic endpoint, if it needs one. |
 | `OPENAI_COMPAT_MAX_CONTEXT` | `128000` | Context-window budget assumed for the generic endpoint. |
+
+### Advanced — defaults work; change only when you know why
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EMBEDDING_PROVIDER` | `local` | `local` (`@xenova/transformers`, no key) or `voyage` (needs `VOYAGE_API_KEY`). |
+| `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | Embedding model id. |
+| `EMBEDDING_DIMS` | `384` | Embedding dimension — **must match the vector index**; changing it means recreate index + re-embed. |
 | `MEMORY_MAX_DOCS` | `500` | Per-project doc count that triggers memory synthesis. |
 | `MEMORY_MAX_TOKENS` | `200000` | Per-project token budget that triggers memory synthesis. |
 | `ENABLED_ADAPTERS` | `agents_md` | Comma-separated list of enabled cross-tool adapters. |
-| `AITL_BOOTSTRAP_USERNAME` | *(empty)* | Bootstrap user (see RBAC docs). |
-| `AITL_BOOTSTRAP_EMAIL` | *(empty)* | Bootstrap user email. |
-| `AITL_BOOTSTRAP_PASSWORD` | *(empty)* | Bootstrap user password (stored hashed). |
+| `AITL_WEB_ORIGINS` | Vite dev/preview ports | CORS allowlist (CSV of origins) for the web API. |
+| `AITL_WEB_ALLOW_SIGNUP` | `true` | Self-service signup toggle for the web UI. |
+| `AITL_BOOTSTRAP_USERNAME` / `_EMAIL` / `_PASSWORD` | *(empty)* | Optional explicit bootstrap user (see RBAC docs); password stored hashed. |
 | `AITL_BOOTSTRAP_ROLE` | `root` | Bootstrap user role. |
 | `AITL_BOOTSTRAP_AUTOGEN` | `true` | Auto-generate a local root when `users` is empty (set `false` for multi-tenant). |
+| `MODEL_HOST` | *(empty)* | Reserved (`codex` \| `claude-code` \| `antigravity`) — not consumed yet; agent hosts run via `aitl run-host`. |
 
 MCP-server variables (read by `aitl mcp`; not part of the config profile):
 
@@ -174,7 +206,9 @@ MCP-server variables (read by `aitl mcp`; not part of the config profile):
 
 ## CLI commands
 
-Run `aitl --help` (or `aitl <group> --help`) for full options. Top-level commands:
+Run `aitl --help` (or `aitl <group> --help`) for full options. For a per-command guide
+organized by the **software → project → repo → branch** hierarchy, see
+[`docs/GUIA-CLI.md`](docs/GUIA-CLI.md) (Spanish). Top-level commands:
 
 | Command | Purpose |
 |---|---|
@@ -210,7 +244,7 @@ Sub-command groups:
 | Group | Commands | Purpose |
 |---|---|---|
 | `aitl user` | `bootstrap`, `register`, `verify`, `list`, `create`, `set-role`, `disable` | Manage RBAC users (`register` is self-service; first real user becomes admin; audited). |
-| `aitl config` | `path`, `show`, `export`, `import`, `set`, `unset` | Manage the user-level config profile. |
+| `aitl config` | `path`, `show`, `export`, `import`, `set`, `unset`, `profile {list,create,set,show,use,rm}` | Manage the user-level config profile and named profile overlays (ADR-0061). |
 | `aitl prompt` | `add`, `list`, `search` | Durable prompt history (shared with the MCP). |
 | `aitl adr` | `history <id>`, `deprecate <id>` | Inspect ADR revision history (`--diff`); deprecate with a reason / `superseded_by` (soft lifecycle — excluded from hydrate, never deleted). |
 | `aitl memory` | `history <slug>` | Inspect memory revision history (`--diff`). |
@@ -266,10 +300,11 @@ skills, no gates) — vs **C2** — the default full harness. Compare the measur
 
 ## MCP tools
 
-`aitl mcp` registers 46 tools, grouped by domain:
+`aitl mcp` registers 55 tools, grouped by domain:
 
 - **Memory** — `search_memory`, `write_memory`, `ingest_path`, `save_mcp_context`,
-  `list_mcp_context`, `search_mcp_context`.
+  `list_mcp_context`, `search_mcp_context`, `synthesize` (rolling knowledge compression
+  run by the server's own model stack; returns the synthesis for re-injection).
 - **Prompts** — `record_prompt`, `list_prompts`, `search_prompts`.
 - **Decisions (ADR)** — `list_decisions`, `record_decision`, `deprecate_decision`,
   `list_decision_versions`, `get_decision_version`.
@@ -279,8 +314,11 @@ skills, no gates) — vs **C2** — the default full harness. Compare the measur
   `list_skills`, `search_skills`, `delete_skill`).
 - **Repo map & graph** — `get_repomap`, `get_module_map`, `get_module_brief`, `graphify`,
   `index_repo`, `build_definition`.
-- **Coordination** — `claim_task`, `release_task`, `poll_events` (task claims with TTL +
-  durable events, RBAC resource `coordination`).
+- **Coordination** — `claim_task`, `release_task`, `poll_events`, `publish_event`,
+  `coord_status` (task claims with TTL + durable events + live who-is-working-on-what,
+  RBAC resource `coordination`).
+- **Agent runs** — `run_agent` (the full verifiable loop via MCP: `verify_cmd`, `loop_spec`,
+  budgets; ADR-0063).
 - **Software / repo catalog** — `write_software`, `get_software`, `list_softwares`,
   `search_softwares`, `delete_software`, `write_repo`, `get_repo`, `list_repos`,
   `delete_repo`.

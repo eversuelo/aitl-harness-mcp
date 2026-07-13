@@ -1,0 +1,17 @@
+# ADR-0074 — Ciclo de vida de memoria vía MCP (get/update/delete_memory) + repo map v2 F1: símbolos ricos con doc-comments, escritura incremental y poda
+
+- **Status:** accepted
+- **Date:** 2026-07-12
+- **Components:** src/mcpserver, src/repomap, src/models
+
+## Context
+
+Dos necesidades operativas destapadas por el uso real: (1) el MCP podía crear memorias (write_memory) pero no borrarlas ni editarlas parcialmente — los duplicados y re-intentos (projects raytracer huérfanos, software "Ray Tracer Learning" duplicado) solo se podían limpiar desde la UI web; (2) el repo map (heurística regex plana) no catalogaba métodos de clase (G1 de PLAN-REPOMAP-V2), no guardaba posiciones/firma/doc y build() hacía deleteMany+insertMany total: la cache mtime prometida no existía (G6) y los símbolos de archivos borrados persistían como huérfanos. Además el ledger tenía 2 ids malformados ("0036-mongoose-data-layer", "0037-branch-aware-repomap") duplicando 0036/0037.
+
+## Decision
+
+A) Tres tools MCP nuevas (55→58) por runLogged: get_memory {project,slug} (lectura puntual sin embedding, read-before-edit, sin RBAC), update_memory {project,slug,body?,description?,type?,tags?,repo?,compacted_into?} (patch parcial sobre doc existente: falla si no existe, valida type contra RESERVED_MEMORY_TYPES, re-embeddea SIEMPRE — getMemory proyecta fuera el vector y un $set lo anularía — y versiona vía upsertMemory/archiveAndBumpVersion; RBAC memory:update) y delete_memory {project,slug} (borra el doc VIVO; memory_history intacto; RBAC memory:delete). Canario rbac.test.ts extendido a 29 mutantes. B) Repo map v2 F1 (ADR-0070): parser heurístico reescrito como scanner scope-aware por llaves balanceadas (stripCommentsAndStrings preserva líneas; parenDepth distingue la llave del cuerpo de las de tipos/defaults en la firma) que emite SymbolDef {name, kind (+method/+property), line_start/end, parent (clase), exported (métodos heredan el de la clase), signature, doc} con el doc-comment (JSDoc/bloque o run de // y #) capturado como metadato; constructor excluido; las property NO son definidores en el PageRank (nombres comunes como "name" inundaban el ranking con aristas espurias). Modelo Symbol extendido aditivamente (docs pre-v2 sin line_start = stale → se reescriben una vez). RepoMap.build ahora escribe INCREMENTAL: prune de archivos borrados del disco, rewrite solo de archivos con mtime cambiado, bulkWrite del pagerank en los intactos (el rank es global), lastStats {symbols, files_scanned, files_written, files_pruned}; CLI repomap --full fuerza rewrite total tras evoluciones del extractor. C) Ledger: los 2 ids malformados quedaron deprecated con superseded_by 0036/0037 (ciclo ADR-0049); la serie numérica 0001-0074 es la canónica. Verificado: 452 tests, mapa vivo reconstruido (1393 símbolos, 154 métodos antes invisibles, 362 funciones con doc; RepoMap.build = method parent=RepoMap líneas 48-146 con su JSDoc).
+
+## Consequences
+
+Los agentes pueden curar la memoria durable (dedupe, corrección, borrado de basura) sin pasar por la UI; el patch parcial evita reenviar bodies completos. El repo map cataloga la superficie orientada a clases (G1 cerrado) y deja de acumular símbolos huérfanos; los briefs/impact de F2-F4 ya tienen posiciones y doc para construirse. Los re-index son más baratos (solo archivos cambiados). Deuda: exported=false en la ruta tree-sitter; templates literales con ${} pueden desviar line_end en casos raros; el render por defecto no cambió (compat).

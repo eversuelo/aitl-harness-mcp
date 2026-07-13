@@ -34,6 +34,8 @@
  *   DELETE /api/memory/:slug?project=
  *   GET    /api/runs?project=&limit=         run telemetry (tokens, cost, iters, status)
  *   GET    /api/runs/:id                     one run + event counts + supervision minutes
+ *   GET    /api/tool-calls?project=&since=   mcp_tool_calls aggregation: per tool, volume/
+ *                                            success/latency + read-vs-write + what it hydrated/created
  */
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -84,6 +86,8 @@ export interface ApiDeps {
   requestRestart: () => void;
   /** Idempotent collections/indexes bootstrap (POST /api/admin/init-db). */
   runInitDb: () => Promise<unknown>;
+  /** Built SPA root (web/dist) to serve on non-/api GETs; null = API only. */
+  staticDir?: string | null;
 }
 
 /**
@@ -832,6 +836,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: ApiDeps):
     return send(req, res, 200, rows);
   }
 
+  // ── tool-calls telemetry (which MCP tools ran, what they hydrated/created) ─
+  if (pathname === "/api/tool-calls" && method === "GET") {
+    const project = searchParams.get("project");
+    if (!project) throw new HttpError(400, "`project` query param is required.");
+    const { ensureMongoose } = await import("../db/mongoose.js");
+    const { toolCallsReport } = await import("../toolcalls/report.js");
+    await ensureMongoose();
+    const since = searchParams.get("since");
+    const match: Record<string, unknown> = { project };
+    if (since) {
+      const d = new Date(since);
+      if (!Number.isNaN(d.getTime())) match.ts = { $gte: d };
+    }
+    return send(req, res, 200, await toolCallsReport(match));
+  }
+
   // Per-session graph (ADR-0035): the run linked to the ADRs/memories/prompts it produced.
   const rg = /^\/api\/runs\/([^/]+)\/graph$/.exec(pathname);
   if (rg && method === "GET") {
@@ -960,6 +980,26 @@ const DEFAULT_DEPS: ApiDeps = {
 export function createApiServer(overrides: Partial<ApiDeps> = {}): Server {
   const deps: ApiDeps = { ...DEFAULT_DEPS, ...overrides };
   return createServer((req, res) => {
+    // Production SPA (`aitl ui --static`): non-/api GETs stream the built web app
+    // from the same port, so one origin serves both the UI and the API.
+    if (deps.staticDir && (req.method === "GET" || req.method === "HEAD")) {
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (!pathname.startsWith("/api")) {
+        void (async () => {
+          const { resolveStaticFile } = await import("./staticFiles.js");
+          const hit = resolveStaticFile(deps.staticDir as string, pathname);
+          if (!hit) return send(req, res, 404, { error: "SPA build not found (run `vite build` in web/)." });
+          res.writeHead(200, {
+            "content-type": hit.type,
+            "cache-control": hit.immutable ? "public, max-age=31536000, immutable" : "no-cache",
+          });
+          if (req.method === "HEAD") return res.end();
+          const { createReadStream } = await import("node:fs");
+          createReadStream(hit.file).pipe(res);
+        })().catch(() => send(req, res, 500, { error: "static serve failed" }));
+        return;
+      }
+    }
     handle(req, res, deps).catch((err) => {
       const status = err instanceof HttpError ? err.status : 500;
       const body =

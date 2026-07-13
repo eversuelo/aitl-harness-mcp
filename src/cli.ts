@@ -773,6 +773,7 @@ program
   .option("--repo <repo>", "Repo sub-scope (rebuilds only this repo's symbols).")
   .option("--modules", "Print the first-level module map (kind view|back|mixed|infra + files + top symbols) from the cached symbols.", false)
   .option("--json", "With --modules: print the module map as JSON.", false)
+  .option("--full", "Force a full rewrite (ignore the per-file mtime cache; use after extractor/schema changes).", false)
   .description("Build the tree-sitter + PageRank repo map and print the top symbols (or the module map with --modules).")
   .action(async (opts) => {
     // Without --modules the legacy contract holds: --root is required (build + render).
@@ -780,7 +781,7 @@ program
     const { RepoMap } = await import("./repomap/store.js");
     const rm = new RepoMap();
     if (opts.root) {
-      const n = await rm.build(opts.root, opts.project, opts.repo ?? null);
+      const n = await rm.build(opts.root, opts.project, opts.repo ?? null, { full: opts.full });
       // With --modules --json keep stdout machine-readable; the build note goes to stderr.
       const note = `Indexed ${n} symbols${opts.repo ? ` for repo '${opts.repo}'` : ""}.\n`;
       if (opts.modules && opts.json) console.error(note.trimEnd());
@@ -1283,6 +1284,11 @@ program
   .option("--web-port <n>", "Port for the Vite dev server.", "5317")
   .option("--no-web", "Start only the API (skip the Vite dev server).")
   .option(
+    "--static",
+    "Sirve la SPA compilada (web/dist) desde el mismo puerto del API — modo producción/Docker, una sola URL compartible.",
+    false,
+  )
+  .option(
     "--watch-restart",
     "Supervise the UI and respawn it when it exits with the restart code (75) — enables the web UI's 'restart now' button (ADR-0061).",
     false,
@@ -1320,6 +1326,7 @@ program
       webPort: Number(opts.webPort),
       web: opts.web !== false,
       project: opts.project,
+      staticSpa: opts.static === true,
     });
   });
 
@@ -1675,6 +1682,42 @@ branch
   .action(async (name, opts) => {
     const { BranchStore } = await import("./branches/store.js");
     console.log((await new BranchStore().delete(opts.project, opts.repo, name)) ? `Deleted '${name}'.` : `(no branch '${name}')`);
+    await closeClient();
+  });
+
+// ── catalog tree: la jerarquía completa en una vista ─────────────────────────
+program
+  .command("tree")
+  .description("Muestra el catálogo jerárquico software → project → repo → branch.")
+  .option("--project <project>", "Filtra por project (muestra solo su cadena).")
+  .option("--software <software>", "Filtra por software.")
+  .option("--json", "Emite el árbol como JSON en vez de dibujarlo.", false)
+  .option("--no-color", "Desactiva los colores ANSI.")
+  .action(async (opts) => {
+    const [{ SoftwareStore }, { RepoStore }, { BranchStore }] = await Promise.all([
+      import("./softwares/store.js"),
+      import("./repos/store.js"),
+      import("./branches/store.js"),
+    ]);
+    const { buildCatalogTree, renderCatalogTree } = await import("./catalog/tree.js");
+    const [softwares, repos, branches] = await Promise.all([
+      new SoftwareStore().list({ limit: 200 }),
+      new RepoStore().list({ project: opts.project, software: opts.software, limit: 200 }),
+      new BranchStore().list({ project: opts.project, limit: 500 }),
+    ]);
+    const tree = buildCatalogTree({
+      softwares,
+      repos,
+      branches,
+      projectFilter: opts.project,
+      softwareFilter: opts.software,
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(tree, null, 2));
+    } else {
+      const color = opts.color !== false && process.stdout.isTTY;
+      for (const line of renderCatalogTree(tree, { color })) console.log(line);
+    }
     await closeClient();
   });
 
@@ -2126,6 +2169,22 @@ program
         transcript = transcript ?? (hook.transcript_path as string | undefined);
         session = session ?? (hook.session_id as string | undefined);
         cwd = cwd ?? (hook.cwd as string | undefined);
+      }
+      // Manual invocation (no hook stdin, no --transcript): find the newest Claude Code
+      // transcript for the cwd instead of silently capturing nothing (empty-run bug).
+      if (!transcript) {
+        const { findLatestTranscript } = await import("./context/capture.js");
+        const found = await findLatestTranscript(cwd);
+        if (found) {
+          transcript = found;
+          console.error(`[aitl capture-session] transcript auto-descubierto: ${found}`);
+        } else {
+          console.error(
+            `[aitl capture-session] sin transcript: no vino por --transcript ni por el hook, y no hay ` +
+              `~/.claude/projects/<cwd>/*.jsonl para ${cwd ?? process.cwd()}. Nada que capturar.`,
+          );
+          return;
+        }
       }
       const { captureSession } = await import("./context/capture.js");
       const res = await captureSession({
