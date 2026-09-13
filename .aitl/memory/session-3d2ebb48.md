@@ -6,20 +6,43 @@ category: task
 tags:
   - session
   - 'host:claude-code'
-  - 'component:CLAUDE.md'
-  - 'component:home/eversuelo'
+  - 'component:src/mcpserver'
+  - 'component:src/repomap'
   - 'component:src/models'
-  - 'component:src/memory'
   - 'component:src/cli.ts'
-  - 'component:src/index.ts'
-  - 'component:docs/ARQUITECTURA.md'
-  - 'component:README.md'
-version: 4
-updated_at: 2026-07-12T04:55:11.752Z
+  - 'component:Functions.md'
+  - 'component:home/eversuelo'
+  - 'component:src/context'
+version: 5
+updated_at: 2026-07-12T04:55:34.553Z
 branch: feat/harness-v2
 commit_sha: f84b9037494c6e7c0f11c99c498e3169eb62b6ae
 ---
-Voy a averiguar qué To Dos quedan: reviso el estado del árbol (hay trabajo sin commitear del ADR-0058), busco marcadores TODO en el código, y consulto el backend aitl-js para las tareas pendientes registradas.
+Voy a hacer dos cosas: (1) agregar al MCP la capacidad de borrar/editar memorias, y (2) limpiar los duplicados del catálogo (Ray Tracer Learning vs ray-tracer-learning vs Raytracer Lab, y los projects sueltos "sin software") y luego sintetizar. Primero exploro el código del server MCP y el store de memoria.
+
+[tool Bash]
+
+[tool Bash]
+
+[tool Read]
+
+[tool Read]
+
+[tool Read]
+
+[tool Read]
+
+[tool Bash]
+
+[tool Read]
+
+[tool Bash]
+
+Entendido — todas las llamadas MCP irán con `project: "aitl-js"`.
+
+[tool Read]
+
+RBAC ya contempla `memory:delete` para agentes. Ahora implemento las tools. Reviso `makeMemoryDoc` para el update parcial.
 
 [tool Bash]
 
@@ -29,81 +52,51 @@ Voy a averiguar qué To Dos quedan: reviso el estado del árbol (hay trabajo sin
 
 [tool Bash]
 
+[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/mcpserver/server.ts]
+
+Ahora el mapa RBAC y el test canario:
+
+[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/mcpserver/server.ts]
+
+[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/mcpserver/rbac.test.ts]
+
+[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/mcpserver/rbac.test.ts]
+
+[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/mcpserver/rbac.test.ts]
+
 [tool Bash]
-
-[tool Read]
-
-[tool Read]
 
 [tool ToolSearch]
 
-[tool Bash]
+[tool mcp__aitl-js__list_softwares]
 
-[tool Bash]
+[tool mcp__aitl-js__list_repos]
 
-[tool mcp__aitl-js__list_decisions]
-
-[tool Bash]
-
-[tool ToolSearch]
-
-[tool mcp__aitl-js__list_mcp_context]
-
-[tool Bash]
-
-[tool mcp__aitl-js__search_mcp_context]
+[tool mcp__aitl-js__list_repos]
 
 [tool mcp__aitl-js__search_memory]
 
-[tool mcp__aitl-js__list_prompts]
+[tool mcp__aitl-js__search_memory]
 
-[tool Read]
+[tool mcp__aitl-js__search_memory]
 
-[tool Bash]
+[tool mcp__aitl-js__search_memory]
 
-[tool Bash]
+[tool mcp__aitl-js__write_software]
 
-[tool ToolSearch]
+[tool mcp__aitl-js__write_software]
 
-[tool Bash]
+[tool mcp__aitl-js__delete_software]
 
-[tool TaskCreate]
+[tool mcp__aitl-js__synthesize]
 
-[tool TaskCreate]
+El provider del server falló (404 del endpoint del modelo). Reintento con el sintetizador extractivo determinista:
 
-[tool TaskCreate]
+[tool mcp__aitl-js__synthesize]
 
-[tool TaskCreate]
+[tool mcp__aitl-js__synthesize]
 
-[tool TaskCreate]
-
-[tool TaskUpdate]
-
-[tool Bash]
-
-[tool TaskUpdate]
-
-[tool TaskUpdate]
-
-[tool Read]
-
-[edit Edit: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/CLAUDE.md]
-
-CLAUDE.md al día. Ahora build y commit del ciclo 0058.
-
-[tool TaskUpdate]
-
-[tool TaskUpdate]
-
-[tool Bash]
-
-[tool Bash]
-
-[tool Bash]
-
-[tool TaskUpdate]
-
-[tool TaskUpdate]
+[tool mcp__aitl-js__write_memory]
 
 [tool Bash]
 
@@ -115,22 +108,10 @@ CLAUDE.md al día. Ahora build y commit del ciclo 0058.
 
 [tool Read]
 
-El estilo es claro. Antes de redactar la prosa nueva, leo el contrato de la skill humanizadora de la tesis (toda prosa nueva debe seguirlo).
-
-[tool Bash]
+[tool Read]
 
 [tool Read]
 
-Contrato claro. Hago las ediciones de la bitácora (fila, rangos, conteo y párrafo nuevo IMPL-0058).
+[tool Bash]
 
-[edit Edit: /home/eversuelo/Code/thesis-harness/thesis-harnesss/adr/bitacora-decisiones-implementacion.tex]
-
-[edit Edit: /home/eversuelo/Code/thesis-harness/thesis-harnesss/adr/bitacora-decisiones-implementacion.tex]
-
-[edit Edit: /home/eversuelo/Code/thesis-harness/thesis-harnesss/adr/bitacora-decisiones-implementacion.tex]
-
-[edit Edit: /home/eversuelo/Code/thesis-harness/thesis-harnesss/adr/bitacora-decisiones-implementacion.tex]
-
-[edit Edit: /home/eversuelo/Code/thesis-harness/thesis-harnesss/adr/bitacora-decisiones-implementacion.tex]
-
-Ahora reviso otras referencias al rango/conte
+[edit Write: /home/eversuelo/Code/thesis-harness/AITL-Harness-JS/src/repom

@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
-import { RESTART_EXIT_CODE, missingCoreCollections, shouldRespawn } from "./ui.js";
+import { RESTART_EXIT_CODE, missingCoreCollections, resolveWebDir, shouldRespawn } from "./ui.js";
+
+test("resolveWebDir: finds the SPA sources from both the source and dist layouts", () => {
+  // Regression: it used to hardcode the source depth (`../../web`), so the compiled
+  // binary got `dist/web` — a cwd that doesn't exist, which makes spawn report
+  // ENOENT against `node` itself ("node is missing") instead of the real cause.
+  const dir = resolveWebDir();
+  assert.ok(dir, "web/ must resolve from a checkout (source or dist)");
+  assert.ok(existsSync(join(dir, "vite.config.ts")));
+  assert.ok(!dir.includes(`${join("dist", "web")}`), "must not point inside dist/");
+});
 
 test("shouldRespawn: only the restart exit code (75) respawns", () => {
   assert.equal(RESTART_EXIT_CODE, 75);

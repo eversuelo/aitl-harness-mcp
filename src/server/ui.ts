@@ -8,8 +8,9 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeClient, getDb } from "../db/client.js";
 import { ensureMongoose } from "../db/mongoose.js";
@@ -49,9 +50,21 @@ export interface StartUiOpts {
   staticSpa?: boolean;
 }
 
-/** Absolute path to the `web/` SPA directory, relative to this module. */
-function webDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web");
+/**
+ * Absolute path to the `web/` SPA sources — the cwd Vite must run from. Same
+ * two-layout problem as `resolveWebDist`: source (`src/server` → repo `web`) and
+ * compiled (`dist/src/server` → repo `web`, three levels up). Probed by
+ * `vite.config.ts`, NOT `package.json`: `web/` has no manifest of its own (it
+ * shares the root one — hence `vite build` runs with cwd=web, ADR-0073).
+ * Returns null when the sources are absent (a `dist`-only install has no `web/`).
+ */
+export function resolveWebDir(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const rel of ["../../web", "../../../web"]) {
+    const candidate = resolve(here, rel);
+    if (existsSync(join(candidate, "vite.config.ts"))) return candidate;
+  }
+  return null;
 }
 
 /** Resolve the locally-installed Vite CLI entry (undefined if not installed). */
@@ -78,9 +91,19 @@ function startViteDevServer(opts: StartUiOpts): ChildProcess | undefined {
     );
     return undefined;
   }
+  // A missing cwd makes spawn report ENOENT against the *command* (node), which
+  // reads as "node is missing" — check it here so the message names the real cause.
+  const cwd = resolveWebDir();
+  if (!cwd) {
+    console.warn(
+      "[ui] SPA sources (web/) not found — starting the API only. " +
+        "Run `aitl ui` from a checkout, use `--static` to serve a build, or `--no-web`.",
+    );
+    return undefined;
+  }
   const args = [bin, "--port", String(opts.webPort), "--strictPort"];
   const child = spawn(process.execPath, args, {
-    cwd: webDir(),
+    cwd,
     stdio: "inherit",
     env: {
       ...process.env,
